@@ -19,8 +19,9 @@ import numpy as np
 import jugglebot.hardware_config as hw
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills.segments import CATCH, KINDS, REST, THROW
-from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
-                                           REST_HAND_REV, Site)
+from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM,
+                                           ORBIT_ODD_THROW_COUNT,
+                                           REST_CUP_Z_MM, REST_HAND_REV, Site)
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import tilt_geometry as tg
 
@@ -782,6 +783,14 @@ class Pattern:
                 raise ValueError('centre_orbit flies one Apex; apex_m_ball_b '
                                  'must be None or apex_m, got %r'
                                  % (self.apex_m_ball_b,))
+            if int(self.n_throws) % 2 != 0:
+                raise ValueError(
+                    '%s: centre_orbit needs an EVEN Throw count (an odd count '
+                    'ends on Ball 1\'s Stop onto Ball 2 at an orbit Site, '
+                    'closer than a ball diameter at the small radii), got %d; '
+                    'not rounded up -- ask for %d or %d'
+                    % (ORBIT_ODD_THROW_COUNT, int(self.n_throws),
+                       int(self.n_throws) - 1, int(self.n_throws) + 1))
         bad = tuple(b for b in self.phantom_balls if int(b) not in (0, 1))
         if bad:
             raise ValueError('phantom_balls may only name schedule ball ids '

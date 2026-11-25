@@ -397,7 +397,8 @@ def build_pattern(config: NominationConfig, n_throws: Optional[int] = None):
         # Ball 2 throws every chord O1 -> O2 .. On -> O1 once (the Platform is
         # not symmetric under every orbit rotation), then the Stop is Ball
         # 2's, O1 -> C onto Ball 1: the EVEN-count Stop a Rung flies, whose
-        # ball-to-ball clearance is Columns' own (an odd count ends on Ball
+        # ball-to-ball clearance is Columns' own (an odd count, which the
+        # Pattern REFUSES by name (ORBIT_ODD_THROW_COUNT), ends on Ball
         # 1's Stop onto Ball 2 at an orbit Site, 4 mm closer at r 100, N 8;
         # tools/probes/centre_orbit_clearance.py).
         allsites = st.centre_orbit_sites(config.separation_mm, config.orbit_n)

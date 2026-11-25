@@ -44,3 +44,23 @@ def test_an_out_of_range_radius_is_refused_by_name_not_as_workspace():
                                   'separation_mm=100,dwell_s=0.27,orbit_n=4')
     assert refused.success is False
     assert st.ORBIT_N_OUT_OF_RANGE in refused.message
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize('r,n,named', [
+    (90, 8, st.ORBIT_RADIUS_OUT_OF_RANGE), (110, 8, st.ORBIT_RADIUS_OUT_OF_RANGE),
+    (100, 5, st.ORBIT_N_OUT_OF_RANGE), (100, 13, st.ORBIT_N_OUT_OF_RANGE)])
+def test_just_outside_the_range_is_refused_by_name_never_clamped(r, n, named):
+    node, _ = _ready_node('orbit_edge_%d_%d' % (r, n))
+    refused = _nominate_req(node, 'centre_orbit,apex_m=0.95,separation_mm=%d,'
+                                  'dwell_s=0.27,orbit_n=%d' % (r, n))
+    assert refused.success is False and named in refused.message
+    assert 'nearest viable' not in refused.message   # not clamped / re-aimed
+
+
+def test_an_odd_goal_count_is_refused_by_name_before_anything_moves():
+    node, _ = _ready_node('orbit_odd')
+    res = node._run_columns(0.95, 100.0, 0.27, 17, orbit_n=8)
+    assert res.success is False and st.ORBIT_ODD_THROW_COUNT in res.message

@@ -4853,6 +4853,15 @@ class SkillNode(Node):
             if err:
                 self.get_logger().debug(err)
                 return SimpleNamespace(success=False, message=err)
+        if pattern == 'centre_orbit':
+            # the run path (`_run_columns`) feeds Ball 2 at O1, the orbit's
+            # first Site: nominate the config it builds, feed Site and all
+            try:
+                feed_site = centre_orbit_sites(
+                    float(separation_mm),
+                    int(self.get_parameter('orbit_n').value))[1].name
+            except ValueError:
+                pass   # out of range: the nomination refuses it BY NAME
         config = self._nomination_config(
             pattern, apex_m, separation_mm, dwell_s,
             apex_m_ball2=apex_m_ball2, angle_deg=angle_deg,

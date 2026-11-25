@@ -173,6 +173,11 @@ ORBIT_RADIUS_RANGE_MM = (95.0, 105.0)
 ORBIT_N_RANGE = (6, 12)
 ORBIT_RADIUS_OUT_OF_RANGE = 'ORBIT_RADIUS_OUT_OF_RANGE'
 ORBIT_N_OUT_OF_RANGE = 'ORBIT_N_OUT_OF_RANGE'
+#: An ODD Throw count ends on Ball 1's Stop onto Ball 2 at an orbit Site, the
+#: closest ball-to-ball approach of the Pattern (71.8 mm centre distance at
+#: r 95 N 6, below the 74 mm ball diameter; owner decision 2026-11-25: refuse
+#: it, never round it up). :class:`schedule.Pattern` refuses it by this name.
+ORBIT_ODD_THROW_COUNT = 'ORBIT_ODD_THROW_COUNT'
 
 
 def centre_orbit_sites(radius_mm: float, n: int) -> Tuple[Site, ...]:

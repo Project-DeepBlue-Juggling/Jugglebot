@@ -25,7 +25,7 @@ from jugglebot.motion.skills.segments import CATCH, REST, THROW
 def _pattern(r=100.0, n=8, n_throws=None):
     ss = st.centre_orbit_sites(r, n)
     return sc.Pattern(sites=(ss[0], ss[1]), apex_m=0.95, dwell_s=0.27,
-                      n_throws=2 * n + 1 if n_throws is None else n_throws,
+                      n_throws=2 * n + 2 if n_throws is None else n_throws,
                       orbit_sites=ss[1:])
 
 
@@ -70,22 +70,22 @@ def test_one_lap_ball2_visits_every_site_in_order_and_the_lap_closes(n):
     sched = sc.compile_columns(_pattern(n=n), t0_abs_s=10.0)
     assert sched.pattern == sc.CENTRE_ORBIT == 'centre_orbit'
     th = _throws(sched)
-    assert len(th) == 2 * n + 1
-    assert len(sched.skills) == 2 * n + 3     # n_throws + 2
+    assert len(th) == 2 * n + 2
+    assert len(sched.skills) == 2 * n + 4     # n_throws + 2
     orbit = ['O%d' % (k + 1) for k in range(n)]
     b2 = [t for t in th if t[0] == 1]
-    assert [t[1] for t in b2] == orbit                     # released in order
-    assert [t[2] for t in b2] == orbit[1:] + orbit[:1]     # aimed one step on
-    # Ball 1 never leaves the centre but for the Stop, which lands on Ball 2
-    # held at O1 again: the lap is closed
+    # every chord once (the lap closes on O1), then the EVEN Stop: O1 -> C
+    assert [t[1] for t in b2] == orbit + orbit[:1]         # released in order
+    assert [t[2] for t in b2] == orbit[1:] + orbit[:1] + ['C']
+    # Ball 1 never leaves the centre; the EVEN Stop is Ball 2's, aimed at
+    # Ball 1 held at C (Columns' own Stop)
     b1 = [t for t in th if t[0] == 0]
-    assert all(t[1] == 'C' for t in b1)
-    assert all(t[2] == 'C' and not t[3] for t in b1[:-1])
-    assert b1[-1][2] == 'O1' and b1[-1][3] is True
+    assert all(t[1] == 'C' and t[2] == 'C' and not t[3] for t in b1)
+    assert b2[-1][3] is True
     last_catch = [s for s in sched.skills if s.kind == CATCH][-1]
-    assert (last_catch.ball_id, last_catch.site.name) == (1, 'O1')
+    assert (last_catch.ball_id, last_catch.site.name) == (0, 'C')
     rest = sched.skills[-1]
-    assert rest.kind == REST and rest.site.name == 'O1'
+    assert rest.kind == REST and rest.site.name == 'C'
 
 
 def test_every_cup_transit_is_the_radius():
@@ -100,7 +100,7 @@ def test_timing_is_columns_at_one_apex():
     sched = sc.compile_columns(_pattern(), t0_abs_s=10.0)
     a, b = st.columns_sites(100.0)
     col = sc.compile_columns(sc.Pattern(sites=(a, b), apex_m=0.95,
-                                        dwell_s=0.27, n_throws=17),
+                                        dwell_s=0.27, n_throws=18),
                              t0_abs_s=10.0)
     assert (sched.flight_s, sched.beat_s, sched.transit_s, sched.dwell_s) == (
         col.flight_s, col.beat_s, col.transit_s, col.dwell_s)
@@ -155,16 +155,16 @@ def test_pattern_refuses_an_inconsistent_orbit():
     ss = st.centre_orbit_sites(100.0, 8)
     with pytest.raises(ValueError, match='must be sites'):
         sc.Pattern(sites=(ss[0], ss[2]), apex_m=0.95, dwell_s=0.27,
-                   n_throws=17, orbit_sites=ss[1:])
+                   n_throws=18, orbit_sites=ss[1:])
     with pytest.raises(ValueError, match='phantom'):
         sc.Pattern(sites=(ss[0], ss[1]), apex_m=0.95, dwell_s=0.27,
-                   n_throws=17, orbit_sites=ss[1:], phantom_balls=(0,))
+                   n_throws=18, orbit_sites=ss[1:], phantom_balls=(0,))
     with pytest.raises(ValueError, match='one Apex'):
         sc.Pattern(sites=(ss[0], ss[1]), apex_m=0.95, dwell_s=0.27,
-                   n_throws=17, orbit_sites=ss[1:], apex_m_ball_b=0.9)
+                   n_throws=18, orbit_sites=ss[1:], apex_m_ball_b=0.9)
     with pytest.raises(ValueError, match='centre Site'):
         sc.Pattern(sites=(ss[0], ss[1]), apex_m=0.95, dwell_s=0.27,
-                   n_throws=17, orbit_sites=ss[1:] + ss[:1])
+                   n_throws=18, orbit_sites=ss[1:] + ss[:1])
 
 
 def test_nomination_plans_every_chord_and_the_even_stop():
@@ -202,3 +202,41 @@ def test_columns_is_untouched_by_the_orbit_field():
     assert s0.pattern == s1.pattern == 'columns'
     assert repr(s0.skills) == repr(s1.skills)
     assert s0.source.label is None
+
+
+
+# --- an ODD Throw count is REFUSED by name (owner, 2026-11-25), never rounded
+
+@pytest.mark.parametrize('n_throws', [1, 3, 17, 25])
+def test_an_odd_throw_count_is_refused_by_name(n_throws):
+    ss = st.centre_orbit_sites(100.0, 8)
+    with pytest.raises(ValueError, match=st.ORBIT_ODD_THROW_COUNT):
+        sc.Pattern(sites=(ss[0], ss[1]), apex_m=0.95, dwell_s=0.27,
+                   n_throws=n_throws, orbit_sites=ss[1:])
+    cfg = nm.NominationConfig('centre_orbit', 0.95, 100.0, 0.27, orbit_n=8)
+    with pytest.raises(ValueError, match=st.ORBIT_ODD_THROW_COUNT):
+        nm.build_pattern(cfg, n_throws=n_throws)
+
+
+def test_the_nomination_of_an_odd_count_is_a_named_compile_refusal_not_a_round_up():
+    cfg = nm.NominationConfig('centre_orbit', 0.95, 100.0, 0.27, orbit_n=8,
+                              n_throws=17)
+    rep = nm.nominate(cfg, nm.default_limits(), search=False)
+    assert not rep.ok and any(st.ORBIT_ODD_THROW_COUNT in l for l in rep.lines())
+
+
+def test_every_even_count_still_compiles():
+    for k in (2, 4, 18, 40):
+        assert sc.compile_columns(_pattern(n_throws=k), t0_abs_s=10.0)
+
+
+def test_the_odd_stop_is_closer_than_the_even_stop_over_the_whole_range():
+    """Why the refusal: the measured clearance (the probe's, odd built only to
+    be measured)."""
+    from jugglebot.motion.skills import orbit_clearance as oc
+    for r in (95.0, 100.0, 105.0):
+        for n in (6, 12):
+            odd = oc.clearance(r, n, stop=True, n_throws=2 * n + 1)
+            even = oc.clearance(r, n, stop=True, n_throws=2 * n + 2)
+            assert odd['min_3d_mm'] < even['min_3d_mm']
+    assert oc.clearance(95.0, 6, stop=True, n_throws=13)['margin_3d_mm'] < 0
