@@ -2115,8 +2115,14 @@ TEST_CASE("FW 53: a Leg that never confirms: after 10 s the stream ends, freeze,
   // At the timeout: no IDLE; the stream ends; every Closed-loop Leg frozen at its
   // measured position (one set_input_pos each), HELD; the pending stow cleared.
   // The dropped (IDLE) Leg 2 is neither frozen nor HELD.
+  // FW 53 audit follow-up: Leg 3 still creeps (-0.4 rev/s) at the timeout tick, and
+  // its hold is the MEASURED 0.5 rev exactly, with no TRAP_TRAJ stopping distance
+  // (the Legs may be in PASSTHROUGH, where that would be an unprofiled step).
+  // Mutation caught: the stopping distance kept (target 0.5 - 0.16/60 rev).
   fake_advance(100000);
   stage();
+  stage_leg(3, ST_CL, 0.5f, -0.4f);
+  REQUIRE(leg_freeze_target(0.5f, -0.4f, STOW_WINDOW_MIN_REV, STROKE_MAX_REV[3]) != 0.5f);
   fake_clear_sent();
   fault_step();
   CHECK(fake_sent_count_cmd(CMD_SETSTATE) == 0);
@@ -2136,6 +2142,46 @@ TEST_CASE("FW 53: a Leg that never confirms: after 10 s the stream ends, freeze,
   fake_clear_sent();
   fault_step();
   CHECK(fake_sent_count_cmd(CMD_SETSTATE) == 0);
+}
+
+// FW 53 audit follow-up (the HELD race): the CONFIRM loop asks the predicate once
+// (true), then each Leg's IDLE through the wrapper, which asks it again. A frame
+// landing in between (staged here as Leg 4's heartbeat: fresh at the caller's `now`,
+// 510 ms old at the wrapper's micros64()) refuses the IDLEs. That refusal must be
+// silent: no HELD (the host's monitors fail on the first HELD), no census, and the
+// IDLE is asked again next tick. Mutation caught: the CONFIRM loop back on Who::STOW
+// (HELD 0x3F, census +6).
+TEST_CASE("FW 53 audit: a refusal racing the CONFIRM pre-check is silent and retried next tick") {
+  loss_reconnect_complete();
+  stage_six(3, 0.5f, -1.0f);                     // Leg 3 lagging: CONFIRM waits
+  fault_step();
+  REQUIRE(s_stow_confirming);
+  fake_advance(100000);
+  stage_six(0xFF, 0.0f, 0.0f);                   // all six at Stow, heartbeats at T
+  fake_advance(510000);                          // T + 510 ms
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {       // fresh frames, except Leg 4's heartbeat
+    write_pos_vel(axes[i], 0.0f, 0.0f, fake_mono_us());
+    if (i != 4) stamp_hb(i);
+  }
+  const uint64_t now_pre = fake_mono_us() - 100000;   // the caller's earlier `now`: Leg 4 410 ms
+  REQUIRE(leg_idle_permitted(now_pre));
+  REQUIRE_FALSE(leg_idle_permitted(fake_mono_us()));
+  const uint32_t refusals = leg_deenergise_refusals();
+  fake_clear_sent();
+  stow_confirm_step(now_pre);
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == 0);
+  CHECK(leg_held_mask() == 0);
+  CHECK(leg_deenergise_refusals() == refusals);
+  CHECK(s_stowing);
+  CHECK(s_stow_confirming);
+  // Next tick, Leg 4's heartbeat is in: all six IDLE'd, the stow ends.
+  fake_advance(10000);
+  stage_six(0xFF, 0.0f, 0.0f);
+  fake_clear_sent();
+  fault_step();
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == NUM_LEGS);
+  CHECK_FALSE(s_stowing);
+  CHECK(leg_held_mask() == 0);
 }
 
 TEST_CASE("FW 53: an already-IDLE (dropped) Leg does not block the others' IDLE") {

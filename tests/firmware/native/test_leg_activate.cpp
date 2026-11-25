@@ -73,6 +73,7 @@ static void present_only(uint8_t mask) {
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     axes[i].heartbeat_seen = (mask & (uint8_t)(1u << i)) != 0;
     axes[i].active_errors = 0;
+    axes[i].disarm_reason = 0;      // FW 53 audit follow-up: a test may stage one
     axes[i].pos_rev = 0.0f;
     axes[i].vel_rps = 0.0f;
     axes[i].iq_measured = 0.0f;
@@ -1651,6 +1652,60 @@ TEST_CASE("a target Leg that disarms itself mid-rise freezes the others on [seed
   CHECK(sent_exact(ODrive::encode_set_input_pos(0, ODrive::leg_sign(0, t0), 0, 0)));
   for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(activate_result(i) == ACTIVATE_FAILED);
   CHECK(leg_held_mask() == 0x3B);
+}
+
+// FW 53 audit follow-up (SHOULD-FIX 1): Leg 3's Get_Error (an error or a disarm
+// reason) arrives BEFORE its next heartbeat, which still says CLOSED_LOOP, and the
+// guard has already raised the Soft E-stop for it. Before the fix the MONITOR tick
+// saw no drop, took the Soft E-stop branch and re-targeted all six Legs to Stow with
+// Leg 3 free. Now the others freeze in that same tick: no Stow target, no IDLE.
+// Mutations caught: the active_errors term dropped from leg_dropped_out (subcase 1);
+// the disarm_reason term dropped (subcase 2).
+TEST_CASE("audit: a Leg's error before its heartbeat mid-rise freezes the others in the first tick (no return)") {
+  homed(0x3F);
+  to_monitor(JbUdp::RpcArgs::AXIS_ALL);
+  cs_advance(10000);
+  legs_confirmed(0x3F, ST_CL, 1.0f, 2.5f);                     // every heartbeat still CLOSED_LOOP
+  SUBCASE("active_errors") { axes[3].active_errors = 0x1000; }
+  SUBCASE("disarm_reason") { axes[3].disarm_reason = 0x1000; }
+  cs_set_guard_estop(true);                                    // the Soft E-stop the error raised
+  cs_clear_sent();
+  activate_step();
+  CHECK_FALSE(activate_active());
+  CHECK(n_cmd(ODriveCmd::set_requested_state) == 0);           // no IDLE
+  CHECK(n_cmd(ODriveCmd::set_input_pos) == 5);                 // five freeze frames ...
+  CHECK(n_cmd(ODriveCmd::set_input_pos, 3) == 0);              // ... none to Leg 3
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    CHECK_FALSE(sent_exact(ODrive::encode_leg_setpoint(i, STOW_OFF_POSE_REV, 0.0f, 0.0f)));
+    CHECK(activate_result(i) == ACTIVATE_FAILED);
+  }
+  const float t0 = leg_freeze_target(1.0f, 2.5f, HOMED, JBOp::ACTIVATE_POSITION_REVS[0]);
+  CHECK(sent_exact(ODrive::encode_set_input_pos(0, ODrive::leg_sign(0, t0), 0, 0)));
+  CHECK(leg_held_mask() == 0x37);
+}
+
+// The same race during the return to Stow (entered on a Soft E-stop from another
+// cause): Leg 3's error arrives with its heartbeat still CLOSED_LOOP. Before the
+// fix the five carried on descending until Leg 3's next heartbeat. Mutation caught:
+// the active_errors term dropped from leg_dropped_out.
+TEST_CASE("audit: a Leg's error before its heartbeat during the return freezes the others in the first tick") {
+  homed(0x3F);
+  to_monitor(JbUdp::RpcArgs::AXIS_ALL);
+  abort_mid_rise(0x3F);                                        // RETURN, Stow targets sent
+  cs_advance(10000);
+  legs_confirmed(0x3F, ST_CL, 1.05f, -1.0f);                   // reversing, all CLOSED_LOOP
+  axes[3].active_errors = 0x1000;
+  cs_clear_sent();
+  activate_step();
+  CHECK_FALSE(activate_active());
+  CHECK(n_cmd(ODriveCmd::set_requested_state) == 0);
+  CHECK(n_cmd(ODriveCmd::set_input_pos) == 5);
+  CHECK(n_cmd(ODriveCmd::set_input_pos, 3) == 0);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    CHECK_FALSE(sent_exact(ODrive::encode_leg_setpoint(i, STOW_OFF_POSE_REV, 0.0f, 0.0f)));
+    CHECK(activate_result(i) == ACTIVATE_FAILED);
+  }
+  CHECK(leg_held_mask() == 0x37);
 }
 
 // Mutations caught: bus down treated as a Soft E-stop (Stow targets sent) or as FW

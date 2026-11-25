@@ -220,6 +220,7 @@ static void note_refusal(uint8_t leg, Who who) {
 // True = the request for `leg` may go out. On false the refusal is recorded.
 static bool leg_deenergise_allowed(uint8_t leg, Who who) {
   if (leg_idle_permitted(micros64())) return true;
+  if (who == Who::ARRIVAL_RETRY) return false;   // silent: the caller retries next tick
   note_refusal(leg, who);
   return false;
 }
@@ -261,7 +262,7 @@ float leg_freeze_target(float pos, float vel, float seg_lo, float seg_hi) {
   return t < lo ? lo : (t > hi ? hi : t);
 }
 
-bool leg_freeze_tx(uint8_t leg, float seg_lo, float seg_hi) {
+bool leg_freeze_tx(uint8_t leg, float seg_lo, float seg_hi, bool stopping_distance) {
   if (leg >= NUM_LEGS) return false;
   set_held(leg);
   float pos = 0.0f, vel = 0.0f; uint64_t ts = 0;
@@ -270,7 +271,7 @@ bool leg_freeze_tx(uint8_t leg, float seg_lo, float seg_hi) {
   if (ts == 0 || rx_older_than(now, ts, MOTOR_FB_STALENESS_US)) return false;
   if (!std::isfinite(pos) || !std::isfinite(vel) ||
       !std::isfinite(seg_lo) || !std::isfinite(seg_hi)) return false;
-  const float target = leg_freeze_target(pos, vel, seg_lo, seg_hi);
+  const float target = leg_freeze_target(pos, stopping_distance ? vel : 0.0f, seg_lo, seg_hi);
   return tx_reached_the_wire(can_jugglebot_tx(
       ODrive::encode_set_input_pos(leg, ODrive::leg_sign(leg, target), 0, 0), TxCls::SAFETY));
 }
@@ -278,6 +279,16 @@ bool leg_freeze_tx(uint8_t leg, float seg_lo, float seg_hi) {
 // ── The gated descent to Stow (DEACTIVATE MONITOR, ACTIVATE RETURN) ──────────
 bool leg_dropped_out(uint8_t leg, uint64_t now) {
   if (leg >= NUM_LEGS) return false;
+  // FW 53 audit follow-up: an error is a drop on its own. The drive's Get_Error
+  // frame can arrive before its next heartbeat (up to ~100 ms, ~200 ms with one
+  // lost), and in that gap the guard's Soft E-stop would otherwise start a return to
+  // Stow (ACTIVATE MONITOR) or the descent would carry on (DEACTIVATE MONITOR) with
+  // this Leg free. The cached disarm_reason counts too: every caller runs after
+  // legs_cl_confirm, which required it 0 on every target Leg before any motion
+  // target, so a non-zero value here came from a Get_Error received during this
+  // move (a stale reason from an earlier event cannot reach these phases). A false
+  // positive only freezes, the conservative side.
+  if (axes[leg].active_errors != 0 || axes[leg].disarm_reason != 0) return true;
   // Stamp read before state (the receive decode writes the state first).
   const uint64_t hb = atomic_read_u64(&axes[leg].last_heartbeat_us);
   if (hb == 0 || rx_older_than(now, hb, CAN_HEARTBEAT_STALE_US)) return false;   // no evidence
@@ -331,12 +342,14 @@ static void freeze_live(uint8_t live, uint8_t skip, const float seg_a[], const f
                              max3(seg_a[i], seg_b[i], STOW_OFF_POSE_REV));
 }
 
-// Gated IDLE of every live target; a SENT Leg joins `done` and loses its HELD bit
-// (a race refusal earlier in the same tick must not outlive the IDLE).
-static void gated_idle_into_done(uint8_t live, uint8_t& done) {
+// Gated IDLE of every live target; a SENT Leg joins `done` and loses its HELD bit.
+// `who`: ARRIVAL_RETRY at arrival (the caller re-asks next tick, so a refusal racing
+// the caller's own check is silent: no HELD for the host to read as a failure);
+// LADDER at the timeout, which ends the ladder, so a refused Leg stays HELD.
+static void gated_idle_into_done(uint8_t live, uint8_t& done, Who who) {
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     if (!(live & (uint8_t)(1u << i))) continue;
-    if (odrive_set_state_tx(i, ODriveState::IDLE, TxCls::OTHER, Who::LADDER) == DeResult::SENT) {
+    if (odrive_set_state_tx(i, ODriveState::IDLE, TxCls::OTHER, who) == DeResult::SENT) {
       done |= (uint8_t)(1u << i);
       leg_held_clear(i);
     }
@@ -367,13 +380,13 @@ DescentStep stow_descent_step(uint8_t targets, uint8_t& done,
         fabsf(vel) > JBOp::TARGET_REACHED_VEL_TOL_RPS) all_arrived = false;
   }
   if (all_arrived && leg_idle_permitted(now)) {
-    gated_idle_into_done(live, done);
+    gated_idle_into_done(live, done, Who::ARRIVAL_RETRY);
     if ((uint8_t)(targets & ~done & LEG_BITS) == 0) return DescentStep::ARRIVED;
   }
   // (4) Timeout: IDLE only where permitted (Stow, or the bench), else hold.
   if (timed_out) {
     const uint8_t still = (uint8_t)(targets & ~done & LEG_BITS);
-    if (leg_idle_permitted(now)) gated_idle_into_done(still, done);
+    if (leg_idle_permitted(now)) gated_idle_into_done(still, done, Who::LADDER);
     else                         freeze_live(still, 0, seg_a, seg_b);
     return DescentStep::TIMED_OUT;
   }

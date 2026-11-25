@@ -397,9 +397,11 @@ static void stow_confirm_step(uint64_t now) {
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
       const uint8_t bit = (uint8_t)(1u << i);
       if (!(present & bit) || (s_stow_idled & bit)) continue;
-      if (odrive_set_state_tx(i, ODriveState::IDLE, TxCls::SAFETY, Who::STOW) == DeResult::SENT) {
+      // ARRIVAL_RETRY: the predicate held just above, so a refusal here is a frame
+      // landing inside the tick; it is silent (no HELD, no census), not a held Leg.
+      if (odrive_set_state_tx(i, ODriveState::IDLE, TxCls::SAFETY, Who::ARRIVAL_RETRY) == DeResult::SENT) {
         s_stow_idled |= bit;
-        leg_held_clear(i);   // a race refusal earlier must not outlive the IDLE
+        leg_held_clear(i);   // an earlier HELD (a previous event) must not outlive the IDLE
       }
     }
     // A refused or unsent IDLE (the gate flipped inside the tick, a full TX queue)
@@ -409,16 +411,25 @@ static void stow_confirm_step(uint64_t now) {
   if (now >= s_stow_confirm_t0_us && now - s_stow_confirm_t0_us >= STOW_CONFIRM_TIMEOUT_US) {
     // No confirmation in GENTLE_MOVE_TIMEOUT_S: never IDLE above Stow. End the
     // stream FIRST (a later stream frame would overwrite the hold), then freeze each
-    // present Leg not reporting IDLE at its measured position (+ stopping distance,
-    // ~0 at rest), clamped to its stroke; leg_freeze_tx sets HELD (and sends nothing
-    // on a stale encoder: the Leg then holds the last streamed Stow setpoint).
+    // present Leg not reporting IDLE at its MEASURED position only, clamped to its
+    // stroke; leg_freeze_tx sets HELD (and sends nothing on a stale encoder: the Leg
+    // then holds the last streamed Stow setpoint).
+    // Input mode (FW 53 audit follow-up): the stow stream (leg_interp.cpp
+    // interp_begin_stow / the s_stow_active branch of interp_isr) sends 500 Hz
+    // set_input_pos(pos, vel_ff) and never sets an input mode, so the Legs are in
+    // whatever mode they last had: PASSTHROUGH after the host's lane configure (the
+    // Armed case the stream is built for), TRAP_TRAJ after a bare ACTIVATE or
+    // DEACTIVATE, or the drive's saved mode after a power cycle. In PASSTHROUGH a
+    // set_input_pos is an unprofiled step, so the target carries NO trapezoid
+    // stopping distance (stopping_distance = false): the measured position commands
+    // no motion in PASSTHROUGH and is a profiled move in TRAP_TRAJ.
     // Clearing the pending stow keeps DEACTIVATE / HOME / REBOOT available.
     interp_end_stow();
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
       const uint8_t bit = (uint8_t)(1u << i);
       if (!(present & bit) || (s_stow_idled & bit)) continue;
       if (axes[i].axis_state == ODriveState::IDLE) continue;
-      (void)leg_freeze_tx(i, STOW_WINDOW_MIN_REV, STROKE_MAX_REV[i]);
+      (void)leg_freeze_tx(i, STOW_WINDOW_MIN_REV, STROKE_MAX_REV[i], /*stopping_distance=*/false);
     }
     end_stow();
   }

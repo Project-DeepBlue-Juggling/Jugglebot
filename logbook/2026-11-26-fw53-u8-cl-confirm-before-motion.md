@@ -16,6 +16,9 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md
   - tests/firmware/native/test_leg_deactivate.cpp
   - tests/firmware/native/test_leg_activate.cpp
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/fault_machine.cpp
+  - tests/firmware/native/test_leg_stow_gate.cpp
+  - tests/firmware/native/test_fault_machine.cpp
   - logbook/2026-11-26-fw53-u8-cl-confirm-before-motion.md
 subsystem: [can-bridge, safety]
 ---
@@ -158,3 +161,39 @@ All runs are from 2026-11-26, in `$S/wt-fw53`.
   - **The four doc tests:** 25 passed.
   - **`pio run -e teensy41`** (build only): SUCCESS. `firmware.hex` sha256 `ff4d9b409a83ac437e29c5556b82c64d26a85ef5bbfc3ebab08738c7c241b491`, which supersedes the hash above.
 - **Not run:** `./run_tests.sh`, and nothing on hardware.
+
+## Audit follow-up (2026-11-26)
+
+An independent audit of the FW 53 chain (51d019e0..7f4ec82f) found one SHOULD-FIX and three NITs in the firmware. Each was checked against the code before changing it. FW_VERSION stays 53.
+
+- **An error is a drop (SHOULD-FIX 1).** `leg_dropped_out` read only the heartbeat. A Leg's Get_Error frame can arrive before its next heartbeat (up to ~100 ms, ~200 ms with one lost). In that gap `evaluate_errors` raised the Soft E-stop, so ACTIVATE MONITOR's dropped check found nothing, `!activate_allowed()` took `abort_ladder` and re-targeted all six Legs to Stow with that Leg free. DEACTIVATE MONITOR kept descending through the Soft E-stop by design. `leg_dropped_out` now returns true first when the Leg's cached `active_errors` or `disarm_reason` is non-zero.
+  - **Why `disarm_reason` belongs in it.** The cache is written only by the Get_Error decode. It is zeroed by CLEAR_ERRORS (global, per axis) and by `evaluate_errors`' one auto-clear, and that auto-clear runs only while no axis is Closed-loop. Every caller of `leg_dropped_out` runs after `legs_cl_confirm`, which already FAILS on a non-zero `disarm_reason` before any motion target goes out. So a stale reason left by an earlier event cannot reach MONITOR, RETURN or the DEACTIVATE descent. A non-zero value there came from a Get_Error received during this move. A drive's `disarm_reason` is also its record of why it disarmed, while some `active_errors` bits may clear once the condition passes (unchecked on hardware). The one false-positive path is a drive reporting a reason while still Closed-loop. `evaluate_errors` already treats that as fatal, and a freeze is the conservative side.
+  - **Walk, scenario 1 (ACTIVATE mid-rise).** Tick k: Leg 3's Get_Error lands (`active_errors` != 0) and its heartbeat still reads CLOSED_LOOP. The guard goes ESTOP. `activate_step`: the bus is up and the phase is MONITOR. `dropped_legs` returns bit 3 (the error term), then `abort_dropped` freezes Legs 0-2 and 4-5 on [seed, target] (HELD), and the ladder ends FAILED. The Soft E-stop branch is never reached, so no Stow target and no IDLE go out. The tick order is the same whether the fault task ran first or not.
+  - **Walk, scenario 2 (DEACTIVATE MONITOR).** `DESCENT_CONTINUES_THROUGH_ESTOP` skips the allowed check. `stow_descent_step` (bus up) then finds the drop in step (2), and `freeze_live` freezes the other five and returns DROPPED (FAILED). RETURN goes through the same `stow_descent_step`, and the phase dispatch puts it ahead of every other check. In all three phases that move Legs, the drop check runs before any Soft E-stop or commands-not-allowed branch.
+  - Behaviour change on the one-Leg bench: a Leg with an error mid-rise now ends FAILED with no frame, where it used to get the gated IDLE. Its drive has already disarmed itself.
+- **HELD race (NIT).** The arrival IDLE loops ask the predicate once and then each Leg's wrapper asks it again. These are `stow_descent_step`'s arrival loop and the deferred-stow CONFIRM loop in `fault_machine.cpp`. A frame landing between the two checks refused the IDLE and set HELD, which reaches the host at once. The host's ACTIVATE and DEACTIVATE monitors fail on the first HELD. New `Who::ARRIVAL_RETRY`: the wrapper refuses silently, with nothing on CAN, no census and no HELD, and the caller retries next tick. The descent's timeout IDLE ends the ladder, so it stays `Who::LADDER`: a Leg refused there is truthfully HELD. `Who::STOW` now has no caller left. It is kept, because it is a HELD-setting value and removing it is outside this unit.
+- **CONFIRM timeout freeze (NIT).** `leg_interp.cpp` streams 500 Hz `set_input_pos(pos, vel_ff)` (`interp_begin_stow`, the `s_stow_active` branch of `interp_isr`) and never sets an input mode. The Legs keep their last mode: PASSTHROUGH after the host's lane configure (the Armed case the stream exists for), TRAP_TRAJ after a bare ACTIVATE or DEACTIVATE, or the drive's saved mode after a power cycle. PASSTHROUGH must be assumed, and there a set_input_pos is an unprofiled step. The freeze now commands the measured position only (`leg_freeze_tx(..., stopping_distance = false)`). In PASSTHROUGH that commands no motion. In TRAP_TRAJ it is still a profiled move.
+- **RETURN apex (NIT).** `static_assert(ODriveDefaults::TRAP_ACC_LIMIT_RPS2 >= ODriveDefaults::TRAP_DEC_LIMIT_RPS2)` sits beside the apex comment in `leg_activate.cpp` (30 = 30 today).
+
+New native tests:
+- `test_leg_activate.cpp`: "audit: a Leg's error before its heartbeat mid-rise ..." (subcases `active_errors` and `disarm_reason`) and "... during the return ...".
+- `test_leg_deactivate.cpp`: "audit: a Leg's error before its heartbeat mid-descent ...".
+- `test_leg_stow_gate.cpp` case 23: the interleave is staged through the caller's earlier `now`, and the wrapper's silent mode is tested directly.
+- `test_fault_machine.cpp`: "FW 53 audit: a refusal racing the CONFIRM pre-check ...", calling `stow_confirm_step(now_pre)` directly.
+
+The test fixture `present_only` in `test_leg_activate.cpp` now zeroes `disarm_reason`. Without it, a staged reason leaked into later cases. One existing test was adjusted, "a Leg that never confirms": Leg 3 is staged at -0.4 rev/s at the timeout tick so the exact-frame check pins the measured-position target. Its asserted value (0.5 rev) is unchanged.
+
+### Verification (audit follow-up)
+- **Native** (2026-11-26). Command: `python $S/out/fw53-u8/quick.py <wt> $S/out/fw53-u9/q - test_leg_activate test_leg_deactivate test_leg_stow_gate test_fault_machine`. Result: activate **75/75**, deactivate **36/36**, stow_gate **23/23**, fault_machine **44/44**.
+- **Mutations** (2026-11-26). Command: `python $S/out/fw53-u9/mutate.py <wt>`, run on copies; table in `$S/out/fw53-u9/mutations.txt`. Result: **8/8 caught**:
+  - E1: the `active_errors` term dropped.
+  - E2: the `disarm_reason` term dropped.
+  - E3: both terms dropped (the pre-fix code).
+  - H1: the arrival loop back on `LADDER`.
+  - H2: the silent branch removed.
+  - H3: CONFIRM back on `STOW`.
+  - P1: the stopping distance kept.
+  - S1: ACC < DEC, which fails at compile time on the `static_assert`.
+- **Scoped suite** (2026-11-26, full native build included). Command: `flock /tmp/jugglebot-tests.lock nice -n 10 python -m pytest -q -p no:cacheprovider -n 4 --dist loadfile tests/firmware tests/teensy_link tests/ros/test_leg_reference.py tests/ros/test_state_machine.py tests/ros/test_orchestrator_node.py tests/sim/test_docs_links.py tests/sim/test_glossary_avoid_words.py tests/sim/test_logbook_front_matter.py`. Result: **1617 passed, 4 skipped in 418.58 s**.
+- **Image** (2026-11-26, build only, no upload). Command: `pio run -e teensy41`. Result: SUCCESS. `firmware.hex` sha256 `ae73341b3accac079cba17bda50492d7d100ca652f943d67bb5ea3ed77ccc6a7`, which supersedes the hashes above. The only warning in the touched files is the existing unused `actuators_intact_and_holding` in `fault_machine.cpp`.
+- **Not run:** `./run_tests.sh`, and nothing on hardware. Still unmeasured: the ODrive's Get_Error-before-heartbeat timing and how `disarm_reason` behaves on a commanded IDLE.

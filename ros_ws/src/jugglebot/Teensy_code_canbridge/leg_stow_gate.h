@@ -101,8 +101,14 @@ bool    rig_robot_latched();
 bool all_present_legs_idle(uint64_t now);
 
 // Who is asking. Decides only the HOMING_OWNER carve-out and whether a Leg
-// refusal sets that Leg's HELD bit.
-enum class Who : uint8_t { LADDER, STOW, RPC, HOMING_OWNER };
+// refusal sets that Leg's HELD bit and counts in the census.
+// ARRIVAL_RETRY (FW 53 audit follow-up): an arrival IDLE whose caller has just
+// established leg_idle_permitted(now) this tick and asks again next tick
+// (stow_descent_step's arrival loop, the deferred-stow CONFIRM loop). A refusal
+// there can only be a frame landing between the caller's check and the wrapper's;
+// it is refused silently (nothing on CAN, no HELD, no census), because HELD reaches
+// the host at once and its ACTIVATE/DEACTIVATE monitors fail on the first HELD.
+enum class Who : uint8_t { LADDER, STOW, RPC, HOMING_OWNER, ARRIVAL_RETRY };
 enum class DeResult : uint8_t { SENT, REFUSED, TX_FAILED };
 
 // The three wrappers. By case:
@@ -117,7 +123,8 @@ enum class DeResult : uint8_t { SENT, REFUSED, TX_FAILED };
 //   * anything else for a Leg: leg_idle_permitted(micros64()), i.e. the bench
 //     exemption or platform_at_stow(). On refusal nothing
 //     goes on CAN, the census counts it, and LADDER/STOW callers set the Leg's
-//     HELD bit (an RPC refusal is the host's answer, not a held Leg);
+//     HELD bit (an RPC refusal is the host's answer, not a held Leg); an
+//     ARRIVAL_RETRY refusal is silent (no census, no HELD);
 //   * axis >= NUM_AXES: REFUSED, not counted.
 // TX_FAILED = the frame did not reach the wire (tx_reached_the_wire false).
 DeResult odrive_set_state_tx(uint8_t axis, uint32_t state, uint8_t cls, Who who);
@@ -137,7 +144,11 @@ DeResult odrive_sdo_write_tx(uint8_t axis, uint16_t endpoint_id, float value, ui
 // non-finite: the ODrive then finishes its existing, in-stroke target. Always
 // sets the Leg's HELD bit (the caller has decided to hold it). Hand / out of
 // range: false, no frame, no bit. True iff the frame reached the wire.
-bool  leg_freeze_tx(uint8_t leg, float seg_lo, float seg_hi);
+// stopping_distance = false (FW 53 audit follow-up, the deferred-stow CONFIRM
+// timeout): target = clamp(pos) only. For a Leg that may be in PASSTHROUGH, where
+// set_input_pos is an unprofiled step, the measured position is the one target that
+// commands no motion; in TRAP_TRAJ it is still a profiled move.
+bool  leg_freeze_tx(uint8_t leg, float seg_lo, float seg_hi, bool stopping_distance = true);
 // The pure target arithmetic behind leg_freeze_tx (exposed for the native test).
 float leg_freeze_target(float pos, float vel, float seg_lo, float seg_hi);
 
@@ -170,7 +181,11 @@ AbortIdle leg_abort_idle_verdict(uint64_t now, uint64_t t_abort_us);
 // A target Leg has left CLOSED_LOOP on its own: its heartbeat is fresh, was
 // received at least CL_ENGAGE_SETTLE_US after this gate's last CLOSED_LOOP send to
 // it (a heartbeat cached before that command still reads IDLE for a Leg that is
-// now holding: ACTIVATE starts from IDLE Legs), and reports another state.
+// now holding: ACTIVATE starts from IDLE Legs), and reports another state; OR
+// (FW 53 audit follow-up) its cached active_errors or disarm_reason is non-zero,
+// whatever the heartbeat says: the drive's Get_Error can precede its next
+// heartbeat, and the Legs must not move in that gap. Every caller runs after
+// legs_cl_confirm required both 0, so a non-zero value is news from this move.
 bool leg_dropped_out(uint8_t leg, uint64_t now);
 
 // FW 53 U8 (owner: no Leg is lowered or raised while another is free): the
@@ -204,9 +219,10 @@ uint64_t legs_last_cl_cmd_us(uint8_t legs);
 //   DROPPED   a live target leg_dropped_out(): every OTHER live target frozen
 //             (leg_freeze_tx, HELD); the dropped Leg is left alone;
 //   ARRIVED   every live target in the arrival band and leg_idle_permitted(now):
-//             a gated IDLE per live Leg; SENT sets its done bit and clears its
-//             HELD bit. ARRIVED only once every target is done; a refusal inside
-//             the loop keeps RUNNING and is retried next tick;
+//             a gated IDLE per live Leg (Who::ARRIVAL_RETRY); SENT sets its done
+//             bit and clears its HELD bit. ARRIVED only once every target is done;
+//             a refusal inside the loop (a frame landing between the check and
+//             the wrapper) is silent, keeps RUNNING and is retried next tick;
 //   TIMED_OUT `timed_out`: gated IDLE of the live Legs if leg_idle_permitted(now)
 //             (SENT -> done bit), else every live Leg frozen (HELD);
 //   RUNNING   otherwise.

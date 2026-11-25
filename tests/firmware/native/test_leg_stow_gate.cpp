@@ -520,3 +520,39 @@ TEST_CASE("22: the six-Leg robot past the settle stays gated; a now older than t
   cs_set_mono(T0 + 10 * SETTLE);
   CHECK_FALSE(rig_is_bench(micros64()));
 }
+
+// ── 23 ── FW 53 audit follow-up: the HELD race in the descent's arrival loop ────
+// stow_descent_step asks the predicate once at the caller's `now` (true), then each
+// Leg's IDLE through the wrapper, which asks again at micros64(). Leg 4's heartbeat
+// is fresh at `now` (410 ms) and stale at the wrapper (510 ms): every IDLE is
+// refused, silently (no HELD, no census), and the next tick IDLEs all six.
+// Mutations caught: the arrival loop back on Who::LADDER (HELD 0x3F); the silent
+// branch removed from the wrapper (census +6, HELD 0x3F).
+TEST_CASE("23: a refusal racing the arrival pre-check is silent (no HELD, no census) and retried") {
+  reset_all();
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    cs_stage_leg(i, CL, 0.0f, 0.0f, i == 4 ? 510000 : 0, 0);
+  const uint64_t now_pre = micros64() - 100000;
+  REQUIRE(platform_at_stow(now_pre).ok);
+  REQUIRE_FALSE(at_stow());
+  const float seg[NUM_LEGS] = {0, 0, 0, 0, 0, 0};
+  uint8_t done = 0;
+  CHECK(stow_descent_step(0x3F, done, seg, seg, false, now_pre) == DescentStep::RUNNING);
+  CHECK(done == 0);
+  CHECK(cs_sent_count() == 0);
+  CHECK(leg_held_mask() == 0);
+  CHECK(leg_deenergise_refusals() == 0);
+  // The wrapper's silent mode, directly: nothing on CAN, no census, no HELD.
+  CHECK(odrive_set_state_tx(2, IDLE, TxCls::OTHER, Who::ARRIVAL_RETRY) == DeResult::REFUSED);
+  CHECK(odrive_set_state_tx(2, IDLE, TxCls::OTHER, Who::LADDER) == DeResult::REFUSED);
+  CHECK(leg_deenergise_refusals() == 1);           // the LADDER one only
+  CHECK(leg_held_mask() == (uint8_t)(1u << 2));
+  leg_held_clear_all();
+  // Next tick: Leg 4's heartbeat is in, all six IDLE'd, ARRIVED.
+  cs_stage_leg(4, CL, 0.0f, 0.0f, 0, 0);
+  cs_clear_sent();
+  CHECK(stow_descent_step(0x3F, done, seg, seg, false, micros64()) == DescentStep::ARRIVED);
+  CHECK(done == 0x3F);
+  CHECK(cs_sent_count() == NUM_LEGS);
+  CHECK(leg_held_mask() == 0);
+}

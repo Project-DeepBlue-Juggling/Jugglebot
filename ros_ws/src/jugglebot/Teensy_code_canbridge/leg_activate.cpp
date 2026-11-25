@@ -41,7 +41,9 @@
 //      outcome), waiting at most CL_CONFIRM_WAIT_US while the only refusals are
 //      unconfirmed CLOSED_LOOP sends; otherwise it is refused and the Legs hold
 //      (configured ones at their measured seed), HELD;
-//    * mid-rise (MONITOR): a target Leg that disarmed itself → freeze the others
+//    * mid-rise (MONITOR): a target Leg that disarmed itself (a post-CL heartbeat
+//      not CLOSED_LOOP, or a Get_Error with an error or disarm reason, checked
+//      BEFORE the Soft E-stop that error raises) → freeze the others
 //      on [seed, target], FAILED/HELD. A Soft E-stop (Hand ODrive error, the
 //      HAND_STALL latch, overspeed), commands-not-allowed or the timeout → if
 //      Idle is already permitted (the bench, or the Legs still at rest at Stow)
@@ -312,6 +314,9 @@ static void abort_wait_step(uint64_t now) {
 // gentle cruise and decelerates into Stow. Because TRAP_ACC_LIMIT_RPS2 >=
 // TRAP_DEC_LIMIT_RPS2, the reversal apex never passes the Active target the rise
 // was already planned to stop at (logbook 2026-11-25-fw53-u3-activate-returns-to-stow).
+static_assert(ODriveDefaults::TRAP_ACC_LIMIT_RPS2 >= ODriveDefaults::TRAP_DEC_LIMIT_RPS2,
+              "RETURN apex bound: the reversal apex stays at or below the Active target "
+              "only while TRAP_ACC_LIMIT_RPS2 >= TRAP_DEC_LIMIT_RPS2");
 static void send_return_targets() {
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     const uint8_t bit = (uint8_t)(1u << i);

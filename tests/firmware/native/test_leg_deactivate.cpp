@@ -627,6 +627,33 @@ TEST_CASE("a target Leg reported IDLE mid-descent freezes the others") {
   CHECK(leg_held_mask() == 0x3B);                  // everyone but leg 2
 }
 
+// FW 53 audit follow-up (SHOULD-FIX 1): the descent continues through a Soft E-stop
+// by design, so before the fix Leg 2's Get_Error (heartbeat still CLOSED_LOOP)
+// changed nothing and the five kept descending at up to 2.5 rev/s with Leg 2 free
+// until its next heartbeat. Now they freeze in that tick: no IDLE, no new target.
+// Mutation caught: the active_errors term dropped from leg_dropped_out.
+TEST_CASE("audit: a Leg's error before its heartbeat mid-descent freezes the others in the first tick") {
+  full_reset(0x3F, ST_CL, POSED);
+  run_to_monitor(JbUdp::RpcArgs::AXIS_ALL);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) confirmed(i, ST_CL, 1.4f, -2.5f);   // all CLOSED_LOOP
+  axes[2].active_errors = 0x1000;
+  cs_set_guard_estop(true);                        // the Soft E-stop the error raised
+  cs_clear_sent();
+  deactivate_step();
+  CHECK_FALSE(deactivate_active());
+  CHECK(count_set_state() == 0);
+  CHECK(cs_sent_count() == 5);
+  for (size_t k = 0; k < cs_sent_count(); ++k) {
+    CHECK(ODrive::cmd_of(cs_sent_at(k).id) == ODriveCmd::set_input_pos);
+    CHECK(ODrive::axis_of(cs_sent_at(k).id) != 2);
+    float f; std::memcpy(&f, cs_sent_at(k).buf, 4);
+    const uint8_t ax = ODrive::axis_of(cs_sent_at(k).id);
+    CHECK(f == doctest::Approx(ODrive::leg_sign(ax, leg_freeze_target(1.4f, -2.5f, POSED, 0.0f))));
+  }
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(deactivate_result(i) == DEACTIVATE_FAILED);
+  CHECK(leg_held_mask() == 0x3B);
+}
+
 TEST_CASE("abort from an already-stowed Platform IDLEs as before") {
   full_reset(0x3F, ST_IDLE, -0.1f);                // after Homing: six IDLE on the stop
   REQUIRE(deactivate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
