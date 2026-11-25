@@ -84,6 +84,112 @@ def _legs_list(legs):
     return ', '.join(str(i) for i in legs)
 
 
+# ── The Leg IDLE rule (owner, 2026-11-25; ARMING_CONTRACT A7) ─────
+# "A Leg should never be made IDLE unless the Platform is already at the Stow
+# position. Once the Platform is at Stow, then any/all Legs can freely enter
+# IDLE." The orchestrator's IDLE state therefore means "Platform at Stow, Legs
+# Idle", and BOOT enters it only when all six Legs read Idle (A7). The bridge's
+# operator services that IDLE or move a Leg (reboot, encoder search, a manual
+# Home) refuse unless every other present Leg reads Idle (A7). Both ask the one
+# classifier below; the Hand is exempt (it is never in leg_states).
+
+def leg_idle_blockers(leg_states, exempt=()):
+    """The Legs that stop the Leg IDLE rule from passing: ``[(leg, state)]`` for
+    every Leg in ``leg_states`` that is not ODrive IDLE, in Leg order, skipping
+    the Legs in ``exempt``. ``leg_states`` maps a Leg index to its ODrive axis
+    state, or to None when that Leg's state is not known (stale, or never
+    reported): an unknown Leg blocks, because it cannot be shown to be down. A
+    sequence is read as Legs 0..n-1. A Leg absent from the mapping is not
+    present on this rig and is not consulted (the caller decides presence: the
+    orchestrator requires all six, the bridge skips a Leg its drive never
+    heartbeated). Empty list: the rule passes."""
+    items = (leg_states.items() if hasattr(leg_states, 'items')
+             else enumerate(leg_states))
+    return [(i, s) for i, s in sorted(items)
+            if i not in exempt and s != ODRIVE_AXIS_IDLE]
+
+
+# The wording that differs between the two orchestrator gates built on the one
+# predicate below (A6 Homing entry, A7 BOOT's IDLE entry).
+_HOMING_WORDS = {
+    'refused': 'Homing refused',
+    'risk': 'Homing could collapse it',
+    'starts': 'Homing starts by itself from BOOT once every Leg is Idle',
+    'starts_mixed': 'Homing starts by itself',
+    'contract': 'ARMING_CONTRACT A6',
+    'settle_s': HOMING_LEGS_IDLE_SETTLE_S,
+}
+_IDLE_WORDS = {
+    'refused': 'IDLE refused',
+    'risk': 'IDLE would claim it is at Stow',
+    'starts': 'BOOT enters IDLE by itself once every Leg is Idle',
+    'starts_mixed': 'BOOT enters IDLE by itself',
+    'contract': 'ARMING_CONTRACT A7',
+    'settle_s': 0.0,
+}
+# Prefix of the BOOT IDLE stale refusal (once-per-episode key, as A6's).
+IDLE_STALE_PREFIX = 'IDLE refused: the six Leg drive states are not known'
+
+
+def _legs_down_refusal(leg_states, idle_for_s, states_age_s, w):
+    """The one "Platform shown to be down" predicate behind A6 and A7: None if
+    the six Legs are known, fresh and Idle (for ``w['settle_s']`` when it is
+    non-zero), else the operator message in ``w``'s wording."""
+    refused, contract = w['refused'], w['contract']
+    if leg_states is None or len(leg_states) != NUM_LEGS:
+        return (f'{refused}: the six Leg drive states are not known, so the '
+                f'Platform cannot be shown to be down ({contract}). '
+                f'Waiting for a full /robot_state.')
+    if states_age_s is None or states_age_s > LEG_STATES_MAX_AGE_S:
+        age = ('no /robot_state has set them' if states_age_s is None else
+               f'the last /robot_state that carried them is {states_age_s:.1f} s '
+               f'old, stale beyond {LEG_STATES_MAX_AGE_S:.0f} s')
+        settle = ('; the Idle settle restarts when it resumes'
+                  if w['settle_s'] > 0 else '')
+        return (f'{refused}: the six Leg drive states are not known ({age}), '
+                f'so the Platform cannot be shown to be down ({contract}). '
+                f'Waiting for a fresh /robot_state{settle}.')
+    blockers = leg_idle_blockers(leg_states)
+    closed = [i for i, s in blockers if s == ODRIVE_AXIS_CLOSED_LOOP]
+    other = [(i, s) for i, s in blockers if s != ODRIVE_AXIS_CLOSED_LOOP]
+    if len(closed) == NUM_LEGS:
+        return (f'{refused}: all six Legs are Closed-loop, so the Platform '
+                f'may be held up at a pose and {w["risk"]} '
+                f'({contract}). Stow it first with the profiled '
+                f'deactivate (ros2 service call /deactivate '
+                f'std_srvs/srv/Trigger); {w["starts"]}.')
+    if closed:
+        not_closed = [i for i in range(NUM_LEGS) if i not in closed]
+        return (f'{refused}: Leg(s) {_legs_list(closed)} are Closed-loop '
+                f'but Leg(s) {_legs_list(not_closed)} are not, so the Platform '
+                f'may be held up by some Legs; {w["risk"]}, and a '
+                f'profiled stow must not drive a Leg that is not Closed-loop '
+                f'({contract}). Support the Platform and press the '
+                f'E-stop button to bring it down, restore power, then send '
+                f'clear_errors; {w["starts_mixed"]} once all six Legs have '
+                f'been Idle for {HOMING_LEGS_IDLE_SETTLE_S:.0f} s.'
+                if w['settle_s'] > 0 else
+                f'{refused}: Leg(s) {_legs_list(closed)} are Closed-loop '
+                f'but Leg(s) {_legs_list(not_closed)} are not, so the Platform '
+                f'may be held up by some Legs; {w["risk"]}, and a '
+                f'profiled stow must not drive a Leg that is not Closed-loop '
+                f'({contract}). Support the Platform and press the '
+                f'E-stop button to bring it down (the present fallback until '
+                f'FW 53), restore power, then send clear_errors; '
+                f'{w["starts_mixed"]} once all six Legs are Idle.')
+    if other:
+        named = ', '.join(f'Leg {i} state {s}' for i, s in other)
+        return (f'{refused}: {named} (neither Idle nor Closed-loop), so '
+                f'the Platform cannot be shown to be down ({contract}). '
+                f'Wait for the drive to settle Idle, or power-cycle the drives '
+                f'with the E-stop button, then send clear_errors.')
+    if w['settle_s'] > 0 and (idle_for_s is None or idle_for_s < w['settle_s']):
+        return (f'{HOMING_SETTLING_PREFIX}: all six Legs are Idle, but not yet '
+                f'for {HOMING_LEGS_IDLE_SETTLE_S:.0f} s (a dropped Platform '
+                f'comes to rest first, ARMING_CONTRACT A6).')
+    return None
+
+
 def homing_refusal(leg_states, idle_for_s, states_age_s):
     """The A6 predicate: None if Homing may start, else the operator message.
 
@@ -95,48 +201,23 @@ def homing_refusal(leg_states, idle_for_s, states_age_s):
     topic that stopped cannot show a Leg that was re-energised since).
     Every path into HOMING passes through this (StateMachine guard).
     """
-    if leg_states is None or len(leg_states) != NUM_LEGS:
-        return ('Homing refused: the six Leg drive states are not known, so the '
-                'Platform cannot be shown to be down (ARMING_CONTRACT A6). '
-                'Waiting for a full /robot_state.')
-    if states_age_s is None or states_age_s > LEG_STATES_MAX_AGE_S:
-        age = ('no /robot_state has set them' if states_age_s is None else
-               f'the last /robot_state that carried them is {states_age_s:.1f} s '
-               f'old, stale beyond {LEG_STATES_MAX_AGE_S:.0f} s')
-        return (f'{HOMING_STALE_PREFIX} ({age}), so the Platform cannot be '
-                f'shown to be down (ARMING_CONTRACT A6). Waiting for a fresh '
-                f'/robot_state; the Idle settle restarts when it resumes.')
-    closed = [i for i, s in enumerate(leg_states) if s == ODRIVE_AXIS_CLOSED_LOOP]
-    other = [(i, s) for i, s in enumerate(leg_states)
-             if s not in (ODRIVE_AXIS_IDLE, ODRIVE_AXIS_CLOSED_LOOP)]
-    if len(closed) == NUM_LEGS:
-        return ('Homing refused: all six Legs are Closed-loop, so the Platform '
-                'may be held up at a pose and Homing could collapse it '
-                '(ARMING_CONTRACT A6). Stow it first with the profiled '
-                'deactivate (ros2 service call /deactivate '
-                'std_srvs/srv/Trigger); Homing starts by itself from BOOT once '
-                'every Leg is Idle.')
-    if closed:
-        not_closed = [i for i in range(NUM_LEGS) if i not in closed]
-        return (f'Homing refused: Leg(s) {_legs_list(closed)} are Closed-loop '
-                f'but Leg(s) {_legs_list(not_closed)} are not, so the Platform '
-                f'may be held up by some Legs; Homing could collapse it, and a '
-                f'profiled stow must not drive a Leg that is not Closed-loop '
-                f'(ARMING_CONTRACT A6). Support the Platform and press the '
-                f'E-stop button to bring it down, restore power, then send '
-                f'clear_errors; Homing starts by itself once all six Legs have '
-                f'been Idle for {HOMING_LEGS_IDLE_SETTLE_S:.0f} s.')
-    if other:
-        named = ', '.join(f'Leg {i} state {s}' for i, s in other)
-        return (f'Homing refused: {named} (neither Idle nor Closed-loop), so '
-                f'the Platform cannot be shown to be down (ARMING_CONTRACT A6). '
-                f'Wait for the drive to settle Idle, or power-cycle the drives '
-                f'with the E-stop button, then send clear_errors.')
-    if idle_for_s is None or idle_for_s < HOMING_LEGS_IDLE_SETTLE_S:
-        return (f'{HOMING_SETTLING_PREFIX}: all six Legs are Idle, but not yet '
-                f'for {HOMING_LEGS_IDLE_SETTLE_S:.0f} s (a dropped Platform '
-                f'comes to rest first, ARMING_CONTRACT A6).')
-    return None
+    return _legs_down_refusal(leg_states, idle_for_s, states_age_s,
+                              _HOMING_WORDS)
+
+
+def idle_refusal(leg_states, states_age_s):
+    """The A7 predicate: None if the orchestrator may claim IDLE ("Platform at
+    Stow, Legs Idle"), else the operator message. The A6 inputs and freshness,
+    with no settle: all six Legs known, fresh and Idle. BOOT's IDLE entry and
+    ACTIVE's legs-out exit consult it."""
+    return _legs_down_refusal(leg_states, None, states_age_s, _IDLE_WORDS)
+
+
+def ctx_idle_refusal(ctx):
+    """idle_refusal on a Context's A6 inputs, aged now."""
+    age = (None if ctx.leg_states_time is None
+           else time.monotonic() - ctx.leg_states_time)
+    return idle_refusal(ctx.leg_states, age)
 
 
 # ── Context ───────────────────────────────────────────────────────
@@ -428,10 +509,14 @@ class BootHandler(StateHandler):
         self._entry_time = 0.0
         self._latch_clear_requested = False
         self._latch_clear_sent_t = 0.0
+        # A7: the IDLE refusal last notified, so a BOOT holding every tick
+        # reports once per episode (reset on entry and when it passes).
+        self._idle_refusal_said = None
 
     def on_enter(self, ctx):
         self._entry_time = time.time()
         self._latch_clear_requested = False
+        self._idle_refusal_said = None
         ctx.boot_timed_out = False
         ctx.control_mode = ''
 
@@ -491,9 +576,23 @@ class BootHandler(StateHandler):
                 return RobotState.FAULT
             return None  # clear in flight / waiting for /link_status to reflect
 
-        # Skip ahead if already homed (e.g., recovery from transient FAULT)
+        # Skip ahead if already homed (e.g., recovery from transient FAULT),
+        # but only onto a Platform shown to be at Stow (ARMING_CONTRACT A7):
+        # IDLE means "Platform at Stow, Legs Idle", and a relaunch under a
+        # posed Platform, or one Leg dropped with five holding and the homed
+        # flag kept, must not claim it. Hold BOOT and say once how to lower it.
         if ctx.is_homed:
-            return RobotState.IDLE
+            refusal = ctx_idle_refusal(ctx)
+            if refusal is None:
+                self._idle_refusal_said = None
+                return RobotState.IDLE
+            key = (IDLE_STALE_PREFIX if refusal.startswith(IDLE_STALE_PREFIX)
+                   else refusal)
+            if key != self._idle_refusal_said:
+                self._idle_refusal_said = key
+                ctx.notify(refusal)
+            return None
+        self._idle_refusal_said = None
         return RobotState.HOMING
 
 
@@ -929,9 +1028,9 @@ class ActiveHandler(StateHandler):
             ctx.notify(
                 f'legs out of closed loop for {self.LEGS_OUT_TICKS} consecutive '
                 f'ticks while ACTIVE -- the robot is not active; following it '
-                f'to IDLE')
+                f'out of ACTIVE')
             self._exit_disarm_only()
-            return RobotState.IDLE
+            return self._legs_out_target(ctx)
 
         cmd = ctx.consume_command()
         if cmd == 'deactivate':
@@ -958,6 +1057,17 @@ class ActiveHandler(StateHandler):
         # Other commands silently discarded (already logged on receipt)
 
         return None
+
+    @staticmethod
+    def _legs_out_target(ctx):
+        """Where a legs-out exit goes (ARMING_CONTRACT A7). IDLE only when all
+        six Legs read Idle now (the Platform came down); otherwise BOOT, whose
+        IDLE gate holds and tells the operator how to lower it: the legs-out
+        test is "not all six Closed-loop", which one Leg dropped with five
+        holding a tilted Platform also passes, and IDLE would claim Stow."""
+        if ctx_idle_refusal(ctx) is None:
+            return RobotState.IDLE
+        return RobotState.BOOT
 
     def _legs_out(self, ctx):
         """True once the legs have been reported OUT of closed loop for
@@ -1015,8 +1125,8 @@ class ActiveHandler(StateHandler):
                 ctx.notify(
                     f'deactivate reported failure ({self._last_reason}) but the '
                     f'legs are no longer closed-loop -- following the robot '
-                    f'to IDLE')
-                return RobotState.IDLE
+                    f'out of ACTIVE')
+                return self._legs_out_target(ctx)
             if now >= self._deact_until:
                 attempts = self._deactivate_attempts
                 self._reset_deactivate()

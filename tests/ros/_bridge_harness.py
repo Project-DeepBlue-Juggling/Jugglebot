@@ -67,7 +67,7 @@ def _poll(cond, timeout=4.0, dt=0.01):
 
 # ── Node construction / teardown ───────────────────────────────
 
-def _build_paired_node(*, boot_state_read=False):
+def _build_paired_node(*, boot_state_read=False, legs_at_stow=True):
     """Build a (FakeTeensy, client, node) triple wired on loopback.
 
     Mirrors the pairing in tests/teensy_link/conftest.py::fake_teensy_and_client
@@ -81,6 +81,13 @@ def _build_paired_node(*, boot_state_read=False):
 
     All sockets bind ephemeral ports (``0``) and the assigned port is read back,
     so the whole family is xdist-parallel-safe.
+
+    ``legs_at_stow`` (default True) stubs ``node._present_leg_states`` to six
+    Idle Legs: the Platform at Stow, the precondition the Leg IDLE rule
+    (ARMING_CONTRACT A7) puts on /reboot_odrives, /encoder_search and Homing.
+    Tests of those services' own behaviour run there; the A7 gate's tests pass
+    False and drive the real diagnostic-cache path
+    (tests/ros/test_teensy_bridge_node_leg_idle_rule.py).
     """
     from jugglebot.teensy_bridge_node import TeensyBridgeNode
 
@@ -121,6 +128,8 @@ def _build_paired_node(*, boot_state_read=False):
         return seq
 
     teensy.send_to_jetson = _send  # type: ignore[assignment]
+    if legs_at_stow:
+        node._present_leg_states = lambda: {leg: 1 for leg in range(6)}  # IDLE
     return teensy, client, node
 
 

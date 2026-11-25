@@ -1,4 +1,4 @@
-# The Arming Contract (A1–A6)
+# The Arming Contract (A1–A7)
 
 **Status: NORMATIVE.** The code enforces these invariants; changing the behaviour
 means changing this document first, then rippling the change through the
@@ -104,8 +104,15 @@ work (2026-07-15) hit three distinct doors into that hole:
   Platform is down: an Idle Leg is unpowered and free to move, so six Idle Legs
   cannot hold the Platform up. It is at Stow, either lowered there by a
   confirmed DEACTIVATE (which IDLEs each Leg on arrival) or dropped there under
-  gravity (the drive power loss of the E-stop button, a DEACTIVATE abort, which
-  IDLEs every target Leg). The settle lets a drop finish. Leg positions are not
+  gravity by the drive power loss of the E-stop button. FW 52 has one more way
+  to six Idle Legs, and it is a defect, not an accepted route to Stow: the
+  ACTIVATE and DEACTIVATE abort routines (`abort_all` in `leg_activate.cpp` and
+  `leg_deactivate.cpp`, on a guard ESTOP, a timeout, an errored target Leg or
+  the Hand, or a send failure) IDLE every target Leg wherever it is, so an
+  abort mid-rise or mid-descent drops the Platform. That violates the owner's
+  Leg IDLE rule (A7) and is to be fixed in FW 53 (hold the Legs, do not IDLE
+  them); it is not fixed today. A6 still reads its result correctly (six Idle
+  Legs are down). The settle lets a drop finish. Leg positions are not
   used: they mean nothing once a reference is lost, which is exactly when
   Homing is needed. Unknown Leg states (no /robot_state yet, or one too short
   to carry every Leg) refuse: Homing never starts on a guess.
@@ -139,14 +146,18 @@ work (2026-07-15) hit three distinct doors into that hole:
     single-Leg DEACTIVATEs run one at a time and diverge the lengths exactly as
     Homing would. The operator supports the Platform and presses the E-stop
     button (the drives lose power and the Platform comes down), then sends
-    `clear_errors` once power is back.
+    `clear_errors` once power is back. This is the present fallback, pending
+    FW 53: it brings the Platform down by a drop, not a lowering, and needs a
+    person at the Platform.
   - **A Leg in any other state** (a drive still starting, or calibrating):
     wait, or power-cycle it with the E-stop button, then `clear_errors`.
   Not covered by A6: every path that reaches a Leg HOME or ENCODER_SEARCH
-  without the StateMachine. These are NOT gated: the bridge's `/home` and
-  `/encoder_search` services typed by an operator (`ros2 service call`; the
-  production orchestrator uses the home action and its own encoder-search
-  client, both behind the StateMachine), the bench drivers that send the RPC
+  without the StateMachine. The bridge's `/home` and `/encoder_search` services
+  typed by an operator (`ros2 service call`; the production orchestrator uses
+  the home action and its own encoder-search client, both behind the
+  StateMachine) are gated at the bridge by A7 since 2026-11-25: they refuse
+  unless every other present Leg reads Idle (no settle). Still NOT gated: the
+  bench drivers that send the RPC
   straight over UDP (`tests/hardware/teensy_home_bench.py`,
   `tests/hardware/bench_leg_sysid.py`, `tests/hardware/teensy_encoder_search_bench.py`,
   all through the `teensy_link/homing.py` and `encoder_search.py` libraries),
@@ -171,6 +182,50 @@ work (2026-07-15) hit three distinct doors into that hole:
   Platform, a Hand-only reference loss). If it IS refused (ERR_BUS_DOWN from a
   latched guard), `clear_errors` first; the E-stop button stays the fallback.
   Test: `tests/ros/test_teensy_bridge_node_deactivate.py::test_deactivate_is_not_gated_on_the_homed_flag`.
+- **A7 — A Leg is made Idle only from a Platform at Stow, and IDLE means at
+  Stow** (owner, 2026-11-25: "A Leg should never be made IDLE unless the
+  Platform is already at the Stow position. Once the Platform is at Stow, then
+  any/all Legs can freely enter IDLE." The Hand is exempt.) A6 is its
+  companion for Homing. The host enforces it at two points that share one
+  classifier, `state_machine.leg_idle_blockers` (the Legs not reading Idle,
+  an unknown Leg counting as not Idle):
+  - **The orchestrator's IDLE state means "Platform at Stow, Legs Idle".**
+    BOOT enters IDLE (the homed skip) only when `idle_refusal` passes: all six
+    Legs known, fresh (A6's `LEG_STATES_MAX_AGE_S`) and Idle, with no settle.
+    Otherwise BOOT holds and raises one notice per episode: all six
+    Closed-loop (a relaunch under a posed Platform) names the profiled Stow,
+    `/deactivate`; a mixed case (one Leg dropped, five holding, homed flag
+    kept) gets A6's mixed-case text with the E-stop button as the fallback
+    pending FW 53; unknown or other states say to wait. BOOT then enters IDLE
+    by itself once the Legs are Idle. ACTIVE's legs-out exits (the Legs out of
+    Closed-loop for `LEGS_OUT_TICKS`, and the deactivate reconcile window) go
+    to IDLE only when the same predicate passes, otherwise to BOOT, whose gate
+    then holds. The other IDLE entries are already confirmed Idle by the
+    bridge: a confirmed DEACTIVATE (ACTIVE) and `level_deactivate` (LEVELLING)
+    succeed only after the DeactivateMonitor has seen every Leg IDLE at Stow;
+    HOMING reaches IDLE after each Leg was IDLEd at its stop by the firmware,
+    behind A6; FAULT never enters IDLE directly (it exits to BOOT, or to
+    ACTIVE when guard-only).
+  - **The bridge's operator services refuse a Leg unless the bridge's own
+    fresh Leg states show every present Leg Idle:** `/reboot_odrives` and
+    `odrive_command reboot_odrives` (both through `_reboot_odrives`; a reboot
+    IDLEs every drive), `/encoder_search` when `encoder_search_axes` names a
+    Leg, and `_do_home` (the manual `/home` and the orchestrator's
+    `home_motors`; a Home of ONE Leg needs only every other present Leg Idle).
+    The inputs are `TeensyBridgeNode._present_leg_states`, read from the
+    DIAGNOSTIC cache: a Leg is present once its drive has heartbeated this
+    can-bridge boot (flags `HB_SEEN`, so a one-Leg bench rig consults one Leg),
+    and a present Leg is unknown, and refuses, when its DIAGNOSTIC is missing,
+    older than 3 s (they arrive on change and at a forced 1 Hz) or flagged
+    `HB_STALE`. The orchestrator's Homing passes, behind A6. Hand-only
+    requests are exempt.
+  - **Not covered (firmware, FW 53):** the can-bridge itself has no Leg IDLE
+    check. The ACTIVATE and DEACTIVATE aborts (see A6), the deferred fault stow
+    that IDLEs on commanded rather than measured arrival, a single-Leg
+    DEACTIVATE, and the RPC passthroughs (SET_AXIS_STATE to IDLE on a Leg,
+    allowed even while Armed; REBOOT_ODRIVES) reached by any UDP client,
+    including the bench drivers. Until FW 53 these remain violations of the
+    rule.
 
 ## Enforcement points
 
@@ -182,6 +237,7 @@ work (2026-07-15) hit three distinct doors into that hole:
 | A4 | `state_machine.py` `ActiveHandler.on_exit` (no blank) + `IdleHandler` deferred blank | mode-survives-deactivate ordering test |
 | A5 | `trajectory_node.py` wire-state WARN + response suffix + `is_homed` seed gate; `teensy_bridge_node.py` `teensy_mpc_active` KeyValue; `state_machine.py` `BootHandler` latch pre-flight | disarmed-accept, seed-gate, pre-flight tests |
 | A6 | `state_machine.py` `homing_refusal` (the predicate) checked by `StateMachine._homing_entry_refused` on every transition into HOMING; `orchestrator_node.py` the `leg_states` / `legs_idle_since` / `leg_states_time` derivation in `_on_robot_state` | `tests/ros/test_state_machine.py::TestHomingGate`; `tests/ros/test_orchestrator_node.py::TestHomingGateThroughTick` |
+| A7 | `state_machine.py` `leg_idle_blockers` (the shared classifier) and `idle_refusal`, checked by `BootHandler.execute` (the homed skip to IDLE) and `ActiveHandler._legs_out_target`; `teensy_bridge_node.py` `_leg_idle_rule_refusal` over `_present_leg_states`, called by `_reboot_odrives`, `_svc_encoder_search` and `_do_home` | `tests/ros/test_state_machine.py::TestBootIdleGate`; `tests/ros/test_state_machine_deactivate_confirm.py::test_legs_out_with_legs_not_all_idle_goes_to_boot_not_idle`; `tests/ros/test_teensy_bridge_node_leg_idle_rule.py` |
 
 ## The choreography (one cycle, walked at the control-system level)
 
@@ -277,7 +333,9 @@ work (2026-07-15) hit three distinct doors into that hole:
    BOOT→HOMING's job). BOOT reaches HOMING only through A6 (2026-11-25): a
    BOOT whose robot is not homed while any Leg is still Closed-loop (the
    mixed case of one Leg lost during ACTIVE) holds in BOOT with the A6 notice
-   instead of homing under the posed Platform. The guard-only classification is unchanged: only a
+   instead of homing under the posed Platform, and a homed BOOT reaches IDLE
+   only through A7: with any Leg not Idle it holds with the A7 notice instead
+   of claiming a Stow it cannot show. The guard-only classification is unchanged: only a
    latch from ACTIVE with the wire armed is guard-only (LEVELLING never arms
    the wire, so a guard latch there is always a real fault). The
    mode stays `ERROR` through this stow. A4 does not apply: the wire was disarmed at FAULT entry (A2), and A3

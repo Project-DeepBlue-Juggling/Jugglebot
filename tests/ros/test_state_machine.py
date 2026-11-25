@@ -330,6 +330,7 @@ class TestBootHandler:
         ctx.firmware_validated = True
         ctx.link_status_seen = True
         ctx.is_homed = True
+        _legs(ctx, [_IDLE] * 6)                      # A7: at Stow, Legs Idle
         assert handler.execute(ctx) == RobotState.IDLE
 
     # ── ARMING_CONTRACT A5: BOOT stale-latch pre-flight ─────────
@@ -1412,6 +1413,7 @@ class TestFaultExitStow:
             assert _dispatch(ctx) == []              # no second request
         _resolve(ctx, True)
         ctx.legs_closed_loop = False                 # legs IDLE at STOW
+        _legs(ctx, [_IDLE] * 6)                      # A7: BOOT may claim IDLE
         sm.tick(ctx)
         assert sm.state == RobotState.BOOT
         assert _dispatch(ctx) == []
@@ -1572,6 +1574,7 @@ class TestFaultExitStowFromLevelling:
 
     @staticmethod
     def _boot_to_idle(sm, ctx):
+        _legs(ctx, [_IDLE] * 6)        # the stow left all six Legs Idle (A7)
         ctx.all_heartbeats = True
         ctx.firmware_validated = True
         ctx.link_status_seen = True
@@ -1603,6 +1606,7 @@ class TestFaultExitStowFromLevelling:
             assert _dispatch(ctx) == []              # no second request
         _resolve(ctx, True)
         ctx.legs_closed_loop = False                 # legs IDLE at STOW
+        _legs(ctx, [_IDLE] * 6)                      # A7: BOOT may claim IDLE
         sm.tick(ctx)
         assert sm.state == RobotState.BOOT
         assert _dispatch(ctx) == []
@@ -2041,9 +2045,10 @@ class TestHomingGate:
         ctx.notify = notes.append
         _boot_ready(ctx)
         ctx.is_homed = True                         # relaunch, flag survived
-        _legs(ctx, [_CL] * 6)
+        _legs(ctx, [_IDLE] * 6)                     # A7: BOOT claims IDLE at Stow
         sm.tick(ctx)
         assert sm.state == RobotState.IDLE          # unchanged (not homing)
+        _legs(ctx, [_CL] * 6)                       # a manual /activate in IDLE
         for n in (1, 2):
             ctx.enqueue_command('home')
             sm.tick(ctx)
@@ -2212,11 +2217,12 @@ class TestHomingGateAndLevelledActivateCompose:
         ctx.notify = notes.append
         _boot_ready(ctx)
         ctx.is_homed = True                          # BOOT -> IDLE with no Homing
-        _legs(ctx, [_CL] * 6)
+        _legs(ctx, [_IDLE] * 6)                      # A7: BOOT claims IDLE at Stow
         ctx.gravity_correction_loaded = False        # a fresh status, nothing loaded
         ctx.traj_status_age_s = 0.1
         sm.tick(ctx)
         assert sm.state == RobotState.IDLE
+        _legs(ctx, [_CL] * 6)                        # a manual /activate in IDLE
 
         # (a) Legs Closed-loop, no correction: `home` refused by A6 alone ...
         ctx.enqueue_command('home')
@@ -2272,3 +2278,112 @@ class TestHomingGateAndLevelledActivateCompose:
         sm.tick(ctx)
         assert sm.state == RobotState.ACTIVE
         assert len(notes) == 4
+
+
+class TestBootIdleGate:
+    """ARMING_CONTRACT A7 (owner rule 2026-11-25): IDLE means "Platform at
+    Stow, Legs Idle", so BOOT enters it only when all six Legs are known,
+    fresh and Idle. Each test fails if BootHandler's `if ctx.is_homed:` branch
+    returns IDLE unconditionally (the pre-A7 code)."""
+
+    @staticmethod
+    def _homed_boot(states):
+        notes = []
+        sm = build_default_machine(log_fn=lambda msg: None)
+        ctx = Context()
+        ctx.notify = notes.append
+        _boot_ready(ctx)
+        ctx.is_homed = True                       # the flag survived
+        if states is not None:
+            _legs(ctx, states)
+        return sm, ctx, notes
+
+    def test_relaunch_under_a_posed_platform_holds_boot_and_names_deactivate(self):
+        sm, ctx, notes = self._homed_boot([_CL] * 6)
+        for _ in range(4):
+            sm.tick(ctx)
+            assert sm.state == RobotState.BOOT
+            assert _requests_moving_legs(ctx.drain_requests()) == []
+        assert len(notes) == 1                    # once per episode
+        assert notes[0].startswith('IDLE refused: all six Legs are Closed-loop')
+        assert '/deactivate' in notes[0] and 'A7' in notes[0]
+        _legs(ctx, [_IDLE] * 6)                   # the operator's profiled Stow
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
+        assert len(notes) == 1
+
+    def test_one_leg_dropped_five_holding_holds_boot_with_the_fallback(self):
+        sm, ctx, notes = self._homed_boot([_IDLE] + [_CL] * 5)
+        sm.tick(ctx)
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+        assert len(notes) == 1
+        assert 'Leg(s) 1, 2, 3, 4, 5 are Closed-loop' in notes[0]
+        assert 'E-stop button' in notes[0] and 'FW 53' in notes[0]
+
+    @pytest.mark.parametrize('states,age', [
+        (None, 0.0),                                   # never reported
+        ([_IDLE] * 5, 0.0),                            # too short
+        ([_IDLE] * 6, 5.0),                            # stale /robot_state
+        ([0] + [_IDLE] * 5, 0.0),                      # a Leg UNDEFINED
+    ])
+    def test_unknown_or_not_idle_legs_hold_boot(self, states, age):
+        sm, ctx, notes = self._homed_boot(None)
+        if states is not None:
+            ctx.leg_states = tuple(states)
+            ctx.leg_states_time = time.monotonic() - age
+        sm.tick(ctx)
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+        assert len(notes) == 1 and notes[0].startswith('IDLE refused')
+
+    def test_relaunch_at_stow_enters_idle_with_no_notice(self):
+        sm, ctx, notes = self._homed_boot([_IDLE] * 6)
+        ctx.legs_idle_since = time.monotonic()   # no settle needed for IDLE
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
+        assert notes == []
+
+    def test_fault_exit_with_posed_legs_from_idle_does_not_claim_idle(self):
+        """A FAULT visit that began outside ACTIVE/LEVELLING skips the exit
+        stow and goes to BOOT; with all six Legs still Closed-loop (a manual
+        /activate in IDLE) BOOT now holds instead of claiming IDLE."""
+        sm, ctx, notes = self._homed_boot([_IDLE] * 6)
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
+        _legs(ctx, [_CL] * 6)
+        ctx.legs_closed_loop = True
+        sm.force_transition(RobotState.FAULT, ctx)
+        ctx.errors = []
+        for _ in range(3):
+            sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+        assert 'deactivate' not in ctx.drain_requests()
+        assert any(n.startswith('IDLE refused: all six') for n in notes)
+
+    def test_predicate_rows(self):
+        from jugglebot.state_machine import (
+            idle_refusal, leg_idle_blockers, IDLE_STALE_PREFIX)
+        assert idle_refusal([_IDLE] * 6, 0.0) is None
+        assert idle_refusal([_IDLE] * 6, 5.0).startswith(IDLE_STALE_PREFIX)
+        assert idle_refusal([_IDLE] * 6, None).startswith(IDLE_STALE_PREFIX)
+        assert 'not known' in idle_refusal(None, 0.0)
+        # the shared classifier: a mapping of present Legs, None = unknown
+        assert leg_idle_blockers({0: _IDLE, 3: _IDLE}) == []
+        assert leg_idle_blockers({0: _CL, 3: _IDLE}) == [(0, _CL)]
+        assert leg_idle_blockers({0: _CL, 3: _IDLE}, exempt={0}) == []
+        assert leg_idle_blockers({2: None}) == [(2, None)]
+        assert leg_idle_blockers([_IDLE, _CL]) == [(1, _CL)]
+
+    def test_homing_wording_is_unchanged_by_the_shared_predicate(self):
+        from jugglebot.state_machine import homing_refusal
+        assert homing_refusal([_CL] * 6, None, 0.0) == (
+            'Homing refused: all six Legs are Closed-loop, so the Platform '
+            'may be held up at a pose and Homing could collapse it '
+            '(ARMING_CONTRACT A6). Stow it first with the profiled '
+            'deactivate (ros2 service call /deactivate '
+            'std_srvs/srv/Trigger); Homing starts by itself from BOOT once '
+            'every Leg is Idle.')
+        assert homing_refusal([_IDLE] + [_CL] * 5, None, 0.0).endswith(
+            'clear_errors; Homing starts by itself once all six Legs have '
+            'been Idle for 2 s.')

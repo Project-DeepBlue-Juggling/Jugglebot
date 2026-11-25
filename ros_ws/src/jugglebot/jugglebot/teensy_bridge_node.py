@@ -135,6 +135,7 @@ from teensy_link.gap_monitor import (
 from teensy_link.hand_feedback_watch import HandFeedbackWatch
 from jugglebot import platform_imu_gate as _imu_gate
 from jugglebot.reference_loss import ReferenceLossWatch
+from jugglebot.state_machine import leg_idle_blockers
 from teensy_link.platform_imu import (PlatformImuService, UploadConfig as _ImuUploadConfig,
                                       format_upload_end as _imu_format_upload_end,
                                       read_gap_check as _imu_read_gap_check,
@@ -5558,6 +5559,57 @@ class TeensyBridgeNode(Node):
                 f'gain, mode, state (other than IDLE), absolute-position and SDO writes and ODrive '
                 f'reboots under a live stream. Disarm first (/set_setpoint_output false), then retry.')
 
+    def _present_leg_states(self) -> dict:
+        """The Leg IDLE rule's inputs from this bridge's own diagnostic cache
+        (ARMING_CONTRACT A7): ``{leg: axis_state or None}`` for every PRESENT
+        Leg. A Leg is present once its drive has heartbeated this can-bridge
+        boot (DIAGNOSTIC flags HB_SEEN); a Leg never seen (a one-Leg bench rig's
+        other five) is left out. A present Leg reads None, unknown, when its
+        DIAGNOSTIC is missing or older than _DIAG_NARRATE_FRESH_S (they arrive
+        on change and at a forced 1 Hz per axis) or its drive heartbeat is stale
+        (flags HB_STALE). No DIAGNOSTIC at all for a Leg also reads None: the
+        firmware sends one per axis at 1 Hz, present or not, so silence is not
+        absence."""
+        with self._lock:
+            diag = dict(self._latest_diag)
+            diag_mono = dict(self._latest_diag_mono)
+        now = time.monotonic()
+        out = {}
+        for leg in range(p.NUM_LEGS):
+            d = diag.get(leg)
+            if d is None or now - diag_mono.get(leg, 0.0) > _DIAG_NARRATE_FRESH_S:
+                out[leg] = None
+                continue
+            flags = int(d.flags)
+            if not flags & _DIAG_FLAG_HB_SEEN:
+                continue                                   # not on this rig
+            out[leg] = None if flags & _DIAG_FLAG_HB_STALE else int(d.axis_state)
+        return out
+
+    def _leg_idle_rule_refusal(self, what: str, axes, *, exempt_target=False):
+        """The owner's Leg IDLE rule (2026-11-25, ARMING_CONTRACT A7) for an
+        operator service that IDLEs, reboots or moves the Legs in ``axes``:
+        None when allowed, else the refusal. Allowed only when every present Leg
+        reads Idle on fresh state (``exempt_target``: a Home of ONE Leg, which
+        may itself be held, needs only every OTHER present Leg Idle). Hand-only
+        requests are exempt. The classifier is state_machine.leg_idle_blockers,
+        the one the orchestrator's BOOT gate uses."""
+        legs = sorted({int(a) for a in axes if 0 <= int(a) < p.NUM_LEGS})
+        if not legs:
+            return None
+        exempt = set(legs) if (exempt_target and len(legs) == 1) else set()
+        blockers = leg_idle_blockers(self._present_leg_states(), exempt)
+        if not blockers:
+            return None
+        named = ', '.join(
+            f'Leg {i} {"state unknown" if s is None else f"state {s}"}'
+            for i, s in blockers)
+        return (f'{what} REFUSED: {named} (not Idle), so the Platform cannot be '
+                f'shown to be at Stow, and a Leg must never be made Idle or moved '
+                f'alone while others may hold it up (ARMING_CONTRACT A7). Stow it '
+                f'first with the profiled deactivate (ros2 service call '
+                f'/deactivate std_srvs/srv/Trigger), then retry.')
+
     def _wait_wire_disarmed(self, timeout_s: float = 1.0) -> bool:
         """Wait until the FIRMWARE confirms disarmed (HeartbeatT2J bit3 drops).
 
@@ -10094,6 +10146,10 @@ class TeensyBridgeNode(Node):
         refusal = self._armed_refusal('reboot_odrives')
         if refusal is not None:
             return False, refusal
+        # A7: a reboot IDLEs every drive, the Legs included (AXIS_ALL).
+        refusal = self._leg_idle_rule_refusal('reboot_odrives', range(p.NUM_LEGS))
+        if refusal is not None:
+            return False, refusal
         ok, msg, _ = self.teensy_reboot()
         # Step 2: clear is_homed/levelling/pose together. Unconditional on the
         # reboot result (parity with can_node, which always cleared) — clearing is
@@ -10174,6 +10230,13 @@ class TeensyBridgeNode(Node):
         # ENCODER_SEARCH RPC remains stubbed). Scope via the encoder_search_axes
         # parameter (default all legs; [0] for the standalone-leg bench rig).
         axes = list(self.get_parameter('encoder_search_axes').value or [])
+        # A7: an index search takes each Leg out of Closed-loop and turns it.
+        # The orchestrator's HOMING reaches here behind A6 (six Legs Idle).
+        refusal = self._leg_idle_rule_refusal('encoder_search', axes)
+        if refusal is not None:
+            res.success = False
+            res.message = refusal
+            return res
         ok, msg = self._run_encoder_search(axes)
         if ok:
             # Cold-start state: track the in-session search-done bit so the DERIVED
@@ -10226,6 +10289,14 @@ class TeensyBridgeNode(Node):
                 # answered by its result; one seen DURING it stays owed.
                 ref_loss_seq_at_start = self._ref_loss.seq
             axes = list(self.get_parameter('home_axes').value or [])
+            # A7: Homing retracts each Leg to its stop and IDLEs it there, so
+            # every other present Leg must already be Idle. The orchestrator's
+            # home_motors reaches here behind A6; a manual /home did not.
+            # Refused before _write_is_homed: a refusal homes nothing and must
+            # not clear the flag either.
+            refusal = self._leg_idle_rule_refusal('home', axes, exempt_target=True)
+            if refusal is not None:
+                return False, refusal
             ok, msg = self._run_home(axes)
             w_ok, w_msg = self._write_is_homed(ok)
             if w_ok:

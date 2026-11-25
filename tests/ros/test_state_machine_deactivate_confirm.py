@@ -40,6 +40,15 @@ class _Clock:
         return self.t
 
 
+_IDLE, _CL = 1, 8          # ODrive AxisState IDLE / CLOSED_LOOP
+
+
+def _leg_states(ctx, clock, states):
+    """Set the A6/A7 inputs as the orchestrator's /robot_state handler does."""
+    ctx.leg_states = tuple(states)
+    ctx.leg_states_time = clock.t
+
+
 @pytest.fixture
 def clock(monkeypatch):
     c = _Clock()
@@ -217,14 +226,16 @@ def test_failure_then_legs_leave_closed_loop_inside_window_follows_robot(clock):
     sm.tick(ctx)
     assert sm.state == RobotState.ACTIVE
     ctx.legs_closed_loop = False
+    _leg_states(ctx, clock, [_IDLE] * 6)      # all six came down (A7)
     for _ in range(ActiveHandler.LEGS_OUT_TICKS - 1):
         clock.t += 0.05
         sm.tick(ctx)
         assert sm.state == RobotState.ACTIVE
     clock.t += 0.05
+    ctx.leg_states_time = clock.t
     sm.tick(ctx)
     assert sm.state == RobotState.IDLE
-    assert 'following the robot to IDLE' in _notices(ctx)
+    assert 'following the robot out of ACTIVE' in _notices(ctx)
     # Second audit: disarm + Hand IDLE only, never a second leg DEACTIVATE.
     assert ctx.drain_requests() == ['disarm_and_idle_hand']
 
@@ -273,6 +284,7 @@ def test_active_wide_legs_out_rule(clock):
     ctx.legs_closed_loop = True               # single-sample glitch
     sm.tick(ctx)
     ctx.legs_closed_loop = False
+    _leg_states(ctx, clock, [_IDLE] * 6)      # all six came down (A7)
     for _ in range(ActiveHandler.LEGS_OUT_TICKS - 1):
         sm.tick(ctx)
         assert sm.state == RobotState.ACTIVE
@@ -458,3 +470,47 @@ def test_orchestrator_dispatches_disarm_and_hand_idle_without_a_leg_command():
     assert calls[0][1].data is False
     assert calls[1][1].data == 'IDLE'
     assert orch._pending_future is None       # fire-and-forget, not tracked
+
+
+# ── ARMING_CONTRACT A7: a legs-out exit claims IDLE only at Stow ──────────
+
+@pytest.mark.parametrize('states', [
+    [_IDLE] + [_CL] * 5,          # one Leg dropped, five holding a tilted Platform
+    [3] + [_IDLE] * 5,            # a Leg neither Idle nor Closed-loop
+])
+def test_legs_out_with_legs_not_all_idle_goes_to_boot_not_idle(clock, states):
+    """The legs-out test is "not all six Closed-loop", which the mixed case
+    passes too. IDLE would claim "Platform at Stow"; the exit goes to BOOT,
+    whose A7 gate holds and posts the remedy once. Without
+    ActiveHandler._legs_out_target this lands in IDLE."""
+    sm, ctx = _armed_machine()
+    ctx.is_homed = True
+    ctx.all_heartbeats = True
+    ctx.firmware_validated = True
+    ctx.legs_closed_loop = False
+    for _ in range(ActiveHandler.LEGS_OUT_TICKS):
+        _leg_states(ctx, clock, states)
+        sm.tick(ctx)
+    assert sm.state == RobotState.BOOT
+    assert ctx.drain_requests() == ['disarm_and_idle_hand']
+    for _ in range(3):                         # BOOT holds; one notice
+        _leg_states(ctx, clock, states)
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+    refusals = [n for n in ctx.operator_notices if n.startswith('IDLE refused')]
+    assert len(refusals) == 1
+    _leg_states(ctx, clock, [_IDLE] * 6)       # the Platform is brought down
+    sm.tick(ctx)
+    assert sm.state == RobotState.IDLE
+
+
+def test_legs_out_with_stale_leg_states_goes_to_boot(clock):
+    """Unknown is not Idle: a /robot_state older than LEG_STATES_MAX_AGE_S
+    cannot show the Platform down."""
+    sm, ctx = _armed_machine()
+    ctx.legs_closed_loop = False
+    _leg_states(ctx, clock, [_IDLE] * 6)
+    clock.t += smod.LEG_STATES_MAX_AGE_S + 0.5
+    for _ in range(ActiveHandler.LEGS_OUT_TICKS):
+        sm.tick(ctx)
+    assert sm.state == RobotState.BOOT
