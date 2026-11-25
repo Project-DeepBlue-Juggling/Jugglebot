@@ -2,9 +2,9 @@
 id: TKT-97
 kind: ticket
 title: 'FEAT-65 held: the replay misses your Apex gate; shrinkage on x and y only, add a leaky term, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-26'
-updated: '2026-11-25T17:40:34Z'
+updated: '2026-11-25T21:19:05Z'
 owners: []
 priority: medium
 effort: xs
@@ -41,3 +41,7 @@ The night's audit also left four behaviour-affecting findings open on the branch
 1 or 2: the next night builds the variant on the held branch, replays it against your gate, and holds it for the day Session you asked for. 3: a day Session merges it after its own live-Memory replay. 4: the branch is left for you to delete and FEAT-65 goes back to open.
 
 Recommendation: 1, because x and y gain the quiet command at no cost while Apex keeps the law that tracks its slow drift.
+
+## Answer
+
+I agree with your recommendation; go with option 1
