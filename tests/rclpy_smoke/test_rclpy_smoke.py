@@ -166,7 +166,11 @@ def _fake_peer(answer_home=False, unpowered=False):
     """Loopback can-bridge stand-in (the shared FakeTeensy), ephemeral ports.
 
     Silent by default (every RPC times out). With answer_home it ACKs HOME like the
-    firmware does, which puts the bridge's homing loop into its monitor phase.
+    firmware does, which puts the bridge's homing loop into its monitor phase, and
+    once the bridge has spoken it pumps a DIAGNOSTIC per Leg at 5 Hz (HB_SEEN, axis
+    state Idle) so the host Leg IDLE rule (ARMING_CONTRACT A7, 2026-11-25) sees six
+    fresh Idle Legs and lets the Home start (BUG-145: without them every Leg reads
+    unknown and /home_motors is refused before Homing begins).
     With unpowered=True it behaves like the robot with the motor supply off (BUG-47,
     BUG-129 series 2026-11-25): every RPC is answered ERR_REJECTED, and once the
     bridge has spoken it pumps HEARTBEAT_T2J frames with fault_state=ODRIVE_FATAL
@@ -188,17 +192,41 @@ def _fake_peer(answer_home=False, unpowered=False):
         peer.on_rpc(int(p.RpcMethod.SET_AXIS_STATE), _record('SET_AXIS_STATE'))
         peer.on_rpc(int(p.RpcMethod.STATE_WRITE), _record('STATE_WRITE'))
     stop = threading.Event()
+
+    def _learn_jetson_addr():
+        while not stop.is_set():
+            got = peer.received()
+            if got:
+                peer.set_jetson_addr(got[0].from_addr)
+                return True
+            time.sleep(0.05)
+        return False
+
+    if answer_home:
+        idle = 1        # ODrive AXIS_STATE_IDLE
+        hb_seen = 0x2   # DIAGNOSTIC flags bit 1, teensy_bridge_node._DIAG_FLAG_HB_SEEN
+
+        def _pump_leg_diagnostics():
+            if not _learn_jetson_addr():
+                return
+            while not stop.is_set():
+                try:
+                    for leg in range(p.NUM_LEGS):
+                        peer.send_to_jetson(int(p.MsgType.DIAGNOSTIC), p.Diagnostic(
+                            axis_id=leg, axis_state=idle, active_errors=0,
+                            flags=hb_seen).pack())
+                except OSError:
+                    pass
+                time.sleep(0.2)
+
+        threading.Thread(target=_pump_leg_diagnostics, daemon=True).start()
     if unpowered:
         for m in p.RpcMethod:
             peer.on_rpc(int(m), lambda _rid, _args: (int(p.RpcStatus.ERR_REJECTED), b''))
 
         def _pump():
-            while not stop.is_set():
-                got = peer.received()
-                if got:
-                    peer.set_jetson_addr(got[0].from_addr)
-                    break
-                time.sleep(0.05)
+            if not _learn_jetson_addr():
+                return
             while not stop.is_set():
                 try:
                     peer.send_heartbeat_t2j(fault_state=int(p.FaultState.ODRIVE_FATAL))
