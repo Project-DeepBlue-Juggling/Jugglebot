@@ -2,15 +2,16 @@
 id: BUG-138
 kind: bug
 title: Plant model pools carried and from-rest rows, so oval rows move the Columns offset
-status: inbox
+status: in_progress
 created: '2026-11-24'
-updated: '2026-11-24T16:53:10Z'
-owners: []
+updated: '2026-11-25T17:40:23Z'
+owners:
+- night-shift
 priority: medium
 effort: m
 hardware: none
-owner: decision
-radius: subsystem
+owner: none
+radius: normative
 diagnosis: hypothesis
 area: learner
 blocked_by: []
@@ -53,3 +54,7 @@ Night Shift 2026-11-25 drafted these; TKT-93 carries them and its answer re-open
 4. Defer to E7: Memories are siloed per plant, so no live Columns Memory holds oval rows yet.
 
 Recommendation: 3, since K held across Sittings and Sites while the oval's lateral fit differs in slope too.
+
+## Progress
+
+- 2026-11-26: Night Shift 2026-11-26: held on night-shift/2026-11-26-BUG-138: TKT-93 option 3 built (K shared, lateral law per release kind, I-LEARN-1 amended); unblocked by a day Session (2 audit findings, full gate, sim gate, merge) then a rehearsal
