@@ -3012,40 +3012,200 @@ TEST_CASE("PIN (BUG-99 row 2): a 1 ms wall-offset slew mid-stream is promoted as
 // restarts at the frame's u0 at the arrival instant, though u0 is the knot for
 // its stamp (here 24 ms later, emit lead 1). The Hand command steps by about
 // v x lead. FW 50 adds only the console count (xfer=) of the transition.
-TEST_CASE("PIN (BUG-99 row 1): a mid-stream scheduled -> legacy demotion steps the Hand command by about v x frame lead") {
+// FW 52 (BUG-99 D3) FLIPS the FW 50 row-1 PIN. FW 49-51 demoted every HAS_SCHED
+// frame to legacy arrival playback once time_synced() fell, stepping the Hand by
+// about v x frame lead (FW 50 measured -1.712 rev at -71.6 rev/s). Now a stream
+// whose scheduled group is active keeps mapping stamps with the HELD offset (up
+// to TIME_OFFSET_HOLD_MAX_US since the last anchor): no demotion, no step.
+// The D3 thresholds, DERIVED (2026-11-25, fw52-verify; they replace the first
+// draft's reasoned 0.2 rev). What D3 must guarantee is that the Hand command stays
+// C1 through a sync loss, its stop, and a refused entry: no position step. For a C1
+// command with |v| <= V and |a| <= A, sampled every dt = INTERP_PERIOD_US:
+//   first difference   |p[n] - p[n-1]|                <= V dt
+//   second difference  |p[n] - 2 p[n-1] + p[n-2]|      <= A dt^2
+// The plan (make_c2_plan(1500, 12, ...)) has |a| <= 1500 rev/s^2 and
+// |v| <= 1500 x 12 x 0.025 / (2 pi) = 71.62 rev/s, and the stamped Hermite replays
+// it exactly (C2 knots), so on PLAY: V dt = 0.1432 rev, A dt^2 = 0.0060 rev. The
+// grace continues the last cubic (|a| grows at the plan's jerk, 1500 x 2 pi / 0.3 s
+// = 31.4e3 rev/s^3, by < 0.7e3 over the 20 ms grace) and the C2 stop is bounded by
+// SCHED_STOP_ACCEL_HAND_RPS2 (4500): A = 4500 covers every phase, A dt^2 = 0.018 rev.
+// The FW 51 demotion step this replaces was v x 24 ms = 1.71 rev (FW 50 PIN). A float
+// allowance of 1e-4 rev covers float32 rounding of positions of a few rev (ulp ~5e-7).
+static constexpr float kFw52Dt     = INTERP_PERIOD_US * 1e-6f;
+static constexpr float kFw52Eps    = 1e-4f;
+static float fw52_plan_vmax(const C2Plan& P) { float m = 0; for (int k = 0; k < 64; ++k) m = std::max(m, (float)std::fabs(P.v[k])); return m; }
+static float fw52_plan_amax(const C2Plan& P) { float m = 0; for (int k = 0; k < 64; ++k) m = std::max(m, (float)std::fabs(P.a[k])); return m; }
+
+struct Fw52Steps {   // per-tick first and second differences of the Hand command
+  float prev = 0, prev2 = 0; int n = 0; float d1 = 0, d2 = 0;
+  void add(float p) {
+    if (n >= 1) d1 = std::max(d1, std::fabs(p - prev));
+    if (n >= 2) d2 = std::max(d2, std::fabs(p - 2.0f * prev + prev2));
+    prev2 = prev; prev = p; ++n;
+  }
+};
+
+// Sample the Hand command only once the lane is live (before the first HAS_HAND
+// frame the target is the reset 0.0, not a command).
+static void fw52_sample(Fw52Steps& st) { if (interp_hand_lane_active()) st.add(axes[HAND_AXIS].target_pos_rev); }
+
+static Fw52Steps fw52_after_sync_loss(uint64_t anchor_age_us, uint64_t run_to_knot, uint32_t& dem_delta,
+                                      uint32_t& held_delta, uint32_t& fut_delta, uint8_t& hand_phase_end,
+                                      float& vmax, float& amax) {
+  reset_interp_test();
+  seed_hand_encoder();
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  vmax = fw52_plan_vmax(P); amax = fw52_plan_amax(P);
+  const uint64_t t0 = 1'100'000;
+  write_pos_vel(hand_axis(), (float)P.p[0], 0.0f, fake_mono_us());
+  interp_set_output_enabled(true);
+  SchedRun r;
+  for (int k = 0; k < 40; ++k) r.ev.push_back({t0 + (uint64_t)k * 25'000u - 24'000u, k});
+  Fw52Steps st;
+  sched_ticks(r, P, t0, t0 + 12u * 25'000u, [&](uint64_t) { fw52_sample(st); });
+  REQUIRE(interp_sched_phase(1) == 1);
+  fake_set_time_synced(false);
+  fake_set_anchor_age_us(anchor_age_us);
+  const uint32_t dem0 = interp_sched_demoted(), held0 = interp_sched_held_offset(),
+                 fut0 = interp_sched_future_drops();
+  sched_ticks(r, P, t0, t0 + run_to_knot * 25'000u, [&](uint64_t) { fw52_sample(st); });
+  dem_delta = interp_sched_demoted() - dem0;
+  held_delta = interp_sched_held_offset() - held0;
+  fut_delta = interp_sched_future_drops() - fut0;
+  hand_phase_end = interp_sched_phase(1);
+  return st;
+}
+
+TEST_CASE("FW 52 D3 (flips the FW 50 row-1 PIN): a sync loss mid-stream keeps the scheduled Hand on the held offset, no demotion, no step") {
+  uint32_t dem = 0, held = 0, fut = 0; uint8_t ph = 0; float V = 0, A = 0;
+  const Fw52Steps st = fw52_after_sync_loss(100'000'000ull, 20, dem, held, fut, ph, V, A);   // 100 s: unsynced, inside the hold
+  MESSAGE("D3 held offset: max |dp| " << st.d1 << " rev (bound V dt = " << V * kFw52Dt
+          << "), max |d2p| " << st.d2 << " (bound A dt^2 = " << A * kFw52Dt * kFw52Dt << "); FW 51 stepped ~1.71 rev");
+  CHECK(dem == 0u);                 // nothing demoted
+  CHECK(held == 8u);                // frames 13..20 arrive after the loss (k x 25 - 24 ms in [300, 500) ms): all held
+  CHECK(fut == 0u);
+  CHECK(ph == 1);                   // still PLAYING scheduled
+  CHECK(interp_sched_mode_xfers() == 0u);
+  CHECK(st.d1 <= V * kFw52Dt + kFw52Eps);                  // the plan replayed exactly: |v| <= V
+  CHECK(st.d2 <= A * kFw52Dt * kFw52Dt + kFw52Eps);        // and C1 with |a| <= A
+}
+
+TEST_CASE("FW 52 D3: past TIME_OFFSET_HOLD_MAX_US the frames are DROPPED (never demoted): the group stops on its own curve") {
+  // Frame 12 (stamp 300 ms) is the last one in; its cover + grace ends at 370 ms
+  // (SCHED_EXHAUST_HAND_US = 70 ms), then the C2 stop. Run to 450 ms (knot 18) so
+  // the stop is reached and finished inside the window.
+  uint32_t dem = 0, held = 0, fut = 0; uint8_t ph = 0; float V = 0, A = 0;
+  const Fw52Steps st = fw52_after_sync_loss(TIME_OFFSET_HOLD_MAX_US, 18, dem, held, fut, ph, V, A);
+  MESSAGE("D3 drop: max |dp| " << st.d1 << " rev, max |d2p| " << st.d2 << " (bound "
+          << SCHED_STOP_ACCEL_HAND_RPS2 * kFw52Dt * kFw52Dt << ")");
+  CHECK(dem == 0u);
+  CHECK(held == 0u);
+  CHECK(fut == 6u);                 // frames 13..18 (arrivals 301..426 ms) are unmappable: dropped, counted
+  CHECK(ph != 0);                   // the scheduled group still owns the lane ...
+  CHECK(ph != 1);                   // ... and has run out into its stop / hold
+  CHECK(st.d2 <= SCHED_STOP_ACCEL_HAND_RPS2 * kFw52Dt * kFw52Dt + kFw52Eps);   // C1 through grace and stop
+  // |v| bound through the grace and the stop: the plan's V, plus what the grace's
+  // continued cubic can add (|a| <= A + J_plan g, over g = 20 ms), plus a
+  // jerk-limited stop's overshoot a^2 / (2 J_stop) from an entry |a| <= A + J_plan g.
+  const float g = (float)(SCHED_EXHAUST_HAND_US - SCHED_COVER_US) * 1e-6f;
+  const float j_plan = A * 2.0f * (float)M_PI / (12.0f * SEGMENT_T_S);
+  const float a_in = A + j_plan * g;
+  const float v_bound = V + A * g + 0.5f * j_plan * g * g + a_in * a_in / (2.0f * SCHED_STOP_JERK_HAND_RPS3);
+  CHECK(st.d1 <= v_bound * kFw52Dt + kFw52Eps);
+}
+
+TEST_CASE("FW 52 D3: with the output DISABLED an unsynced frame is still demoted to legacy (nothing reaches the wire)") {
+  reset_interp_test();
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  const uint64_t t0 = 1'100'000;
+  interp_set_output_enabled(false);
+  fake_set_time_synced(false);
+  fake_set_anchor_age_us(1'000'000);
+  const uint32_t dem0 = interp_sched_demoted();
+  fake_set_clock(t0, t0);
+  stage_sched_frame(1, P, 0, t0);
+  CHECK(interp_sched_demoted() - dem0 == 1u);
+  CHECK(interp_sched_held_offset() == 0u);
+}
+
+TEST_CASE("FW 52 D3: a legacy -> scheduled entry while the output is on is checked like a resume; a discontinuous one is refused into a latched stop") {
+  reset_interp_test();
+  seed_hand_encoder();
+  const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
+  const float V = fw52_plan_vmax(P);
+  const uint64_t t0 = 1'100'000;
+  write_pos_vel(hand_axis(), (float)P.p[0], 0.0f, fake_mono_us());
+  interp_set_output_enabled(true);
+  fake_set_time_synced(false);          // no anchor and no scheduled group: frames play legacy
+  fake_set_anchor_age_us(UINT64_MAX);
+  SchedRun r;
+  for (int k = 0; k < 40; ++k) r.ev.push_back({t0 + (uint64_t)k * 25'000u - 24'000u, k});
+  Fw52Steps st;
+  sched_ticks(r, P, t0, t0 + 6u * 25'000u, [&](uint64_t) { fw52_sample(st); });
+  REQUIRE(interp_sched_phase(1) == 0);
+  REQUIRE(interp_hand_lane_active());
+  REQUIRE(interp_sched_demoted() == 7u);   // frames 0..6 (arrivals <= 126 ms) all played legacy
+  const uint32_t ref0 = interp_sched_refused();
+  fake_set_time_synced(true);           // the anchor arrives mid-stream
+  fake_set_anchor_age_us(0);
+  // Measure continuity from here (the samples before stay as the differences' seed):
+  // the legacy lane's OWN frame handovers kink (FW 21 arrival playback restarts at u0
+  // at an arrival that is off the tick grid: up to 0.07 rev second difference at
+  // ~68 rev/s, measured 2026-11-25), which is the pre-FW 52 legacy behaviour D3
+  // retires, not the entry under test. From 150 ms the legacy lane only extrapolates
+  // frame 6, then the entry and the stop follow.
+  st.d1 = st.d2 = 0.0f;
+  // Frames 7, 8, 9 (arrivals 151, 176, 201 ms; stamps 175, 200, 225 ms) are scheduled
+  // and due inside [150, 250) ms. The legacy lane plays each frame from its ARRIVAL,
+  // i.e. 24 ms ahead of the stamp clock, so at the stamp of frame 7 the new curve sits
+  // ~v x 24 ms from the legacy command: the ENTRY is refused (1) into a latched C2 stop
+  // from the legacy (p, v); frames 8 and 9 then meet the latched-hold rule (their plan
+  // runs away from a stopping Hand, past the 0.05 rev / 8 rev/s RESUME tolerances): 2
+  // more. Exactly 3.
+  sched_ticks(r, P, t0, t0 + 10u * 25'000u, [&](uint64_t) { fw52_sample(st); });
+  MESSAGE("D3 entry: refused " << (interp_sched_refused() - ref0) << ", max |dp| " << st.d1
+          << " rev, max |d2p| " << st.d2 << " rev");
+  CHECK(interp_sched_refused() - ref0 == 3u);
+  CHECK(interp_sched_hold_latched());
+  CHECK(interp_sched_phase(1) != 0);            // the Hand group owns the lane ...
+  CHECK(interp_sched_phase(1) != 1);            // ... stopping / holding, not playing the jump
+  CHECK(interp_sched_phase(0) == 1);            // the flat Legs entry is continuous: accepted, playing
+  // No step across the legacy extrapolation, the refused entry and the stop: C1 with
+  // |a| <= the stop's limit (4500; the legacy Taylor extrapolation of the plan has
+  // |a| <= 1500 + the plan jerk over < 25 ms), and never more than the plan's own
+  // per-tick travel (the extrapolation follows the plan, |v| <= V; the stop only slows
+  // the Hand). Measured: entry at 176 ms from v = 56 rev/s, HOLD at 208 ms.
+  CHECK(st.d2 <= SCHED_STOP_ACCEL_HAND_RPS2 * kFw52Dt * kFw52Dt + kFw52Eps);
+  CHECK(st.d1 <= V * kFw52Dt + kFw52Eps);
+  // The latch clears the usual way: with the output disabled the next frame (10,
+  // stamp 250 ms) is accepted and the Hand group plays again.
+  interp_set_output_enabled(false);
+  sched_ticks(r, P, t0, t0 + 11u * 25'000u, [](uint64_t) {});
+  CHECK(interp_sched_phase(1) == 1);
+}
+
+TEST_CASE("FW 52 D3: a CONTINUOUS legacy -> scheduled entry is accepted (no refusal, PLAY)") {
+  // The same stream, but the legacy lane plays each frame AT its stamp (arrival =
+  // stamp), so at the entry the scheduled curve equals the legacy command.
   reset_interp_test();
   seed_hand_encoder();
   const C2Plan P = make_c2_plan(1500.0, 12, 5.0);
   const uint64_t t0 = 1'100'000;
   write_pos_vel(hand_axis(), (float)P.p[0], 0.0f, fake_mono_us());
   interp_set_output_enabled(true);
-  SchedRun r;
-  for (int k = 0; k < 40; ++k) r.ev.push_back({t0 + (uint64_t)k * 25'000u - 24'000u, k});
-  sched_ticks(r, P, t0, t0 + 12u * 25'000u, [](uint64_t) {});
-  REQUIRE(interp_sched_phase(1) == 1);
-  CHECK(interp_sched_mode_xfers() == 0u);                      // legacy -> sched needs a legacy lane first
   fake_set_time_synced(false);
-  float prev_p = axes[HAND_AXIS].target_pos_rev, step = 0.0f, v_at = 0.0f;
-  uint64_t t_step = 0;
-  const uint32_t dem0 = interp_sched_demoted();
-  sched_ticks(r, P, t0, t0 + 14u * 25'000u, [&](uint64_t now) {
-    const float p = axes[HAND_AXIS].target_pos_rev;
-    if (t_step == 0 && interp_sched_demoted() != dem0) {
-      double pr, vr, ar;
-      plan_ref(P, t0, now, pr, vr, ar);
-      step = p - prev_p; v_at = (float)vr; t_step = now;
-    }
-    prev_p = p;
-  });
-  REQUIRE(t_step != 0);
-  CHECK(interp_sched_phase(1) == 0);                           // the scheduled Hand group is gone
-  CHECK(interp_sched_mode_xfers() == 1u);                      // FW 50: counted once
-  // The step: one 2 ms tick of plan motion plus the jump to the frame's u0, which
-  // is the plan ~24 ms ahead of arrival. |step| ~ |v| x lead, far above one tick.
-  MESSAGE("row 1: demotion step " << step << " rev at plan v " << v_at << " rev/s (v x 24 ms = "
-          << v_at * 0.024f << ", v x 2 ms = " << v_at * 0.002f << ")");
-  CHECK(std::fabs(step) > 5.0f * std::fabs(v_at) * 0.002f);
-  CHECK(step == doctest::Approx(v_at * 0.024f).epsilon(0.05)); // measured: -1.712 rev at -71.6 rev/s
+  fake_set_anchor_age_us(UINT64_MAX);
+  SchedRun r;
+  for (int k = 0; k < 40; ++k) r.ev.push_back({t0 + (uint64_t)k * 25'000u, k});
+  sched_ticks(r, P, t0, t0 + 6u * 25'000u + 2'000u, [](uint64_t) {});
+  REQUIRE(interp_sched_phase(1) == 0);
+  const uint32_t ref0 = interp_sched_refused();
+  fake_set_time_synced(true);
+  fake_set_anchor_age_us(0);
+  sched_ticks(r, P, t0, t0 + 10u * 25'000u, [](uint64_t) {});
+  CHECK(interp_sched_refused() - ref0 == 0u);
+  CHECK(interp_sched_phase(1) == 1);
+  CHECK(!interp_sched_hold_latched());
 }
 
 // ── FW 50 (FEAT-64): the ENCODER_AGE arithmetic ──────────────────────────────

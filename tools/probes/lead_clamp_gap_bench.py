@@ -85,6 +85,23 @@ import sysid_lib as sid  # noqa: E402
 
 AXIS = 0
 NOMINAL_RATE_MS = 10
+# can-bridge FW 52 (BUG-99 D1) refuses SDO_WRITE while Armed. This probe injects its
+# gaps by an SDO write MID-STREAM, by design, so it cannot run on FW >= 52: it refuses
+# up front rather than fly a run whose gaps were never injected.
+FW_ARMED_SDO_GATE = 52
+
+
+def armed_sdo_refusal(fw_version):
+    """The refusal text for a bridge whose firmware refuses SDO_WRITE while Armed,
+    else None. An unknown version (identity never seen) is refused too: the probe
+    cannot tell whether its gaps would land."""
+    if fw_version is not None and int(fw_version) < FW_ARMED_SDO_GATE:
+        return None
+    seen = 'never seen' if fw_version is None else f'FW {int(fw_version)}'
+    return (f"can-bridge {seen}: FW {FW_ARMED_SDO_GATE}+ refuses SDO_WRITE while Armed "
+            f"(BUG-99 D1), and this probe injects its encoder-frame gaps by a mid-stream "
+            f"SDO write, so no gap would be injected. Refusing to run; fly it on a "
+            f"pre-52 bridge or redesign the injection")
 VERIFIED_NAME = 'axis0.config.can.encoder_msg_rate_ms'
 S1_TABLE = {265: 'axis0.config.can.encoder_msg_rate_ms (uint32)',
             275: 'axis0.config.commutation_encoder (uint8) -- DESTRUCTIVE on an S1'}
@@ -328,6 +345,11 @@ class GapBench(bls.BridgeSysID):
             meta['uptime_ms_start'] = None if hb is None else int(hb.uptime_ms)
             print(f"  link up: fw={fw if fw is not None else 'never-seen'} "
                   f"uptime_ms={meta['uptime_ms_start']} fault={self._fault_state()}")
+            refusal = armed_sdo_refusal(fw)
+            if refusal is not None:
+                print(f"REFUSED: {refusal}", file=sys.stderr)
+                self._outcome = 'refused: ' + refusal
+                return 2
             rate = self._measure_telemetry_rate()
             print(f"  telemetry {rate.mean_hz:.1f} Hz")
             if not self._startup_clear_latch():

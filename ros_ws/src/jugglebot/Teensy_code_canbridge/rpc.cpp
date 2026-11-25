@@ -187,12 +187,50 @@ static bool gate_allows(uint16_t method) {
 // hand homing + the hand command surface work. Every permitted op — leg
 // or hand — is still gated via gate_allows(): the hand is GATED like a leg, never
 // ungated. Returns an RpcStatus.
-static uint16_t send_axis_frame(uint16_t method, uint8_t axis, const ODrive::CanFrame& f) {
+// FW 52 (BUG-99 D1, row 4a): THE Armed reconfiguration predicate. True iff
+// `method` on `axis` (with `requested_state` for SET_AXIS_STATE) must be refused
+// while the robot is Armed (fault_mpc_active(): the Jetson's heartbeat says it is
+// driving setpoints). Refused: anything that re-zeroes, re-tunes or re-modes an
+// ODrive under a running position loop — SET_ABSOLUTE_POSITION (a Leg re-zero is
+// up to ~1 rev of unplanned travel before MAX_DEVIATION), SDO_WRITE (any
+// endpoint), SET_CONTROLLER_MODE, SET_VEL_GAINS, a LEG SET_POS_GAIN (the
+// Kp x MAX_LEAD_REV headroom, canbridge_config.h, is a Leg invariant) and
+// SET_AXIS_STATE to anything but IDLE, and REBOOT_ODRIVES (orchestrator, 2026-11-25,
+// the same intent: a reboot drops a live loop mid-stream). Allowed: CLEAR_ERRORS
+// (/recover clears while Armed), SET_VEL_CURR_LIMITS (the Hand jam relief and the GUI
+// limits), SET_AXIS_STATE IDLE (a stop), SDO_READ, and every other method. Keyed on ARMED, never on
+// "frames flowing": the host's arming preamble sends Hand CLOSED_LOOP + mode with
+// frames already streaming but before mpc_active rises, and must pass.
+// Python twin: teensy_link/rpc_args.py refused_while_armed.
+static bool refused_while_armed(uint16_t method, uint8_t axis, uint32_t requested_state) {
+  using namespace JbUdp;
+  switch (method) {
+    case RpcMethod::SET_ABSOLUTE_POSITION:
+    case RpcMethod::SDO_WRITE:
+    case RpcMethod::SET_CONTROLLER_MODE:
+    case RpcMethod::SET_VEL_GAINS:
+    case RpcMethod::REBOOT_ODRIVES:
+      return true;
+    case RpcMethod::SET_POS_GAIN:
+      return axis < NUM_LEGS;
+    case RpcMethod::SET_AXIS_STATE:
+      return requested_state != ODriveState::IDLE;
+    default:
+      return false;
+  }
+}
+
+static uint16_t send_axis_frame(uint16_t method, uint8_t axis, const ODrive::CanFrame& f,
+                                uint32_t requested_state = 0) {
   if (axis == HAND_AXIS) {
     if (!JbUdp::hand_axis6_permitted(method)) return JbUdp::RpcStatus::ERR_REJECTED;
   } else if (axis >= NUM_LEGS) {
     return JbUdp::RpcStatus::ERR_BAD_ARGS;
   }
+  // FW 52 (BUG-99 D1): the enforcement point of the Armed reconfiguration gate for
+  // every per-axis frame (the REBOOT_ODRIVES AXIS_ALL broadcast asks it itself).
+  if (fault_mpc_active() && refused_while_armed(method, axis, requested_state))
+    return JbUdp::RpcStatus::ERR_REJECTED;
   if (!gate_allows(method)) return JbUdp::RpcStatus::ERR_BUS_DOWN;
   // TxCls (2026-08-24) derived from the SAME predicate that picks the gate basis,
   // so the classification has one enforcement point and no call site can drift:
@@ -282,7 +320,7 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
 
     case RpcMethod::SET_AXIS_STATE: {
       ArgAxisState a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return send_axis_frame(method, a.axis, ODrive::encode_set_state(a.axis, a.state));
+      return send_axis_frame(method, a.axis, ODrive::encode_set_state(a.axis, a.state), a.state);
     }
     case RpcMethod::SET_CONTROLLER_MODE: {
       ArgControllerMode a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
@@ -349,10 +387,12 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
         if (any) fault_notify_clear_errors();
         return ok ? RpcStatus::OK : RpcStatus::ERR_TIMEOUT;
       }
-      // Per-axis: refill the budget only if the frame actually went out (gate passed +
-      // enqueue OK) — the same after-the-gate discipline as the AXIS_ALL path.
+      // Per-axis (FW 52, BUG-99 D2): clears THAT axis only — its disarm cache, once
+      // the frame went out. It releases NO global latch (Soft E-stop, HAND_STALL,
+      // CAN_BUS_DOWN identity) and does not refill the soft-reset budget: only the
+      // AXIS_ALL clear above is the operator's acknowledgement of the whole robot.
       const uint16_t st = send_axis_frame(method, a.axis, ODrive::encode_clear_errors(a.axis));
-      if (st == RpcStatus::OK) fault_notify_clear_errors();
+      if (st == RpcStatus::OK) fault_notify_clear_axis_errors(a.axis);
       return st;
     }
     case RpcMethod::REBOOT_ODRIVES: {
@@ -365,6 +405,10 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       // stow completes in ~2-3 s, after which REBOOT is available again.
       if (fault_stow_pending()) return RpcStatus::ERR_REJECTED;
       if (a.axis == AXIS_ALL) {
+        // FW 52 (BUG-99 D1): the AXIS_ALL broadcast is the one refused method that
+        // bypasses send_axis_frame, so it asks the same predicate itself (the second
+        // and last call site; the CLEAR_ERRORS AXIS_ALL loop is of an allowed method).
+        if (fault_mpc_active() && refused_while_armed(method, AXIS_ALL, 0)) return RpcStatus::ERR_REJECTED;
         // Bus-transmittable gate; AXIS_ALL loops legs + hand (i < NUM_AXES —
         // JUGGLEBOT_AXES parity). Arm the watchdog-suppression latch only ONCE the
         // reboot is actually going out (after the gate passes), so a refused reboot

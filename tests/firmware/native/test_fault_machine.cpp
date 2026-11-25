@@ -831,6 +831,43 @@ TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
     CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
   }
 
+  // FW 52 (BUG-99 D2): a PER-AXIS clear acknowledges one axis, not the robot. It
+  // must leave the Soft E-stop latched; only the all-axes clear releases it.
+  SUBCASE("FW 52 D2: a per-axis clear does NOT release the latched Soft E-stop; the all-axes clear does") {
+    arm();
+    fault_step();
+    REQUIRE(fault_state() == JbUdp::FaultState::NONE);
+    fake_advance(SETPOINT_STALENESS_US + 1);
+    stamp_hb(0);
+    axes[0].pos_timestamp_us  = fake_mono_us();
+    fake_set_udp_last_rx_us(fake_mono_us());
+    fault_step();
+    REQUIRE(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+    // The stream returns (as in the Gap 5 subcase above), so the CONDITION is gone and
+    // only the latch holds the E-stop: exactly what a per-axis clear must not release.
+    // (fw52-verify 2026-11-25: the first draft cleared with the setpoint still stale,
+    // so the all-axes clear re-tripped at once; a test defect, not a firmware one.)
+    JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+    interp_on_setpoint(0, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+    interp_isr();
+    stamp_hb(0);
+    axes[0].pos_timestamp_us  = fake_mono_us();
+    fake_set_udp_last_rx_us(fake_mono_us());
+    fault_step();
+    REQUIRE(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+    axes[3].disarm_reason = 0x40u;
+    fault_notify_clear_axis_errors(3);
+    CHECK(axes[3].disarm_reason == 0u);           // that axis's cache is cleared
+    fault_notify_clear_axis_errors(0);
+    fault_step();
+    CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);   // still latched
+    CHECK(fault_state() == JbUdp::FaultState::SETPOINT_STALE);
+    fault_notify_clear_axis_errors(200);           // out of range: a no-op, no crash
+    fault_notify_clear_errors();
+    fault_step();
+    CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
+  }
+
   SUBCASE("overspeed latches, PERSISTS after the condition clears, releases only on clear-errors") {
     arm();
     axes[0].vel_rps = MAX_MOTOR_VEL_RPS + 1.0f;   // overspeed

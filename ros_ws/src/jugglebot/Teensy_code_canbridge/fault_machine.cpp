@@ -308,6 +308,11 @@ void fault_notify_clear_errors() {
   s_can_fault_age_ms = 0;
 }
 
+// FW 52 (BUG-99 D2): see fault_machine.h. One axis's cache, nothing global.
+void fault_notify_clear_axis_errors(uint8_t axis) {
+  if (axis < NUM_AXES) axes[axis].disarm_reason = 0;
+}
+
 // External REBOOT_ODRIVES RPC arms the bounded watchdog-suppression latch:
 // the deliberate reboot silence must not be read as a CAN loss. Bounded by
 // s_reboot_deadline_us (the blind-spot backstop). Called from the RPC/UDP-RX task; the

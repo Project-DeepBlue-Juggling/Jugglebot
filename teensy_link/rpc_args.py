@@ -1075,7 +1075,45 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # 50 -> 51 (2026-11-25, BUG-130): the additive ACTIVATE_TO (0x66), ACTIVATE to six
 # Leg targets within ACTIVATE_TO_BAND_REV of the constant Active pose (the Levelled
 # Active pose). ACTIVATE unchanged; PROTOCOL_VERSION stays 14.
-EXPECTED_BRIDGE_FW_VERSION = 51
+# 51 -> 52 (2026-11-25, BUG-99 D1-D5): reconfiguration RPCs refused while Armed
+# (refused_while_armed below is the twin of the firmware predicate); only an
+# AXIS_ALL CLEAR_ERRORS releases the Soft E-stop / HAND_STALL latches; a scheduled
+# stream keeps its held clock offset through a sync loss and a legacy -> scheduled
+# entry is checked like a resume; UDP from any source but the Jetson is dropped.
+# Behavioural only: no wire change, PROTOCOL_VERSION stays 14.
+EXPECTED_BRIDGE_FW_VERSION = 52
+
+# ── The Armed reconfiguration gate (can-bridge FW 52, BUG-99 D1) ─────────────
+# Twin of rpc.cpp refused_while_armed, the firmware's one enforcement point
+# (send_axis_frame, plus the REBOOT_ODRIVES AXIS_ALL broadcast). While the robot is
+# Armed the bridge answers ERR_REJECTED, with nothing sent on CAN, for these ODrive
+# methods, REBOOT_ODRIVES included (a reboot drops a live loop). Kept allowed:
+# CLEAR_ERRORS (/recover), SET_VEL_CURR_LIMITS (the Hand jam relief, the GUI
+# limits), SET_AXIS_STATE IDLE (a stop), SDO_READ. The Hand's SET_POS_GAIN stays allowed by
+# the owner's decision (the Kp x MAX_LEAD_REV headroom is a Leg invariant).
+_ODRIVE_STATE_IDLE = 1
+ARMED_REFUSAL_HINT = ('refused while Armed (can-bridge FW 52, BUG-99): the bridge does not '
+                      're-zero, re-tune, re-mode or reboot an ODrive under a live stream; disarm first')
+
+
+def refused_while_armed(method, axis, requested_state=None):
+    """True iff the can-bridge refuses ``method`` on ``axis`` while Armed (FW 52).
+
+    ``requested_state`` is SET_AXIS_STATE's target state (ignored otherwise).
+    """
+    m = int(method)
+    if m in (int(RpcMethod.SET_ABSOLUTE_POSITION), int(RpcMethod.SDO_WRITE),
+             int(RpcMethod.SET_CONTROLLER_MODE), int(RpcMethod.SET_VEL_GAINS),
+             int(RpcMethod.REBOOT_ODRIVES)):
+        return True
+    if m == int(RpcMethod.SET_POS_GAIN):
+        return 0 <= int(axis) < NUM_LEGS_FOR_ARMED_GATE
+    if m == int(RpcMethod.SET_AXIS_STATE):
+        return requested_state is None or int(requested_state) != _ODRIVE_STATE_IDLE
+    return False
+
+
+NUM_LEGS_FOR_ARMED_GATE = 6
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

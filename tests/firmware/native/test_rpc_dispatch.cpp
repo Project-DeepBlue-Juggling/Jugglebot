@@ -115,6 +115,9 @@ TxResult can_cone_tx(const ODrive::CanFrame& f, uint8_t cls) {
 
 // ── fault_machine.h ──
 void fault_notify_clear_errors()  { g_clear_calls++; }
+static int      g_axis_clear_calls = 0;       // FW 52: fault_notify_clear_axis_errors count
+static uint8_t  g_axis_clear_axis = 0xFF;
+void fault_notify_clear_axis_errors(uint8_t axis) { g_axis_clear_calls++; g_axis_clear_axis = axis; }
 void fault_notify_reboot_started() { g_reboot_calls++; }
 bool fault_stow_pending()          { return g_stow_pending; }
 bool fault_mpc_active()            { return g_mpc_active; }
@@ -215,6 +218,7 @@ bool udp_send_rpc(uint8_t t, const uint8_t* p, uint16_t n) {
 }
 void udp_on_rpc_request(FrameHandler) {}
 
+
 }  // namespace CanBridge
 
 #include "rpc.cpp"   // the unit under test (reaches static dispatch/send_axis_frame)
@@ -234,6 +238,7 @@ static uint16_t call_noarg(uint16_t method) {
 
 static void reset_all() {
   fake_reset(); drv_reset(); Rpc::hand_torque_scale_reset();
+  g_axis_clear_calls = 0; g_axis_clear_axis = 0xFF;
   g_cone_sent = 0; g_cone_last = ODrive::CanFrame{}; g_cone_last_cls = 0xFF;
   g_cone_result = TxResult::MAILBOX;
 }
@@ -305,10 +310,14 @@ TEST_CASE("stale bus (commands_allowed=false) but transmittable=true: CLEAR reac
   reset_all();
   fake_set_commands_allowed(false);   // heartbeat-stale
   g_bus_transmittable = true;         // but electrically alive (SYNCH=1)
-  // CLEAR_ERRORS gates on bus-transmittable → allowed; refills the soft-reset budget.
+  // CLEAR_ERRORS gates on bus-transmittable → allowed. FW 52 (BUG-99 D2): a
+  // PER-AXIS clear clears that axis only; it no longer calls the global release
+  // (FW 49-51 pinned g_clear_calls == 1 here).
   ArgAxisOnly c{}; c.axis = 0;
   CHECK(call(RpcMethod::CLEAR_ERRORS, c) == RpcStatus::OK);
-  CHECK(g_clear_calls == 1);
+  CHECK(g_clear_calls == 0);
+  CHECK(g_axis_clear_calls == 1);
+  CHECK(g_axis_clear_axis == 0);
   CHECK(fake_sent_count() == 1);
   // A normal command still gates on staleness → refused.
   fake_clear_sent();
@@ -988,4 +997,136 @@ TEST_CASE("ACTIVATE_TO: the six targets reach activate_to_request intact; its st
   CHECK(g_activate_to_calls == 0);
   REQUIRE(Rpc::parse_response(g_udp_last, g_udp_last_len, &m, &id, &st, &res, &rl));
   CHECK(st == RpcStatus::ERR_BAD_ARGS);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  FW 52 (BUG-99 D1, row 4a): reconfiguration RPCs refused while Armed. One
+//  predicate (refused_while_armed) at one enforcement point (send_axis_frame).
+// ═══════════════════════════════════════════════════════════════════════════
+using JbUdp::RpcArgs::ArgControllerMode;
+using JbUdp::RpcArgs::ArgVelCurr;
+using JbUdp::RpcArgs::ArgPosGain;
+using JbUdp::RpcArgs::ArgVelGains;
+using JbUdp::RpcArgs::ArgSdoWrite;
+
+// Every method on the decision list, on a Leg (0) and on the Hand (6), Armed and
+// not: the status, and whether a frame reached CAN.
+static void check_method(uint16_t method, uint8_t axis, uint32_t state, bool armed, uint16_t want) {
+  reset_all();
+  g_mpc_active = armed;
+  uint16_t st = 0xEEEE;
+  switch (method) {
+    case RpcMethod::SET_AXIS_STATE: { ArgAxisState a{}; a.axis = axis; a.state = state; st = call(method, a); break; }
+    case RpcMethod::SET_CONTROLLER_MODE: { ArgControllerMode a{}; a.axis = axis; a.ctrl = 3; a.input = 1; st = call(method, a); break; }
+    case RpcMethod::SET_VEL_CURR_LIMITS: { ArgVelCurr a{}; a.axis = axis; a.vel_limit = 5.0f; a.curr_limit = 10.0f; st = call(method, a); break; }
+    case RpcMethod::SET_POS_GAIN: { ArgPosGain a{}; a.axis = axis; a.pos_gain = 40.0f; st = call(method, a); break; }
+    case RpcMethod::SET_VEL_GAINS: { ArgVelGains a{}; a.axis = axis; a.vel_gain = 0.1f; a.vel_int_gain = 0.2f; st = call(method, a); break; }
+    case RpcMethod::SET_ABSOLUTE_POSITION: { ArgAbsPosition a{}; a.axis = axis; a.position = 1.0f; st = call(method, a); break; }
+    case RpcMethod::SDO_WRITE: { ArgSdoWrite a{}; a.axis = axis; a.endpoint = 265; a.value = 1.0f; st = call(method, a); break; }
+    case RpcMethod::CLEAR_ERRORS: { ArgAxisOnly a{}; a.axis = axis; st = call(method, a); break; }
+    default: FAIL("unexpected method");
+  }
+  INFO("method 0x" << std::hex << method << std::dec << " axis " << (int)axis << " state " << state << " armed " << armed);
+  CHECK(st == want);
+  CHECK(fake_sent_count() == (want == RpcStatus::OK ? 1 : 0));
+}
+
+TEST_CASE("FW 52 D1: while Armed the reconfiguration RPCs are ERR_REJECTED with nothing on CAN; disarmed they pass") {
+  const uint32_t IDLE = ODriveState::IDLE, CL = ODriveState::CLOSED_LOOP;
+  // Refused while Armed, on every axis (SDO_WRITE is not in the Hand allow-table at
+  // all, so it is checked on the Leg only).
+  for (uint8_t axis : {uint8_t(0), uint8_t(5), uint8_t(HAND_AXIS)}) {
+    for (uint16_t m : {RpcMethod::SET_ABSOLUTE_POSITION, RpcMethod::SET_CONTROLLER_MODE, RpcMethod::SET_VEL_GAINS}) {
+      check_method(m, axis, 0, true,  RpcStatus::ERR_REJECTED);
+      check_method(m, axis, 0, false, RpcStatus::OK);
+    }
+    check_method(RpcMethod::SET_AXIS_STATE, axis, CL, true,  RpcStatus::ERR_REJECTED);
+    check_method(RpcMethod::SET_AXIS_STATE, axis, CL, false, RpcStatus::OK);
+    check_method(RpcMethod::SET_AXIS_STATE, axis, ODriveState::ENCODER_INDEX_SEARCH, true, RpcStatus::ERR_REJECTED);
+    // Kept while Armed: IDLE (a stop), the limits (the jam relief, the GUI) and CLEAR_ERRORS.
+    check_method(RpcMethod::SET_AXIS_STATE, axis, IDLE, true, RpcStatus::OK);
+    check_method(RpcMethod::SET_VEL_CURR_LIMITS, axis, 0, true, RpcStatus::OK);
+    check_method(RpcMethod::CLEAR_ERRORS, axis, 0, true, RpcStatus::OK);
+  }
+  check_method(RpcMethod::SDO_WRITE, 0, 0, true,  RpcStatus::ERR_REJECTED);
+  check_method(RpcMethod::SDO_WRITE, 0, 0, false, RpcStatus::OK);
+  // SET_POS_GAIN: refused on a Leg while Armed; the Hand's stays allowed (the
+  // owner's decision names the Leg: Kp x MAX_LEAD_REV is a Leg invariant).
+  check_method(RpcMethod::SET_POS_GAIN, 0, 0, true,  RpcStatus::ERR_REJECTED);
+  check_method(RpcMethod::SET_POS_GAIN, 5, 0, true,  RpcStatus::ERR_REJECTED);
+  check_method(RpcMethod::SET_POS_GAIN, 0, 0, false, RpcStatus::OK);
+  check_method(RpcMethod::SET_POS_GAIN, HAND_AXIS, 0, true, RpcStatus::OK);
+  // The AXIS_ALL clear stays allowed while Armed (/recover).
+  reset_all(); g_mpc_active = true;
+  ArgAxisOnly all{}; all.axis = AXIS_ALL;
+  CHECK(call(RpcMethod::CLEAR_ERRORS, all) == RpcStatus::OK);
+  CHECK(g_clear_calls == 1);
+}
+
+TEST_CASE("FW 52 D1: the gate keys on ARMED, so the real arming order passes (preamble before mpc_active)") {
+  // teensy_bridge_node._arm_setpoint_output_locked: the stream is already flowing
+  // (the pre-check), then Hand SET_AXIS_STATE CLOSED_LOOP and SET_CONTROLLER_MODE
+  // POSITION/PASSTHROUGH, THEN _set_mpc_active(True). The bridge's fault_mpc_active()
+  // follows the heartbeat bit, so it is still false at the preamble.
+  reset_all();
+  g_mpc_active = false;                       // frames may be streaming; not Armed yet
+  ArgAxisState cl{}; cl.axis = HAND_AXIS; cl.state = ODriveState::CLOSED_LOOP;
+  ArgControllerMode cm{}; cm.axis = HAND_AXIS; cm.ctrl = 3; cm.input = 1;
+  CHECK(call(RpcMethod::SET_AXIS_STATE, cl) == RpcStatus::OK);
+  CHECK(call(RpcMethod::SET_CONTROLLER_MODE, cm) == RpcStatus::OK);
+  CHECK(fake_sent_count() == 2);
+  g_mpc_active = true;                        // the heartbeat with bit 0 lands: Armed
+  fake_clear_sent();
+  CHECK(call(RpcMethod::SET_AXIS_STATE, cl) == RpcStatus::ERR_REJECTED);
+  CHECK(call(RpcMethod::SET_CONTROLLER_MODE, cm) == RpcStatus::ERR_REJECTED);
+  CHECK(fake_sent_count() == 0);
+  // The disarm path (Hand IDLE) is never refused.
+  ArgAxisState idle{}; idle.axis = HAND_AXIS; idle.state = ODriveState::IDLE;
+  CHECK(call(RpcMethod::SET_AXIS_STATE, idle) == RpcStatus::OK);
+  CHECK(fake_sent_count() == 1);
+}
+
+TEST_CASE("FW 52 D2: only the AXIS_ALL clear calls the global release; a per-axis clear clears that axis") {
+  for (uint8_t axis : {uint8_t(0), uint8_t(3), uint8_t(HAND_AXIS)}) {
+    reset_all();
+    ArgAxisOnly one{}; one.axis = axis;
+    CHECK(call(RpcMethod::CLEAR_ERRORS, one) == RpcStatus::OK);
+    CHECK(g_clear_calls == 0);
+    CHECK(g_axis_clear_calls == 1);
+    CHECK(g_axis_clear_axis == axis);
+  }
+  reset_all();
+  ArgAxisOnly all{}; all.axis = AXIS_ALL;
+  CHECK(call(RpcMethod::CLEAR_ERRORS, all) == RpcStatus::OK);
+  CHECK(g_clear_calls == 1);
+  CHECK(g_axis_clear_calls == 0);
+  // A per-axis clear that never reached the wire clears nothing.
+  reset_all();
+  fake_set_send_fail_index(0);
+  ArgAxisOnly z{}; z.axis = 0;
+  CHECK(call(RpcMethod::CLEAR_ERRORS, z) == RpcStatus::ERR_TIMEOUT);
+  CHECK(g_axis_clear_calls == 0);
+}
+
+TEST_CASE("FW 52 D1: REBOOT_ODRIVES is refused while Armed, per axis AND the AXIS_ALL broadcast (no TX, no latch); SDO_READ stays allowed") {
+  // Orchestrator decision 2026-11-25, the owner's D1 intent: a reboot drops a live
+  // loop mid-stream. The AXIS_ALL broadcast bypasses send_axis_frame, so it is
+  // checked on its own (the second call site of the predicate).
+  for (uint8_t axis : {uint8_t(0), uint8_t(5), uint8_t(HAND_AXIS), uint8_t(AXIS_ALL)}) {
+    reset_all();
+    g_mpc_active = true;
+    ArgAxisOnly a{}; a.axis = axis;
+    INFO("axis " << (int)axis);
+    CHECK(call(RpcMethod::REBOOT_ODRIVES, a) == RpcStatus::ERR_REJECTED);
+    CHECK(fake_sent_count() == 0);
+    CHECK(g_reboot_calls == 0);            // the watchdog-suppression latch never armed
+    g_mpc_active = false;                  // disarmed: the same reboot goes out
+    CHECK(call(RpcMethod::REBOOT_ODRIVES, a) == RpcStatus::OK);
+    CHECK(fake_sent_count() == (axis == AXIS_ALL ? (size_t)CanBridge::NUM_AXES : 1u));
+  }
+  reset_all();
+  g_mpc_active = true;
+  ArgSdoRead r{}; r.axis = 0; r.endpoint = 265;
+  CHECK(call(RpcMethod::SDO_READ, r) == RpcStatus::OK);
+  CHECK(fake_sent_count() == 1);
 }

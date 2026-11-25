@@ -57,6 +57,8 @@ void fake_set_udp_last_rx_us(uint64_t t_us);
 //  Defaults to TRUE on fake_reset() — an anchored bridge is the steady state, and
 //  a test that cares about the un-anchored case sets it false explicitly.
 void fake_set_time_synced(bool synced);
+// FW 52 (BUG-99 D3): drives time_anchor_age_us(); 0 (fresh) on fake_reset().
+void fake_set_anchor_age_us(uint64_t age_us);
 // The last wall-offset change > 1 ms (drives time_base_last_jump(), FW 42).
 // Cleared on fake_reset().
 void fake_set_time_jump(uint64_t t_local_us, int64_t delta_us);

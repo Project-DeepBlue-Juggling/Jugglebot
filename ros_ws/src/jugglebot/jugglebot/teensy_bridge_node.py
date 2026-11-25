@@ -825,6 +825,13 @@ _T2J_FLAG_ALL_AXIS_HB_OK = 0x4
 # the arm-took verification bit. Surfaced on /link_status as 'teensy_mpc_active'
 # (ARMING_CONTRACT A5) so a host-armed / firmware-not-armed split is visible.
 _T2J_FLAG_MPC_ACTIVE = int(p.HeartbeatT2JFlags.MPC_ACTIVE)
+# FW 52 (BUG-99 D1): the methods the bridge's Armed gate can refuse (the exact
+# per-axis/state rule is rpc_args.refused_while_armed); used only to name the gate
+# in an ERR_REJECTED message.
+_ARMED_GATED_METHODS = frozenset(int(m) for m in (
+    RpcMethod.SET_ABSOLUTE_POSITION, RpcMethod.SDO_WRITE, RpcMethod.SET_CONTROLLER_MODE,
+    RpcMethod.SET_VEL_GAINS, RpcMethod.SET_POS_GAIN, RpcMethod.SET_AXIS_STATE,
+    RpcMethod.REBOOT_ODRIVES))
 # Bits 4-5 carry the cone (CAN2) BusHealth value (generated single source:
 # p.HeartbeatT2JFlags.CONE_HEALTH_MASK / p.HEARTBEAT_CONE_HEALTH_SHIFT).
 # BusHealth.UNKNOWN == 0, so a flash older than the cone-health uplink reads
@@ -5529,6 +5536,28 @@ class TeensyBridgeNode(Node):
             target=self._setpoint_loop, name="teensy_bridge_setpoint", daemon=True)
         self._sp_thread.start()
 
+    def _armed_anywhere(self) -> bool:
+        """True if this node is Armed OR the bridge still reports Armed (T2J bit 3).
+
+        The firmware's Armed flag follows the J2T heartbeat, staged until the next
+        10 Hz tick, so for ~100-200 ms after a disarm the bridge can still be Armed
+        while the host is not. FW 52's reconfiguration gate (BUG-99 D1) keys on the
+        bridge's view, so a host-side refusal must consult both."""
+        if self._mpc_active:
+            return True
+        with self._lock:
+            hb = self._latest_heartbeat
+        return hb is not None and bool(int(hb.flags) & _T2J_FLAG_MPC_ACTIVE)
+
+    def _armed_refusal(self, what: str):
+        """FW 52 (BUG-99 D1): the operator-facing refusal for a reconfiguration
+        service called while Armed, or None when disarmed (on both sides)."""
+        if not self._armed_anywhere():
+            return None
+        return (f'{what} REFUSED: the robot is Armed. The can-bridge (FW 52, BUG-99) refuses '
+                f'gain, mode, state (other than IDLE), absolute-position and SDO writes and ODrive '
+                f'reboots under a live stream. Disarm first (/set_setpoint_output false), then retry.')
+
     def _wait_wire_disarmed(self, timeout_s: float = 1.0) -> bool:
         """Wait until the FIRMWARE confirms disarmed (HeartbeatT2J bit3 drops).
 
@@ -5746,6 +5775,17 @@ class TeensyBridgeNode(Node):
                         f'(> {_ARM_U0_HAND_TOL_REV} rev) — refuse to arm the '
                         f'streamed hand lane (would risk the hand deviation '
                         f'guard / a lead-clamped lurch)')
+                # FW 52 (BUG-99 D1): the bridge refuses CLOSED_LOOP and a mode
+                # change while IT is Armed, and a disarm reaches it only on the next
+                # heartbeat tick: a re-arm within ~100-200 ms of a disarm would meet
+                # the stale bit. Wait for the bridge to report disarmed (at once in
+                # the normal case), then send the preamble.
+                if not self._wait_wire_disarmed(1.0):
+                    if created_here:
+                        source.close()
+                    return False, ('the can-bridge still reports Armed (T2J bit 3) 1 s after '
+                                   'the last disarm: refuse to arm (FW 52 refuses the Hand '
+                                   'CLOSED_LOOP preamble while Armed)')
                 ok1, m1, _ = self.teensy_set_axis_state(
                     _HAND_AXIS, proto.ODRIVE_STATES['CLOSED_LOOP'])
                 ok2, m2, _ = (self.teensy_set_controller_mode(
@@ -7902,7 +7942,13 @@ class TeensyBridgeNode(Node):
                                     timeout=timeout, retries=retries)
             return True, 'OK', result
         except RpcError as e:
-            return False, self._annotate_rpc_error(str(e)), b""
+            msg = self._annotate_rpc_error(str(e))
+            # FW 52 (BUG-99 D1): name the Armed reconfiguration gate at the point of
+            # failure, so a refusal never reads as a mystery ERR_REJECTED.
+            if (int(getattr(e, 'status', -1)) == int(p.RpcStatus.ERR_REJECTED)
+                    and int(method) in _ARMED_GATED_METHODS and self._armed_anywhere()):
+                msg = f'{msg} — {rpc_args.ARMED_REFUSAL_HINT}'
+            return False, msg, b""
 
     @staticmethod
     def _rpc_status_token(message: str) -> str:
@@ -10039,7 +10085,15 @@ class TeensyBridgeNode(Node):
         (see logbook/2026-06-30-canbridge-phase6-reboot-latch.md) and out of scope
         here. Step 2 (cold-start clear): after firing the reboot, clear the
         persisted cold-start state on the Platform Teensy (the ODrives lose their
-        references on reboot). Returns (ok, message)."""
+        references on reboot). Returns (ok, message).
+
+        FW 52 (BUG-99 D1, orchestrator 2026-11-25): refused while Armed, BEFORE the
+        RPC and before step 2 — the bridge refuses the reboot anyway, and clearing
+        is_homed / levelling under a live stream for a reboot that never happened
+        would strand the operator in a re-home for nothing."""
+        refusal = self._armed_refusal('reboot_odrives')
+        if refusal is not None:
+            return False, refusal
         ok, msg, _ = self.teensy_reboot()
         # Step 2: clear is_homed/levelling/pose together. Unconditional on the
         # reboot result (parity with can_node, which always cleared) — clearing is
@@ -10203,6 +10257,11 @@ class TeensyBridgeNode(Node):
         # apply the Teensy-side cold-start config (gains + vel/curr limits
         # + POSITION/PASSTHROUGH) to the configure_axes. Run after homing (auto via
         # /home) and again before arming / after activate (TRAP_TRAJ → PASSTHROUGH).
+        refusal = self._armed_refusal('/configure')
+        if refusal is not None:
+            res.success = False
+            res.message = refusal
+            return res
         axes = list(self.get_parameter('configure_axes').value or [])
         ok, msg = self._run_configure(axes)
         res.success = ok
@@ -10251,6 +10310,11 @@ class TeensyBridgeNode(Node):
             if state not in proto.ODRIVE_STATES:
                 res.success = False
                 res.message = f"Unknown hand state '{state}'"
+                return self._log_service_outcome('set_hand_state', res, quiet_success=True)
+            refusal = None if state == 'IDLE' else self._armed_refusal(f"set_hand_state {state}")
+            if refusal is not None:   # FW 52 (BUG-99 D1): IDLE (a stop) is always allowed
+                res.success = False
+                res.message = refusal
                 return self._log_service_outcome('set_hand_state', res, quiet_success=True)
             ok, m, _ = self.teensy_set_axis_state(_HAND_AXIS, proto.ODRIVE_STATES[state])
             res.success = ok
@@ -10321,6 +10385,14 @@ class TeensyBridgeNode(Node):
             pos_gain = float(req.pos_gain)
             vel_gain = float(req.vel_gain)
             vel_int_gain = float(req.vel_integrator_gain)
+            # FW 52 (BUG-99 D1): refuse BOTH writes while Armed. The bridge refuses
+            # SET_VEL_GAINS while Armed (and allows the Hand SET_POS_GAIN), so sending
+            # them would leave a half-applied gain pair on the Hand.
+            refusal = self._armed_refusal('set_hand_gains')
+            if refusal is not None:
+                res.success = False
+                res.message = refusal
+                return self._log_service_outcome('set_hand_gains', res, quiet_success=True)
             ok1, m1, _ = self.teensy_set_pos_gain(_HAND_AXIS, pos_gain)
             ok2, m2, _ = self.teensy_set_vel_gains(_HAND_AXIS, vel_gain, vel_int_gain)
             if ok1 and ok2:

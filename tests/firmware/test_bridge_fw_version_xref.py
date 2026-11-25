@@ -338,6 +338,16 @@ def test_the_bump_history_records_what_this_version_carries():
                    'activate_to_request', 'ERR_BAD_ARGS', 'never clipped',
                    'bit-identical', 'PROTOCOL_VERSION stays 14'):
         assert needle in m51.group(1), (needle, m51.group(1))
+    # FW 52 — BUG-99 owner decisions D1-D5.  The substance: one Armed predicate at
+    # one enforcement point, the per-axis clear scope, the held clock offset with
+    # its bound, the legacy entry as a resume, the Jetson-only source check.
+    m52 = re.search(r'^// 51→52:(.*)$', text, re.M)
+    assert m52 is not None, "FW 52 history line missing"
+    for needle in ('BUG-99', 'refused_while_armed', 'send_axis_frame', 'ERR_REJECTED',
+                   'SET_AXIS_STATE IDLE', 'fault_notify_clear_axis_errors',
+                   'TIME_OFFSET_HOLD_MAX_US', 'RESUME', 'JETSON_IP', 'crc_errors',
+                   'PROTOCOL_VERSION stays 14'):
+        assert needle in m52.group(1), (needle, m52.group(1))
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

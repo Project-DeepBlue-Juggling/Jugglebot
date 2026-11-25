@@ -280,6 +280,7 @@ DIAG_WAIT_S = 2.5                         # TWO forced-refresh opportunities + m
 # not ~1 s. A 1.5 s wait would fail closed on a HEALTHY link; 2.5 s covers two
 # opportunities plus margin. See _wait_hand_diag.
 BRINGUP_VERIFY_S = 3.0                    # post---close-loop CLOSED_LOOP poll (leg bench's 3.0)
+DISARM_VERIFY_S = 1.0           # FW 52: the bridge's Armed bit must clear before a re-zero
 _T2J_FLAG_TIME_SYNCED = 0x1               # HeartbeatT2J flags bit 0
 _T2J_FLAG_MPC_ACTIVE = 0x8
 # Bit 6 (HAND_SOURCE_STREAMED, the FW 17 hand-mastery latch) was retired at
@@ -2837,8 +2838,23 @@ class _StallBenchIO:
             self._hold_stop = None
 
     def disarm(self):
+        """Stop the hold stream, disarm, and WAIT for the bridge to report disarmed.
+
+        can-bridge FW 52 (BUG-99 D1) refuses SET_ABSOLUTE_POSITION (the frame restore
+        in hand_stall_stage._finish) while Armed, and set_heartbeat_flags(0) only
+        stages the disarm for the next 10 Hz heartbeat: without the wait the restore
+        can meet the bridge's stale Armed bit and be refused. Bounded; on a timeout it
+        says so and returns (the restore then reports its own refusal, loudly)."""
         self._stop_hold()
         self.client.set_heartbeat_flags(0)
+        t0 = time.time()
+        while time.time() - t0 < DISARM_VERIFY_S:
+            hb = _hb()
+            if hb is None or not (int(hb.flags) & _T2J_FLAG_MPC_ACTIVE):
+                return
+            time.sleep(0.02)
+        print(f"WARNING: the bridge still reports Armed {DISARM_VERIFY_S:.1f} s after the "
+              f"disarm; FW 52 (BUG-99) refuses the encoder frame restore while Armed")
 
     def hand_move_probe(self, target):
         """A Hand ladder to where the Hand rests; it must be REFUSED while latched."""

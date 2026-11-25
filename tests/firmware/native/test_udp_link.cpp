@@ -221,3 +221,37 @@ TEST_CASE("FW 40: a setpoint and a heartbeat landing in ONE task_net tick both r
   }
   CHECK(netlockprobe::violations() == 0);
 }
+
+// FW 52 (BUG-99 D5, A3): only the Jetson (192.168.42.1) talks to the bridge. A
+// datagram from any other source is dropped before decode: never dispatched,
+// counted in crc_errors (uplinked as dn_crc_errors) and in foreign_src with its
+// address. The Jetson's own frames are untouched.
+TEST_CASE("FW 52 D5: a datagram from a source other than the Jetson is dropped and counted, never dispatched") {
+  netlockprobe::reset();
+  CanBridge::udp_link_init();
+  EthernetUDP* stream = _registry()[JbUdp::PORT_STREAM];
+  REQUIRE(stream != nullptr);
+  { CanBridge::NetLock lk; stream->setReceiveQueueCapacity(8); }
+  stream->clear();
+  uint8_t sp[64];
+  const CanBridge::UdpStats s0 = CanBridge::udp_link_stats();
+  const uint32_t f0 = CanBridge::udp_foreign_src_drops();
+  const uint16_t n1 = make_setpoint(sp, sizeof(sp), 500);
+  stream->stage_from(IPAddress(192, 168, 42, 3), sp, n1);    // a foreign host on the wire
+  stream->stage_from(IPAddress(192, 168, 20, 34), sp, n1);   // the Jetson's OTHER interface address
+  CanBridge::udp_link_service();
+  CanBridge::UdpStats s1 = CanBridge::udp_link_stats();
+  CHECK(s1.rx_setpoints - s0.rx_setpoints == 0u);   // never reached the dispatcher
+  CHECK(s1.rx_frames - s0.rx_frames == 0u);
+  CHECK(s1.crc_errors - s0.crc_errors == 2u);       // host-visible (dn_crc_errors)
+  CHECK(CanBridge::udp_foreign_src_drops() - f0 == 2u);
+  CHECK(CanBridge::udp_foreign_src_last() == ((192u << 24) | (168u << 16) | (20u << 8) | 34u));
+  // The Jetson's frame on the same socket passes.
+  const uint16_t n2 = make_setpoint(sp, sizeof(sp), 501);
+  stream->stage(sp, n2);
+  CanBridge::udp_link_service();
+  const CanBridge::UdpStats s2 = CanBridge::udp_link_stats();
+  CHECK(s2.rx_setpoints - s1.rx_setpoints == 1u);
+  CHECK(s2.crc_errors == s1.crc_errors);
+  CHECK(CanBridge::udp_foreign_src_drops() - f0 == 2u);
+}

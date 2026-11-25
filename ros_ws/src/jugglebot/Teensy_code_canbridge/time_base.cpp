@@ -61,6 +61,11 @@ bool time_synced() {
   return (micros64() - last) < TIME_ANCHOR_STALE_US;
 }
 
+uint64_t time_anchor_age_us() {
+  if (!s_have_offset) return UINT64_MAX;
+  return micros64() - atomic_read_u64(&s_last_anchor_us);
+}
+
 // ── Per-anchor diagnostic state (FW 11) ──────────────────────────────────────
 // Written ONLY by set_wall_anchor, which has exactly ONE caller
 // (time_sync_master.cpp::on_tod_response, net-task context) — verified by grep,

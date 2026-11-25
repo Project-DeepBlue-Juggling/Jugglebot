@@ -46,6 +46,10 @@ static UdpStats s_stats = {0, 0, 0, 0, 0};
 static volatile uint32_t s_last_rtt_us = 0;
 static volatile uint32_t s_rtt_jitter_us = 0;
 static volatile uint64_t s_last_rx_us = 0;
+// FW 52 (BUG-99 D5): single writer (task_net, drain_socket), console reader.
+static volatile uint32_t s_foreign_src_drops = 0;
+static volatile uint32_t s_foreign_src_last  = 0;
+static bool is_jetson(const IPAddress& a) { return a == kJetsonIP; }
 
 // RX scratch (sized to the max frame; one buffer, RX is single-task).
 static uint8_t s_rx_buf[JbUdp::MAX_FRAME];
@@ -125,6 +129,20 @@ static void drain_socket(EthernetUDP& sock, bool is_rpc) {
       len = sock.parsePacket();
       if (len <= 0) break;   // socket drained (empty-exit) → n < budget, no cap hit
       if (len > (int)sizeof(s_rx_buf)) { sock.read((uint8_t*)nullptr, 0); s_stats.crc_errors++; continue; }
+      // FW 52 (BUG-99 D5, A3): only the Jetson talks to the bridge (owner,
+      // 2026-11-25). A datagram from any other source is dropped BEFORE decode,
+      // so it can never reach a setpoint, heartbeat or RPC handler. Counted in
+      // crc_errors (uplinked as dn_crc_errors: a host-visible symptom) and in
+      // foreign_src with its address (the [diag] console line).
+      const IPAddress src = sock.remoteIP();
+      if (!is_jetson(src)) {
+        sock.read((uint8_t*)nullptr, 0);
+        s_stats.crc_errors++;
+        s_foreign_src_drops = s_foreign_src_drops + 1;
+        s_foreign_src_last = ((uint32_t)src[0] << 24) | ((uint32_t)src[1] << 16) |
+                             ((uint32_t)src[2] << 8) | (uint32_t)src[3];
+        continue;
+      }
       sock.read(s_rx_buf, len);
     }
     JbUdp::Header hdr;
@@ -221,6 +239,8 @@ bool udp_send_rpc(uint8_t msg_type, const uint8_t* payload, uint16_t len) {
 }
 
 UdpStats udp_link_stats()      { return s_stats; }
+uint32_t udp_foreign_src_drops() { return s_foreign_src_drops; }
+uint32_t udp_foreign_src_last()  { return s_foreign_src_last; }
 // FW 40 (FEAT-41): packets QNEthernet overwrote in the stream socket's receive
 // queue since boot (its droppedReceiveCount). 0 is the invariant with the queue
 // at STREAM_RX_QUEUE_CAPACITY; non-zero means frames arrived faster than the

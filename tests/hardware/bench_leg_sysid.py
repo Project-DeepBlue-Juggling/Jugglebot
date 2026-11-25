@@ -1365,8 +1365,30 @@ class BridgeSysID:
         if self._client is not None:
             self._client.set_heartbeat_flags(0)   # mpc_active=0 — firmware gates output off
 
+    def _bridge_reports_armed(self) -> bool:
+        """The bridge's own Armed bit (T2J MPC_ACTIVE). None heartbeat -> False."""
+        from teensy_link import protocol as _pr
+        with self._lock:
+            hb = self._cache['hb']
+        return hb is not None and bool(int(hb.flags) & int(_pr.HeartbeatT2JFlags.MPC_ACTIVE))
+
+    def _wait_bridge_disarmed(self, what: str, timeout_s: float = 1.0) -> None:
+        """Can-bridge FW 52 (BUG-99 D1) refuses SET_POS_GAIN / SET_VEL_GAINS on a Leg
+        while Armed. ``_disarm`` only stages flags=0 for the next 10 Hz heartbeat, so
+        wait for the bridge to report disarmed; raise, naming the reason, if it does
+        not (a gain write mid-stream is refused by design, never silently skipped)."""
+        t_end = time.monotonic() + timeout_s
+        while self._bridge_reports_armed():
+            if time.monotonic() >= t_end:
+                raise RuntimeError(
+                    f"{what}: the can-bridge still reports Armed {timeout_s:.1f} s after the "
+                    f"disarm; FW 52 (BUG-99) refuses gain writes while Armed: disarm first")
+            time.sleep(0.02)
+
     def _apply_gains(self, g: sid.GainTriple):
-        """RAM-only, session-only gain apply over CAN3 via RPC (re-applied per point)."""
+        """RAM-only, session-only gain apply over CAN3 via RPC (re-applied per point).
+        Disarmed only (can-bridge FW 52): waits for the bridge to report disarmed."""
+        self._wait_bridge_disarmed('apply gains')
         self._rpc.call(int(self._RpcMethod.SET_POS_GAIN),
                        self._rpc_args.encode_set_pos_gain(self.axis_id, g.pos_gain))
         self._rpc.call(int(self._RpcMethod.SET_VEL_GAINS),
@@ -1374,8 +1396,22 @@ class BridgeSysID:
                            self.axis_id, g.vel_gain, g.vel_int_gain))
 
     def _clear_errors(self):
-        self._rpc.call(int(self._RpcMethod.CLEAR_ERRORS),
-                       self._rpc_args.encode_clear_errors(self.axis_id))
+        """The ALL-AXES clear. Can-bridge FW 52 (BUG-99 D2): only an AXIS_ALL
+        CLEAR_ERRORS releases the Soft E-stop latch; a per-axis clear (what this sent
+        before) clears that axis only. On a one-Leg bench the absent axes make the
+        bridge answer ERR_TIMEOUT although axis 0's frame went out and the latch WAS
+        released (any frame on the wire is the release condition), so ERR_TIMEOUT is
+        success here; every other status still raises."""
+        from teensy_link.rpc import RpcError
+        from teensy_link import protocol as _pr
+        try:
+            self._rpc.call(int(self._RpcMethod.CLEAR_ERRORS),
+                           self._rpc_args.encode_clear_errors(self._rpc_args.AXIS_ALL))
+        except RpcError as e:
+            if int(e.status) != int(_pr.RpcStatus.ERR_TIMEOUT):
+                raise
+            print("    clear_errors(AXIS_ALL): ERR_TIMEOUT from the absent axes "
+                  "(one-Leg bench); the latch is released")
 
     def _send_knot(self, u0, u1, u2, v0, t_origin_us):
         sp = self._Setpoint(

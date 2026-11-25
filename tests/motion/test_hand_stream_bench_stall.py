@@ -485,6 +485,15 @@ class _World:
         self.armed = False
         self.fail_on = fail_on        # (method name, exception) raised AFTER it took effect
         self.calls = []
+        # can-bridge FW 52 (BUG-99 D1): the bridge refuses the reconfiguration RPCs
+        # (rpc_args.refused_while_armed) while ITS Armed bit is up, and that bit lags a
+        # disarm by up to one heartbeat: `disarm_lag_reads` heartbeat reads after a
+        # disarm still report Armed (0 = no lag, the default).
+        self.disarm_lag_reads = 0
+        self._lag_left = 0
+
+    def bridge_armed(self):
+        return self.armed or self._lag_left > 0
 
     def step(self):
         import time
@@ -518,7 +527,10 @@ class _World:
 
     def hb(self):
         import types
-        return types.SimpleNamespace(flags=0x9 if self.armed else 0x1, fault_state=self.fault,
+        armed = self.bridge_armed()
+        if not self.armed and self._lag_left > 0:
+            self._lag_left -= 1
+        return types.SimpleNamespace(flags=0x9 if armed else 0x1, fault_state=self.fault,
                                      lead_clamp_mask=0, max_dev_leg=0xFF, max_dev_value=0.0,
                                      max_dev_u0=0.0, max_dev_enc=0.0)
 
@@ -543,6 +555,8 @@ def _install_bench(monkeypatch, world):
 
         def set_heartbeat_flags(self, flags):
             world.calls.append(("flags", int(flags)))
+            if world.armed and not (flags & 1):
+                world._lag_left = world.disarm_lag_reads
             world.armed = bool(flags & 1)
 
         def send_stream(self, mt, payload):
@@ -561,6 +575,10 @@ def _install_bench(monkeypatch, world):
             name = B.RpcMethod(int(method)).name
             world.calls.append(("rpc", name, args))
             world.step()
+            state = args[1] if name == "SET_AXIS_STATE" else None
+            if world.bridge_armed() and B.rpc_args.refused_while_armed(int(method), B.HAND, state):
+                world.calls.append(("refused", name))
+                raise B.RpcError(int(method), int(B.RpcStatus.ERR_REJECTED))
             if name == "SET_VEL_CURR_LIMITS":
                 world.vel_limit, world.limit = args[1], args[2]
             elif name == "SET_ABSOLUTE_POSITION":
@@ -696,3 +714,22 @@ def test_a_drive_with_no_motor_thermistor_runs_to_pass_and_says_so():
     assert "reports no motor temperature; FET 31.0 C was checked instead" in text
     assert "STALL-GUARD PASS" in text
     assert "nan" not in text.lower()
+
+
+# ── can-bridge FW 52 (BUG-99 D1): the frame restore after a disarm ─────────────────
+def test_fw52_the_frame_restore_waits_for_the_bridge_to_report_disarmed(monkeypatch):
+    """The bridge refuses SET_ABSOLUTE_POSITION while its Armed bit is up, and the bit
+    lags a disarm by up to a heartbeat. _StallBenchIO.disarm waits for the bridge's
+    bit to clear, so the restore in _finish lands. Without the wait (FW 51 code) the
+    restore met the stale bit and was refused: frame NOT restored, re-home."""
+    world = _World()
+    world.disarm_lag_reads = 3            # three heartbeat reads still say Armed
+    B = _install_bench(monkeypatch, world)
+    rc, out = _bench_main(B, ["--stage", "stall", "--arm"])
+    assert rc == 0, out
+    assert ("refused", "SET_ABSOLUTE_POSITION") not in world.calls, out
+    assert not [c for c in world.calls if c[0] == "refused"], out
+    shifts = [c[2][0] for c in world.calls if c[0] == "rpc" and c[1] == "SET_ABSOLUTE_POSITION"]
+    assert len(shifts) == 2, out          # the shift, then its restore
+    assert abs(world.offset) < 0.02, out  # frame restored
+    assert "STALL-GUARD PASS" in out, out

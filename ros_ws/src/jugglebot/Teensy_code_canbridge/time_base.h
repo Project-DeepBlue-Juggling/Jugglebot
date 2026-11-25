@@ -66,6 +66,9 @@ uint64_t now_wall_us();
 // false after TIME_ANCHOR_STALE_US without a new anchor (e.g. teensy_bridge_node
 // down) so the broadcast self-gates and slaves learn the clock is untrustworthy.
 bool time_synced();
+// FW 52 (BUG-99 D3): micros64() since the last accepted anchor; UINT64_MAX before
+// the first. The held-offset rule in interp_on_setpoint reads it.
+uint64_t time_anchor_age_us();
 
 // Apply a wall-clock anchor from the Jetson (RpcMethod::TIME_OF_DAY_QUERY result),
 // captured close to when the request was sent. `jetson_wall_us` is the Jetson's
@@ -129,5 +132,12 @@ constexpr int64_t TIME_STEP_THRESHOLD_US = 20'000;        // 20 ms
 // time_synced() goes false this long after the last anchor (≈3× the 30 s resync)
 // so a lost Jetson link self-reports as unsynced instead of silently drifting.
 constexpr uint64_t TIME_ANCHOR_STALE_US = 90'000'000ULL;  // 90 s
+// FW 52 (BUG-99 D3): how long a scheduled stream that was already playing keeps
+// mapping stamps with the HELD offset after time_synced() falls. 180 s since the
+// last anchor (90 s past the loss): at a 20 ppm crystal bound the mapping drifts
+// <= 20 us/s, continuously, <= 3.6 ms at the end, against a 50 ms frame cover
+// (measured drift is a few ppm). Past it the frames are dropped (stop + Soft E-stop).
+constexpr uint64_t TIME_OFFSET_HOLD_MAX_US = 180'000'000ULL;   // 180 s
+static_assert(TIME_OFFSET_HOLD_MAX_US > TIME_ANCHOR_STALE_US, "the hold starts where sync ends");
 
 }  // namespace CanBridge

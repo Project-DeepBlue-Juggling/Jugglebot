@@ -116,11 +116,14 @@ def test_no_hand_master_rpc_survives():
 
 
 def _dispatch_case_body(name: str) -> str:
-    """The body of `case RpcMethod::NAME:` up to the next case/default in rpc.cpp."""
+    """The body of the DISPATCH `case RpcMethod::NAME: {` up to the next case/default
+    in rpc.cpp. The braced label is preferred: since FW 52 (BUG-99 D1) the Armed
+    predicate refused_while_armed lists REBOOT_ODRIVES (and others) as bare labels in
+    its own switch, ahead of dispatch(), and a first-match scan read that one."""
     text = _RPC_CPP.read_text()
-    m = re.search(
-        rf"case\s+RpcMethod::{name}\s*:(.*?)(?=\n\s*case\s+RpcMethod::|\n\s*default\s*:)",
-        text, re.DOTALL)
+    tail = r"(.*?)(?=\n\s*case\s+RpcMethod::|\n\s*default\s*:)"
+    m = (re.search(rf"case\s+RpcMethod::{name}\s*:\s*\{{" + tail, text, re.DOTALL)
+         or re.search(rf"case\s+RpcMethod::{name}\s*:" + tail, text, re.DOTALL))
     assert m, f"{name} dispatch case not found in rpc.cpp"
     return m.group(1)
 

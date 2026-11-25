@@ -56,6 +56,11 @@ struct UdpStats {
   uint32_t rx_setpoints;   // FW 40: valid SETPOINT datagrams dispatched (before the interp's seq/NaN guards)
 };
 UdpStats udp_link_stats();
+// FW 52 (BUG-99 D5, A3): datagrams dropped because their source address is not
+// JETSON_IP (cumulative, console-only; ALSO counted in UdpStats.crc_errors, which
+// is uplinked as dn_crc_errors) and the last such source, packed a.b.c.d big-endian.
+uint32_t udp_foreign_src_drops();
+uint32_t udp_foreign_src_last();
 uint32_t udp_link_stream_queue_dropped();   // FW 40: stream-socket packets overwritten in the RX queue
 
 // Last measured Jetson round-trip (us) and jitter estimate. Reported by the

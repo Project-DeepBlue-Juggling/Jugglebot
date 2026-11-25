@@ -54,6 +54,12 @@ void fault_set_mpc_active(bool active);
 // soft-reset/UV auto-retry does NOT release the latch (only clear_error_flags,
 // not this hook), so an ODrive bounce can't silently clear a guard E-STOP.
 void fault_notify_clear_errors();
+// FW 52 (BUG-99 D2): a PER-AXIS CLEAR_ERRORS that reached the wire. Zeroes that
+// axis's disarm_reason cache only (the stale-cache re-fault the global clear also
+// guards against). Releases NO global latch and does not refill the soft-reset
+// budget: only the AXIS_ALL clear (fault_notify_clear_errors) does. No-op for an
+// axis >= NUM_AXES.
+void fault_notify_clear_axis_errors(uint8_t axis);
 
 // A REBOOT_ODRIVES RPC arms a BOUNDED watchdog-suppression latch: the
 // ~2–4 s heartbeat silence of a deliberate ODrive reboot must not be read as a CAN

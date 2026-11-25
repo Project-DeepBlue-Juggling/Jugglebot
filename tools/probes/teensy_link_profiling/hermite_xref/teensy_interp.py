@@ -183,6 +183,13 @@ def span_eval(P0, V0, P1, V1, s):
     return p, v, a
 
 
+# FW 52 (BUG-99 D3): time_base.h TIME_OFFSET_HOLD_MAX_US (pinned by
+# tests/firmware/test_sched_held_offset_twin.py).
+TIME_OFFSET_HOLD_MAX_US = 180_000_000
+# FW 52 (BUG-99 D3): leg_interp.cpp LEGACY_REC_MAX_AGE_US = 4 x INTERP_PERIOD_US.
+LEGACY_REC_MAX_AGE_US = 4 * 2000
+
+
 def sched_exhaust_us(first_or_axis):
     """The group's cover + grace (leg_interp.cpp sched_exhaust_us): the Hand group
     owns HAND_AXIS and up."""
@@ -424,6 +431,7 @@ class TeensyLegInterp:
         self.sched_out_en = True
         self.sched_coldstart = False
         self.sched_frames = self.sched_demoted = self.sched_future_drops = 0
+        self.sched_held_offset = 0       # FW 52 (BUG-99 D3)
         self.sched_q_overflow = self.sched_expired = self.sched_superseded = 0
         self.sched_stale = self.sched_stops = self.sched_stop_capped = 0
         self.sched_hand_c1_stops = 0
@@ -434,6 +442,15 @@ class TeensyLegInterp:
         # FW 22 hand torque feedforward mirror (leg_interp.cpp U2b block)
         self.hand_base_torque = 0.0      # scheduled frame's torque_ff[6] (the bias target)
         self.hand_recover_slewing = False   # caller-driven: the firmware's s_hand_recover_slewing
+        # FW 52 (BUG-99 D3): the legacy -> scheduled entry check's state
+        # (leg_interp.cpp s_lg_p/s_lg_v/s_lg_t/s_lg_valid, s_have_latched,
+        # s_recover_slewing). recover_slewing is caller-driven, like the Hand's.
+        self.recover_slewing = False
+        self.legs_latched = False
+        self._lg_p = [0.0] * NUM_AXES
+        self._lg_v = [0.0] * NUM_AXES
+        self._lg_t = [0, 0]
+        self._lg_valid = [False, False]
         self.hand_ff_ks = 0.0
         self.hand_ff_fade = 0.0
         self.hand_ff_bias = 0.0
@@ -476,6 +493,7 @@ class TeensyLegInterp:
 
         self.prev_accel = list(accel)
         self.prev_timestamp = t_latch
+        self.legs_latched = True
 
     # ── 500 Hz tick (port of _interpolate_and_send) ───────────────────────────
     def tick(self, t_now, fb_pos, fb_ts=None):
@@ -568,6 +586,17 @@ class TeensyLegInterp:
         # torque_ff passes through (friction FF not ported — see module docstring).
         for i in range(NUM_LEGS):
             self.cmd_torque[i] = self.base_torque[i]
+
+        # FW 52 (BUG-99 D3): record the legacy Leg command (pre-clamp) for the
+        # legacy -> scheduled entry check (leg_interp.cpp, same place).
+        if not self._sg[0].active:
+            for i in range(NUM_LEGS):
+                self._lg_p[i], self._lg_v[i] = self.cmd_pos[i], self.cmd_vel[i]
+            self._lg_t[0] = now_us
+            self._lg_valid[0] = all(math.isfinite(self.cmd_pos[i]) and math.isfinite(self.cmd_vel[i])
+                                    for i in range(NUM_LEGS))
+        else:
+            self._lg_valid[0] = False
 
         # The ladder's own answer, before either guard touches it.
         self.raw_pos = list(self.cmd_pos)
@@ -795,6 +824,11 @@ class TeensyLegInterp:
         if self._sg[1].active:
             # FW 22: the scheduled group supersedes the legacy ladder above.
             h_pos, h_vel, h_acc = self._sched_eval(self._sg[1], HAND_AXIS, now_us)
+            self._lg_valid[1] = False
+        else:
+            # FW 52 (BUG-99 D3): record the legacy Hand command (pre-clamp).
+            self._lg_p[HAND_AXIS], self._lg_v[HAND_AXIS], self._lg_t[1] = h_pos, h_vel, now_us
+            self._lg_valid[1] = math.isfinite(h_pos) and math.isfinite(h_vel)
         self.hand_raw_pos = h_pos
         self.hand_raw_acc = h_acc
         self.hand_raw_vel = h_vel
@@ -910,14 +944,28 @@ class TeensyLegInterp:
     def sched_on_setpoint(self, t_origin_us, recv_us, u0, u1, u2, v0, v1, v2,
                           has_hand=False, torque=None, accel=None,
                           hand_ff_gain=0.0, time_synced=True, full=True,
-                          wall_offset_us=0):
+                          wall_offset_us=0, anchor_age_us=0):
         """Ingest one HAS_SCHED frame (7-wide lists).  Returns the verdict:
         ``'sched'`` (queued), ``'demoted'`` (the caller must latch it as legacy),
         or ``'future'`` (refused).  ``full`` = HAS_U1|HAS_U2|HAS_V1|HAS_V2 all set;
         ``wall_offset_us`` = the bridge's wall − mono offset."""
-        if not (full and time_synced):
+        # FW 52 (BUG-99 D3), leg_interp.cpp sched_lane_for: unsynced, a stream whose
+        # scheduled group is active with the output enabled keeps the HELD offset
+        # until the anchor is TIME_OFFSET_HOLD_MAX_US old, then is dropped; else
+        # (output off / no group active / a partial knot set) demoted as before.
+        # (The FW 52 legacy -> scheduled entry check is mirrored in _sched_apply.)
+        if not full:
             self.sched_demoted += 1
             return 'demoted'
+        if not time_synced:
+            if self.sched_out_en and (self._sg[0].active or self._sg[1].active):
+                if int(anchor_age_us) >= TIME_OFFSET_HOLD_MAX_US:
+                    self.sched_future_drops += 1
+                    return 'future'
+                self.sched_held_offset += 1
+            else:
+                self.sched_demoted += 1
+                return 'demoted'
         # FW 50 (BUG-99 A1): the firmware first bounds stamp - wall (unsigned
         # difference, then +-SCHED_STAMP_RANGE_US) so its signed sums cannot
         # overflow. Python ints do not overflow, so this twin never had the FW 49
@@ -966,6 +1014,7 @@ class TeensyLegInterp:
         self.hand_active = False
         self.hand_next_pos = self.hand_next2_pos = self.hand_v1 = None
         self.hand_prev_accel = None
+        self._lg_valid[1] = False            # FW 52: the Hand's legacy record dies with the session
         gh, gl = self._sg[1], self._sg[0]
         gh.active = gh.latched = gh.restart = False
         if gl.active and gl.phase != SCHED_PLAY:
@@ -1033,6 +1082,43 @@ class TeensyLegInterp:
         if g.active and f['t_start_us'] < g.frame_t_start_us:
             self.sched_stale += 1
             return
+        # FW 52 (BUG-99 D3): a legacy -> scheduled ENTRY while the output reaches the
+        # wire is checked like a resume (leg_interp.cpp sched_apply): the new curve at
+        # now against the legacy command of the last tick (p + v dt; p, v only, the
+        # RESUME tolerances). Discontinuous: a LATCHED C2 stop from the legacy state.
+        gi = 0 if g.first == 0 else 1
+        was_legacy = (not g.active) and (self.legs_latched if gi == 0 else self.hand_active)
+        if was_legacy and counts:
+            slewing = self.recover_slewing if gi == 0 else self.hand_recover_slewing
+            rec_age = now_us - self._lg_t[gi]
+            if (self._lg_valid[gi] and not slewing
+                    and 0 <= rec_age <= LEGACY_REC_MAX_AGE_US):
+                dt = rec_age * 1e-6
+                dp = dv = 0.0
+                for i in range(g.first, g.last):
+                    pn, vn, _ = play_eval(f['t_start_us'], f['p0'][i], f['v0'][i],
+                                          f['p1'][i], f['v1'][i], f['p2'][i],
+                                          f['v2'][i], sched_s_max(g.first), now_us)
+                    dp = max(dp, abs(pn - (self._lg_p[i] + self._lg_v[i] * dt)))
+                    dv = max(dv, abs(vn - self._lg_v[i]))
+                if not (dp <= g.rtol[0] and dv <= g.rtol[1]):
+                    for i in range(g.first, g.last):
+                        g.ep[i] = self._lg_p[i] + self._lg_v[i] * dt
+                        g.ev[i] = self._lg_v[i]
+                        g.ea[i] = 0.0
+                    self._sched_set_base_pos(g, f)
+                    g.stop_D, capped = stop_duration(g.ev[g.first:g.last], g.ea[g.first:g.last],
+                                                     g.accel_limit, g.jerk_limit)
+                    if capped:
+                        self.sched_stop_capped += 1
+                    g.c1_stop = False
+                    g.t0_us = now_us
+                    g.frame_t_start_us = f['t_start_us']
+                    g.phase = SCHED_STOP
+                    g.active = g.latched = True
+                    g.restart = False
+                    self.sched_refused += 1
+                    return
         if g.active and not g.restart:
             # Handover instant: a playing group whose cover ended inside this tick
             # has not been advanced yet (promotion runs first) — compare at the
@@ -1087,6 +1173,8 @@ class TeensyLegInterp:
         g.active = True
         g.latched = g.restart = False
         g.hand_ff_gain = f['hand_ff_gain']
+        if g.first == 0:
+            self.legs_latched = True
 
     def _sched_set_base_pos(self, g, f):
         if g.first == 0:

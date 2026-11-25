@@ -28,6 +28,7 @@ static uint64_t g_wall_us = 0;
 static uint64_t g_mono_us = 0;
 static uint64_t g_udp_last_rx_us = 0;
 static bool     g_time_synced = true;   // bridge wall anchor present (steady state)
+static uint64_t g_anchor_age_us = 0;    // FW 52: time_anchor_age_us() (fresh by default)
 static bool     g_homing = false, g_activate = false, g_deactivate = false;
 static bool     g_commands_allowed = true;   // CAN3 gate; default open (see fake_hal.h)
 static std::vector<SentFrame>      g_sent;
@@ -42,6 +43,7 @@ static int  g_last_tx_class    = -1;
 void fake_reset() {
   g_wall_us = 0; g_mono_us = 0; g_udp_last_rx_us = 0;
   g_time_synced = true;
+  g_anchor_age_us = 0;
   fake_clear_time_jump();
   g_homing = g_activate = g_deactivate = false;
   g_commands_allowed = true;
@@ -66,6 +68,8 @@ uint64_t micros64()    { return g_mono_us; }
 
 void fake_set_time_synced(bool synced) { g_time_synced = synced; }
 bool time_synced() { return g_time_synced; }   // HAL: time_base.h
+void fake_set_anchor_age_us(uint64_t age_us) { g_anchor_age_us = age_us; }
+uint64_t time_anchor_age_us() { return g_anchor_age_us; }   // HAL: time_base.h (FW 52)
 
 // HAL: time_base.h (FW 42, FEAT-46) — the last wall-offset change > 1 ms.
 static bool     g_tb_jump_valid = false;

@@ -454,6 +454,17 @@ static void task_diag(void*) {
                     (unsigned long)s.tx_frames, (unsigned long)s.crc_errors,
                     (unsigned long)s.seq_gaps, (unsigned long)s.drain_cap_hits,
                     (int)time_synced(), (unsigned)xPortGetFreeHeapSize());
+      // FW 52 (BUG-99 D5): datagrams dropped for a source that is not the Jetson.
+      // Nonzero = some host other than 192.168.42.1 is talking to the bridge, or
+      // the Jetson is sending from another address (then the bridge ignores it:
+      // LINK_LOST, RPC timeouts, and dn_crc_errors climbing on the host).
+      if (udp_foreign_src_drops() != 0) {
+        const uint32_t a = udp_foreign_src_last();
+        Serial.printf("[diag] FOREIGN UDP SOURCE dropped: foreign_src=%lu last=%u.%u.%u.%u (only %u.%u.%u.%u is accepted)\n",
+                      (unsigned long)udp_foreign_src_drops(), (unsigned)(a >> 24), (unsigned)((a >> 16) & 0xFF),
+                      (unsigned)((a >> 8) & 0xFF), (unsigned)(a & 0xFF),
+                      JETSON_IP[0], JETSON_IP[1], JETSON_IP[2], JETSON_IP[3]);
+      }
       const CanRxHealth ch = can_buses_rx_health();
       print_bus_health("jugglebot", ch.jugglebot);
       print_bus_health("bb", ch.bb);

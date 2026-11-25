@@ -35,6 +35,10 @@ class IPAddress {
   IPAddress() : a_(0), b_(0), c_(0), d_(0) {}
   IPAddress(uint8_t a, uint8_t b, uint8_t c, uint8_t d)
       : a_(a), b_(b), c_(c), d_(d) {}
+  // FW 52 (BUG-99 D5): the Arduino IPAddress API udp_link.cpp's source check uses.
+  bool operator==(const IPAddress& o) const { return a_ == o.a_ && b_ == o.b_ && c_ == o.c_ && d_ == o.d_; }
+  bool operator!=(const IPAddress& o) const { return !(*this == o); }
+  uint8_t operator[](int i) const { return i == 0 ? a_ : i == 1 ? b_ : i == 2 ? c_ : d_; }
   uint8_t a_, b_, c_, d_;
 };
 
@@ -88,6 +92,7 @@ class EthernetUDP {
   int parsePacket() {
     netlockprobe::require_held();
     if (next_ < pending_.size()) {
+      cur_src_ = srcs_[next_];
       cur_ = pending_[next_++];
       return (int)cur_.size();
     }
@@ -119,25 +124,31 @@ class EthernetUDP {
     ++tx_packets_;
     return true;
   }
-  IPAddress remoteIP()  { netlockprobe::require_held(); return IPAddress(192, 168, 42, 1); }
+  // The current packet source (the Jetson, 192.168.42.1, unless staged otherwise).
+  IPAddress remoteIP()  { netlockprobe::require_held(); return cur_src_; }
   uint16_t  remotePort() { netlockprobe::require_held(); return 5005; }
 
   // ―― test-only staging / inspection ――
-  void stage(const uint8_t* d, int len) { pending_.emplace_back(d, d + len); }
+  void stage(const uint8_t* d, int len) { stage_from(jetson(), d, len); }
+  // FW 52 (BUG-99 D5): stage a packet from an arbitrary source address.
+  void stage_from(IPAddress src, const uint8_t* d, int len) { pending_.emplace_back(d, d + len); srcs_.push_back(src); }
+  static IPAddress jetson() { return IPAddress(192, 168, 42, 1); }
   // Deliver one packet the way the real receive callback does: bounded by the
   // queue capacity, a full queue losing its OLDEST undrained packet (counted).
   // stage() above stays unbounded for the drain-budget tests.
   void deliver(const uint8_t* d, int len) {
     if (pending_.size() - next_ >= rx_queue_capacity_) {
       pending_.erase(pending_.begin() + (long)next_);
+      srcs_.erase(srcs_.begin() + (long)next_);
       ++dropped_;
     }
     pending_.emplace_back(d, d + len);
+    srcs_.push_back(jetson());
   }
   int  remaining() const { return (int)pending_.size() - (int)next_; }
   int  consumed()  const { return (int)next_; }
   unsigned tx_packets() const { return tx_packets_; }
-  void clear() { pending_.clear(); cur_.clear(); next_ = 0; tx_packets_ = 0; tx_bytes_ = 0; dropped_ = 0; }
+  void clear() { pending_.clear(); srcs_.clear(); cur_.clear(); next_ = 0; tx_packets_ = 0; tx_bytes_ = 0; dropped_ = 0; }
 
  private:
   uint16_t port_ = 0;
@@ -145,6 +156,8 @@ class EthernetUDP {
   uint32_t dropped_ = 0;
   std::vector<std::vector<uint8_t>> pending_;
   std::vector<uint8_t> cur_;
+  std::vector<IPAddress> srcs_;
+  IPAddress cur_src_ = IPAddress(192, 168, 42, 1);
   size_t next_ = 0;
   unsigned tx_packets_ = 0;
   size_t tx_bytes_ = 0;
