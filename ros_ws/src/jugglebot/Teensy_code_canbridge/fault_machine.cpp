@@ -51,6 +51,8 @@
 #include "leg_activate.h"       // activate_active (mutual exclusion with deferred stow)
 #include "leg_deactivate.h"     // deactivate_active (mutual exclusion with deferred stow)
 #include "udp_link.h"            // udp_last_rx_us (Jetson link health)
+#include "leg_stow_gate.h"       // FW 53: leg_idle_permitted, odrive_set_state_tx (STOW), leg_freeze_tx
+#include "hardware_config.h"     // JBOp::GENTLE_MOVE_TIMEOUT_S
 #include "time_base.h"
 
 namespace CanBridge {
@@ -61,6 +63,13 @@ static bool s_fatal_can_error = false;    // CAN3 (Jugglebot core bus) confirmed
 static uint8_t s_soft_reset_attempts = 0;
 static bool s_stow_pending = false;       // deferred-stow latch
 static bool s_stowing = false;            // a deferred stow is in progress
+// FW 53 (I-FW-19) CONFIRM: the descent is COMMANDED complete; the stream keeps
+// commanding Stow until the encoders confirm it (leg_idle_permitted), then the
+// present Legs are IDLE'd through the gate. Sub-state of s_stowing.
+static bool     s_stow_confirming = false;
+static uint64_t s_stow_confirm_t0_us = 0;   // commanded-completion tick (CONFIRM's clock)
+static uint8_t  s_stow_idled = 0;           // present Legs whose CONFIRM IDLE reached the wire
+static const uint64_t STOW_CONFIRM_TIMEOUT_US = (uint64_t)(JBOp::GENTLE_MOVE_TIMEOUT_S * 1.0e6f);
 static bool s_first_leg_hb_seen = false;
 static volatile bool s_mpc_active = false;
 static uint8_t s_guard_mode = JbUdp::GuardMode::DISABLED;
@@ -368,6 +377,53 @@ static void evaluate_errors() {
   if (is_fatal) s_fatal_error = true;
 }
 
+// ── Deferred-stow CONFIRM (FW 53) ─────────────────────────────────────────────
+static void end_stow() {
+  interp_end_stow();
+  s_stowing = false;
+  s_stow_pending = false;
+  s_stow_confirming = false;
+}
+
+// One fault tick of CONFIRM. The interp keeps streaming the Stow target (0 rev,
+// v = 0) and output stays enabled (s_stowing), so a lagging Leg keeps closing on
+// Stow under its own position loop. A Leg already IDLE (dropped) satisfies the
+// predicate and does not block. A guard E-STOP is deliberately not an input: the
+// descent to Stow is the safety response (see evaluate_guard).
+static void stow_confirm_step(uint64_t now) {
+  uint8_t present = 0;
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) if (leg_present(i)) present |= (uint8_t)(1u << i);
+  if (leg_idle_permitted(now)) {
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+      const uint8_t bit = (uint8_t)(1u << i);
+      if (!(present & bit) || (s_stow_idled & bit)) continue;
+      if (odrive_set_state_tx(i, ODriveState::IDLE, TxCls::SAFETY, Who::STOW) == DeResult::SENT) {
+        s_stow_idled |= bit;
+        leg_held_clear(i);   // a race refusal earlier must not outlive the IDLE
+      }
+    }
+    // A refused or unsent IDLE (the gate flipped inside the tick, a full TX queue)
+    // is asked for again next tick, still under the predicate.
+    if ((uint8_t)(present & ~s_stow_idled) == 0) { end_stow(); return; }
+  }
+  if (now >= s_stow_confirm_t0_us && now - s_stow_confirm_t0_us >= STOW_CONFIRM_TIMEOUT_US) {
+    // No confirmation in GENTLE_MOVE_TIMEOUT_S: never IDLE above Stow. End the
+    // stream FIRST (a later stream frame would overwrite the hold), then freeze each
+    // present Leg not reporting IDLE at its measured position (+ stopping distance,
+    // ~0 at rest), clamped to its stroke; leg_freeze_tx sets HELD (and sends nothing
+    // on a stale encoder: the Leg then holds the last streamed Stow setpoint).
+    // Clearing the pending stow keeps DEACTIVATE / HOME / REBOOT available.
+    interp_end_stow();
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+      const uint8_t bit = (uint8_t)(1u << i);
+      if (!(present & bit) || (s_stow_idled & bit)) continue;
+      if (axes[i].axis_state == ODriveState::IDLE) continue;
+      (void)leg_freeze_tx(i, STOW_WINDOW_MIN_REV, STROKE_MAX_REV[i]);
+    }
+    end_stow();
+  }
+}
+
 // ── CAN3 watchdog + deferred stow ─────────────────────────────────────────────
 static void watchdog_and_stow() {
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
@@ -417,6 +473,7 @@ static void watchdog_and_stow() {
     s_fatal_can_error = true;
     s_stow_pending = true;            // canonical arm point — independent of any host path
     if (s_stowing) { interp_end_stow(); s_stowing = false; }  // bus re-dropped mid-descent → re-arm
+    s_stow_confirming = false; s_stow_idled = 0;   // FW 53: a re-drop in CONFIRM re-arms too
     // Latch WHICH leg and HOW stale, at the trip instant (FW 23). Re-scanned
     // rather than threaded out of the predicate so the predicate stays a pure
     // boolean; the scan runs only on the trip edge (!s_fatal_can_error above).
@@ -442,14 +499,17 @@ static void watchdog_and_stow() {
     }
   }
 
-  // Stow progress. Completion → IDLE all legs (deactivating) and clear the latch.
+  // Stow progress. FW 53 (I-FW-19, fw53_design.md 3.3): the COMMANDED completion
+  // no longer IDLEs the Legs (FW 52 IDLE'd all six here whatever the encoders said,
+  // dropping a lagging Leg from wherever it was). It starts CONFIRM, evaluated in
+  // this same tick, so a Platform already at Stow is IDLE'd exactly when FW 52 did.
   if (s_stowing) {
-    if (interp_stow_complete()) {
-      for (uint8_t i = 0; i < NUM_LEGS; ++i) can_jugglebot_tx(ODrive::encode_set_state(i, ODriveState::IDLE), TxCls::SAFETY);   // TxCls::SAFETY
-      interp_end_stow();
-      s_stowing = false;
-      s_stow_pending = false;
+    if (!s_stow_confirming && interp_stow_complete()) {
+      s_stow_confirming = true;
+      s_stow_confirm_t0_us = now;
+      s_stow_idled = 0;
     }
+    if (s_stow_confirming) stow_confirm_step(now);
   }
 }
 
@@ -709,6 +769,7 @@ void fault_machine_init() {
   s_fatal_error = s_undervoltage_error = s_fatal_can_error = false;
   s_soft_reset_attempts = 0;
   s_stow_pending = s_stowing = s_first_leg_hb_seen = false;
+  s_stow_confirming = false; s_stow_confirm_t0_us = 0; s_stow_idled = 0;
   s_estop_latched = false;
   s_estop_state = JbUdp::FaultState::NONE;
   s_hand_stall_latched = false;

@@ -30,6 +30,7 @@ static uint64_t g_udp_last_rx_us = 0;
 static bool     g_time_synced = true;   // bridge wall anchor present (steady state)
 static uint64_t g_anchor_age_us = 0;    // FW 52: time_anchor_age_us() (fresh by default)
 static bool     g_homing = false, g_activate = false, g_deactivate = false;
+static uint8_t  g_homing_axis = 0xFF;   // FW 53: homing_axis_in_flight() (leg_stow_gate.o reads it)
 static bool     g_commands_allowed = true;   // CAN3 gate; default open (see fake_hal.h)
 static std::vector<SentFrame>      g_sent;
 static std::deque<SentFrame>       g_can3_rx;   // inbound injection FIFO (growable hook)
@@ -46,6 +47,7 @@ void fake_reset() {
   g_anchor_age_us = 0;
   fake_clear_time_jump();
   g_homing = g_activate = g_deactivate = false;
+  g_homing_axis = 0xFF;
   g_commands_allowed = true;
   g_send_fail_index = -1;
   g_send_defer_index = -1;
@@ -95,6 +97,8 @@ void fake_set_deactivate(bool active) { g_deactivate = active; }
 bool homing_active()     { return g_homing; }       // HAL: leg_homing.h
 bool activate_active()   { return g_activate; }     // HAL: leg_activate.h
 bool deactivate_active() { return g_deactivate; }   // HAL: leg_deactivate.h
+void    fake_set_homing_axis(uint8_t axis) { g_homing_axis = axis; }
+uint8_t homing_axis_in_flight() { return g_homing_axis; }   // HAL: leg_homing.h (FW 53 HOMING_OWNER)
 
 // ── CAN3 command gate ────────────────────────────────────────────────────────
 void fake_set_commands_allowed(bool allowed) { g_commands_allowed = allowed; }

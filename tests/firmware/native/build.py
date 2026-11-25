@@ -69,7 +69,8 @@ _OBJECTS = {
     "coldstart_hal":     NATIVE_DIR / "coldstart_hal.cpp",
     # FW 53 (I-FW-19): the Stow gate, LINKED (not #included) so the cold-start ladder drivers can link
     # the same object once their call sites migrate (U2..U5). It calls homing_axis_in_flight(), which
-    # each driver that links it must supply unless it #includes leg_homing.cpp (test_leg_homing).
+    # each driver that links it must supply unless it #includes leg_homing.cpp (test_leg_homing);
+    # fake_hal.o supplies a controllable one (fake_set_homing_axis) for test_fault_machine.
     "leg_stow_gate":     FIRMWARE_DIR / "leg_stow_gate.cpp",
     # A-N1: leg_interp.cpp's `hand7 reset` now calls fault_machine.h's
     # fault_hand_dev_prev_reset() so a reset re-baselines fault_machine.cpp's
@@ -84,9 +85,10 @@ _OBJECTS = {
 # Test binaries: (driver source, objects to link). Each driver #includes the .cpp
 # it tests (fault_machine.cpp/leg_interp.cpp), so those are NOT in the link list.
 _BINARIES = {
+    # FW 53 U4: the deferred stow's CONFIRM IDLEs / holds through the Stow gate.
     "test_fault_machine": (
         NATIVE_DIR / "test_fault_machine.cpp",
-        ["axis_state", "ball_butler_state", "fake_hal"],
+        ["axis_state", "ball_butler_state", "fake_hal", "leg_stow_gate"],
     ),
     "test_leg_interp": (
         NATIVE_DIR / "test_leg_interp.cpp",
@@ -179,9 +181,10 @@ _BINARIES = {
         NATIVE_DIR / "test_leg_deactivate.cpp",
         ["axis_state", "ball_butler_state", "coldstart_hal", "leg_stow_gate"],
     ),
+    # FW 53 U4: the A6 twin + Homing's frames through the gate (HOMING_OWNER).
     "test_leg_homing": (
         NATIVE_DIR / "test_leg_homing.cpp",
-        ["axis_state", "ball_butler_state", "coldstart_hal"],
+        ["axis_state", "ball_butler_state", "coldstart_hal", "leg_stow_gate"],
     ),
     # FW 53 (I-FW-19): the Stow predicate, the de-energise wrappers, the hold and the HELD census,
     # against the cold-start fake (recording CAN3 TX, controllable clock, cs_stage_leg).

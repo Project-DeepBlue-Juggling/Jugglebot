@@ -54,11 +54,7 @@ _HOMING_OWNER_FILES = {"leg_stow_gate.h", "leg_stow_gate.cpp", "leg_homing.cpp",
 _ALLOWLIST: list[tuple[str, str]] = [
     # U2: leg_deactivate.cpp (migrated in FW 53 U2; no entries left)
     # U3: leg_activate.cpp (migrated in FW 53 U3; no entries left)
-    # U4: leg_homing.cpp + fault_machine.cpp
-    ("leg_homing.cpp", "can_jugglebot_send(ODrive::encode_set_state(s_axis, ODriveState::IDLE));"),
-    ("leg_homing.cpp", "ok = can_jugglebot_send(ODrive::encode_set_state(a, ODriveState::CLOSED_LOOP)) && ok;"),
-    ("leg_homing.cpp", "can_jugglebot_send(ODrive::encode_set_state(a, ODriveState::IDLE));"),
-    ("fault_machine.cpp", "for (uint8_t i = 0; i < NUM_LEGS; ++i) can_jugglebot_tx(ODrive::encode_set_state(i, ODriveState::IDLE), TxCls::SAFETY);"),
+    # U4: leg_homing.cpp + fault_machine.cpp (migrated in FW 53 U4; no entries left)
     # U5: rpc.cpp + gpio_poll.cpp (the Hand ball-sensor SDO function-invoke, Hand: pass-through)
     ("rpc.cpp", "return send_axis_frame(method, a.axis, ODrive::encode_set_state(a.axis, a.state), a.state);"),
     ("rpc.cpp", "can_jugglebot_tx(ODrive::encode_reboot(i), TxCls::SAFETY));"),
