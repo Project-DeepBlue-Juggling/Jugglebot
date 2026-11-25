@@ -188,7 +188,7 @@ namespace TrajOp {
   constexpr float HAND_ACC_LIMIT_RPS2 = 4500.0f;
   constexpr float HAND_ACC_CEILING_RPS2 = 4500.0f;
   constexpr float KNOT_DT_S = 0.025f;
-  constexpr uint32_t EMIT_LEAD_KNOTS = 0u;
+  constexpr uint32_t EMIT_LEAD_KNOTS = 1u;
   constexpr float MIN_MOVE_DURATION_S = 0.2f;
   constexpr float MIN_TIMED_LEAD_S = 0.25f;
   constexpr float MAX_TIMED_LEAD_S = 60.0f;

@@ -970,7 +970,7 @@ trajectory_op:
                                    # ball aboard the loaded ascent authority is lower still
                                    # (throw_envelope.ACCEL_AUTHORITY_RPS2), see BUG-40.
   knot_dt_s: 0.025                 # Fixed 40 Hz knot spacing {s} (matches firmware SEGMENT_T_S; not runtime-configurable)
-  emit_lead_knots: 0               # Emitter lookahead {knots}: at tick k the emitter targets knot `T = t_k + emit_lead_knots*knot_dt_s`,
+  emit_lead_knots: 1               # Emitter lookahead {knots}: at tick k the emitter targets knot `T = t_k + emit_lead_knots*knot_dt_s`,
                                    # stamped; FW 22+ plays it on the stamp. 0 or 1 only (schedule.py refuses others). At 1 a frame normally lands
                                    # before its stamp, so the firmware promotes it on the knot instead of extrapolating span 2 (BUG-111/BUG-89).
                                    # The planner's wire horizon `schedule.WIRE_READ_KNOTS = 3 + emit_lead_knots` derives from it, so every splice
