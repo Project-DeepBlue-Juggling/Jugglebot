@@ -2,24 +2,22 @@
 id: BUG-35
 kind: bug
 title: mocap_node loses frames to queue full in bursts before the first dispatch (544 / 373 / 490 frames in the three 2026-10-28 Sittings)
-status: inbox
+status: dropped
 created: '2026-10-28'
-updated: '2026-11-01T17:51:41Z'
+updated: '2026-11-25T01:42:01Z'
 owners: []
 priority: low
 effort: m
 hardware: robot
 owner: hands
 radius: subsystem
+diagnosis: hypothesis
 area: tracking
 blocked_by: []
 links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
-night_skip: sitting
-night_skip_on: '2026-11-22'
-night_skip_note: Only the live mocap stream reproduces it; robot, owner hands.
 ---
 
 Each 2026-10-28 Sitting lost mocap frames to the node queue (150 deep) in one or two bursts in the first ~90 s after launch and none during goals.
@@ -40,3 +38,7 @@ Each 2026-10-28 Sitting lost mocap frames to the node queue (150 deep) in one or
 ## Priority
 
 Low priority while no frames are lost in goals.
+
+## Progress
+
+- 2026-11-25: not reproduced: no frame-queue-full line in any log since the 2026-10-28 Sittings (276 in October, 0 in November). The 23 November warnings all say never received from QTM, a QTM-side gap. The mechanism remains in mocap_interface.py; reopen if a Sitting shows frames dropped by mocap_node.

@@ -4,7 +4,7 @@ kind: idea
 title: 'Platform IMU residue: unflown checks and the unmeasured lever arm'
 status: inbox
 created: '2026-11-23'
-updated: '2026-11-23T15:48:50Z'
+updated: '2026-11-25T01:41:15Z'
 owners: []
 priority: low
 effort: m
@@ -36,3 +36,7 @@ Left open when plans/archived/platform-imu.md was archived on 2026-11-23 (IDEA-2
 - The one offline part is the ring-frequency gap (5.4 Hz from the encoders against 4.4 to 4.7 Hz from Mocap): an analysis of captures already taken, with no code change on the robot path.
 - Effort: m in total, s per bullet. Hardware: robot for four of six. Owner: hands for the Sitting steps.
 - One risk: the missing 256-word block on the first pass of each 1 kHz upload has an unknown cause; the refill hides it, so a change elsewhere in the upload path could make it permanent without any test noticing.
+
+## Progress
+
+- 2026-11-25: 2026-11-25: ring-frequency gap answered for x (the IMU agrees with Mocap at 4.3 Hz; the encoders' 5.4 Hz is the motor-side view; y unresolved) and the clock chain fixed (BUG-132, FW 15). Open: lever arm, forced gap and Armed upload after a Fault (Sitting); chart labels (a browser); the missing 256-word block (recheck on FW 15).

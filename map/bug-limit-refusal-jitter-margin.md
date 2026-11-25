@@ -4,7 +4,7 @@ kind: bug
 title: 10 % jitter-margin class of LIMIT_* refusals
 status: inbox
 created: '2026-10-24'
-updated: '2026-11-08T03:03:15Z'
+updated: '2026-11-25T01:41:20Z'
 owners: []
 priority: medium
 effort: m
@@ -60,3 +60,4 @@ A question ticket carries this to the owner; the answer under its `## Answer` re
 - 2026-11-03: P4 working point (two-ball-oval P4, logbook 2026-11-03-p4-working-point-600-8000-20a) raises the leg velocity limit 350 -> 600 mm/s, well past the 365 mm/s that would have cleared 13 of the 14 refusals, so these refusals are expected to be absorbed; confirmation is the P4 ramp Sitting's columns canary (count CATCH leg-vel refusals). The jitter-margin option itself stays undecided.
 - 2026-11-04: 2026-11-03 Sitting at 600/8000 (P4): 0 LIMIT_VEL and 0 LIMIT_ACC refusals across the Sitting, so the CATCH leg-velocity class did not recur. One LIMIT_JERK refusal on a CATCH re-aim RESEND (peak leg jerk 510456 vs 200000, leg 0, canary throw 20); the first plan stood and the ball was caught.
 - 2026-11-08: 2026-11-08 owner decision: two more refusals on 2026-11-07, both LIMIT_JERK Catch installs (203,074 and 200,003 against 200,000; 2 of 48 goals). No gate tolerance: add them to the tally; option 2 (absorb jitter in the re-aim) is the preferred fix if the class grows.
+- 2026-11-25: tally 2026-11-25 over the Sittings 11-18, 11-20, 11-22 and 11-23 (117 goals): no Attempt ended on a LIMIT refusal (LIMIT_JERK 26 and LIMIT_ACC 1, all re-sends that left the old plan installed). The dominant miss is MISSED_CATCH. Trigger not fired; stays open.

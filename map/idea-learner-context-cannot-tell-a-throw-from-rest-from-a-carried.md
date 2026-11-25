@@ -4,7 +4,7 @@ kind: idea
 title: Learner context cannot tell a Throw from rest from a carried Throw
 status: inbox
 created: '2026-11-04'
-updated: '2026-11-13T05:58:39Z'
+updated: '2026-11-25T01:41:10Z'
 owners: []
 priority: low
 effort: m
@@ -35,3 +35,4 @@ Filed by the 2026-11-04 debrief (2026-11-03 Sitting, one-ball oval). The oval's 
 ## Progress
 
 - 2026-11-13: Sitting of 2026-11-13: the split holds on a second plant at Dwell 0.40: landing minus command +27 mm from rest against +71 +/- 18 mm carried (launch 1: +32 vs +57; +27 vs +111 at 0.35). One pair at the identical command: +23 vs +141 mm. Priority left as filed.
+- 2026-11-25: check 2026-11-25: the ask is met in code: release_kind (free_cup or carried) is in the Learner context and the Memory, and the oval's carried Throws write carried (981 carried rows in memory_v2.csv). The remaining bias question belongs to plans/active/learner-efficacy.md (E2(b) and E3). Left open for that plan's owner to close.

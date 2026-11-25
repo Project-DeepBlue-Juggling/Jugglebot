@@ -2,9 +2,9 @@
 id: BUG-114
 kind: bug
 title: MISSED_CATCH end line names the empty carried Throw, not the flight that was lost one cycle earlier
-status: inbox
+status: complete
 created: '2026-11-18'
-updated: '2026-11-20T12:38:30Z'
+updated: '2026-11-25T01:41:00Z'
 owners: []
 priority: medium
 effort: m
@@ -17,9 +17,6 @@ blocked_by: []
 links:
 - logbook/2026-11-18-sitting-debrief.md
 filed_by: sitting-debrief 2026-11-18
-night_skip: too-large
-night_skip_on: '2026-11-22'
-night_skip_note: Seen again 2026-11-20. Naming the lost flight needs a rule for when the carried Throw never flew; more than one unit.
 ---
 
 Found at the debrief of the Sitting of 2026-11-18 (34 MISSED_CATCH ends). Related: BUG-78, BUG-33.
@@ -31,3 +28,4 @@ Fix made at the debrief: the MISSED-BALL line is logged at INFO. Still open: mak
 ## Progress
 
 - 2026-11-20: Seen again at the Sitting of 2026-11-20: both MISSED_CATCH end lines (launch log 2026-11-20-22-53-34, lines 2071 and 2428) name the empty carried Throw.
+- 2026-11-25: check 2026-11-25: the ENDED line and the verdict END line already name the lost Catch (executor.py:6663 and 6909; launch_2026-11-20_3.log:1139), and MISSED-BALL is logged at INFO. The STOP-BEFORE-CARRIED lines are stop-path messages, not verdicts. Closed as complete; reopen only if the stop-path lines should name the lost Ball too.
