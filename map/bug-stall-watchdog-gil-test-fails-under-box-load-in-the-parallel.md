@@ -2,13 +2,20 @@
 id: BUG-143
 kind: bug
 title: Stall watchdog GIL test fails under box load in the parallel phase
-status: inbox
+status: complete
 created: '2026-11-25'
-updated: '2026-11-24T17:39:57Z'
+updated: '2026-11-25T15:55:45Z'
 owners: []
 priority: low
+effort: xs
+hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: tests-tooling
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-26-stall-watchdog-gil-test-names-before-stall.md
 filed_by: claude
 ---
 
