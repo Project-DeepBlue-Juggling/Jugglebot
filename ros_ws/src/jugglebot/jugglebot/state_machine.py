@@ -1424,8 +1424,8 @@ class FaultHandler(StateHandler):
           for HOMING): while some Leg is still Closed-loop and some is not (the
           other five holding the Platform up after one Leg dropped) BOOT holds
           and the operator is told how to lower it. Exception, R3 (FW 53 U6b,
-          _mixed_recovery): a mixed set whose every dropped Leg reads Idle and
-          provably kept its position reference is stowed like the all-six case,
+          _mixed_recovery): a mixed set with exactly one dropped Leg, which reads
+          Idle and provably kept its position reference, is stowed like the all-six case,
           once per visit; otherwise a profiled stow must not drive a Leg that is
           not Closed-loop.
 
@@ -1474,8 +1474,9 @@ class FaultHandler(StateHandler):
 
         A mixed set is some Legs Closed-loop and the rest not (one dropped out by
         itself, the others holding the Platform up). It is stowed, by the same
-        profiled DEACTIVATE(AXIS_ALL) as the all-six exit stow, only when every
-        Leg that is not Closed-loop reads Idle and provably kept its position
+        profiled DEACTIVATE(AXIS_ALL) as the all-six exit stow, only when exactly
+        one Leg is not Closed-loop (two or more are refused with the count: the
+        owner approved one), and it reads Idle and provably kept its position
         reference (leg_reference.reference_unproven; the evidence was sealed at
         the operator's clear_errors, which is also what cleared the errors this
         exit waits for). The firmware's SETUP re-seeds such a Leg at its measured

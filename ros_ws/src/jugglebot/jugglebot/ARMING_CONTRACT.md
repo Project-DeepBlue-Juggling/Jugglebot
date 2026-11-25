@@ -143,8 +143,11 @@ work (2026-07-15) hit three distinct doors into that hole:
     Legs are Idle.
   - **Some Legs Closed-loop, some not** (one Leg dropped out by itself during
     ACTIVE or LEVELLING, and the firmware's Soft E-stop holds the other five at
-    their setpoints): a software stow only when every dropped Leg reads Idle and
-    provably kept its position reference (owner, 2026-11-25; FW 53 U6b, R3).
+    their setpoints): a software stow only when exactly one Leg is not
+    Closed-loop, and it reads Idle and provably kept its position reference
+    (owner, 2026-11-25; FW 53 U6b, R3). Two or more dropped Legs are refused with
+    a notice naming the count ("recovery is offered for one dropped Leg only")
+    and the E-stop-button remedy below.
     `FaultHandler._mixed_recovery` decides with `leg_reference.reference_unproven`
     (homed flag kept, a Closed-loop baseline length seen, no `/robot_state` gap
     or odd drive state, a disarm reason seen and held until the operator's
@@ -208,8 +211,8 @@ work (2026-07-15) hit three distinct doors into that hole:
     Otherwise BOOT holds and raises one notice per episode: all six
     Closed-loop (a relaunch under a posed Platform) names the profiled Stow,
     `/deactivate`; a mixed case (one Leg dropped, five holding, homed flag
-    kept) gets A6's mixed-case text (the profiled recovery when the dropped Leg's
-    reference is proven kept, else the E-stop button); unknown or other states say to wait. BOOT then enters IDLE
+    kept) gets A6's mixed-case text (the profiled recovery when exactly one Leg
+    dropped and its reference is proven kept, else the E-stop button); unknown or other states say to wait. BOOT then enters IDLE
     by itself once the Legs are Idle. ACTIVE's legs-out exits (the Legs out of
     Closed-loop for `LEGS_OUT_TICKS`, and the deactivate reconcile window) go
     to IDLE only when the same predicate passes, otherwise to BOOT, whose gate
@@ -246,9 +249,13 @@ work (2026-07-15) hit three distinct doors into that hole:
     every doubt reads robot). Refusals are ERR_REJECTED with nothing on CAN and
     the host reads them as "Platform not at Stow". Covered: the ACTIVATE and
     DEACTIVATE aborts (hold, freeze, or return to Stow under the gentle profile
-    then IDLE; a guard trip during a Stow descent lets it finish, a fault during a
-    rise returns to Stow), the deferred fault stow (IDLE only once the encoders
-    confirm Stow, within 10 s, else freeze and HELD), a single-Leg DEACTIVATE, and
+    then IDLE; a guard trip during a Stow descent lets it finish, a Soft E-stop
+    or a timeout during a rise returns the Platform to Stow; a Leg that drops out
+    mid-rise freezes the others, and a Leg counts as dropped out as soon as its
+    drive reports an error or a disarm reason, even before its heartbeat leaves
+    Closed-loop), the deferred fault stow (IDLE only once the encoders
+    confirm Stow, within 10 s, else freeze at the measured position and HELD), a
+    single-Leg DEACTIVATE, and
     the RPC passthroughs (SET_AXIS_STATE to anything but CLOSED_LOOP on a Leg,
     REBOOT_ODRIVES, a Leg SDO_WRITE). A Leg SET_AXIS_STATE IDLE still passes the
     Armed gate (I-FW-18) and is decided here. A Leg the firmware refused to IDLE is
@@ -259,7 +266,7 @@ work (2026-07-15) hit three distinct doors into that hole:
     `/deactivate` (the profiled Stow). One Leg dropped out by itself, five
     holding: FAULT, then `clear_errors`; the profiled recovery runs only if the
     dropped Leg's reference is proven kept (A6), else support the Platform and
-    press the E-stop button. A rise that returned to Stow: FAULT, then BOOT and
+    press the E-stop button. Two or more Legs dropped: always the E-stop button. A rise that returned to Stow: FAULT, then BOOT and
     IDLE; retry the activate. A HELD Leg after a refused abort: `/deactivate`
     again (or the E-stop button with the Platform supported). A manual
     `/reboot_odrives`, `/encoder_search` or Leg IDLE refused with "Platform not at
@@ -281,6 +288,14 @@ work (2026-07-15) hit three distinct doors into that hole:
     Leg's first Closed-loop heartbeat. It must stay under about 190 ms (400 ms
     less two 99 ms heartbeat periods, one of them lost, and one 10 ms tick). A
     slower drive fails a normal activate or deactivate, with nothing moved.
+    Two Sitting checks (FW 53 audit, 2026-11-26): (1) after Homing, log each
+    Leg's rest position on its bottom stop and compare it with the Stow window's
+    lower edge, -0.11 rev: a Leg resting deeper reads not-at-Stow while
+    Closed-loop, so a pre-rise abort holds it HELD instead of IDLEing it (benign:
+    the FAULT exit stow lifts it to 0 and IDLEs it), and the margin is only
+    0.01 rev below the Homing stop; (2) a Leg in a drive state other than Idle,
+    encoder search or Closed-loop blocks every Leg reboot or Idle: use the E-stop
+    button.
 
 ## Enforcement points
 
@@ -385,7 +400,7 @@ work (2026-07-15) hit three distinct doors into that hole:
    DEACTIVATE succeeds**, so IDLE ("platform stowed, legs idle") is never
    claimed while the legs still hold a pose. A failed stow also holds FAULT,
    with one retry per operator `clear_errors`. The one exception is the proven mixed case
-   (some Legs Closed-loop, each dropped Leg Idle with a reference
+   (some Legs Closed-loop, exactly one dropped Leg, Idle, with a reference
    `leg_reference.reference_unproven` proves kept, A6): after the operator's
    `clear_errors` the exit requests the profiled DEACTIVATE(AXIS_ALL), once per
    FAULT visit. If any leg is not closed-loop in any other case,

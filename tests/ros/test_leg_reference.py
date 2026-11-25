@@ -166,11 +166,32 @@ def test_verdict_not_mixed_cases():
     assert mixed_case_verdict((CL, IDLE), True, True, w)[0] is False
 
 
-def test_verdict_names_every_unproven_leg():
+def test_verdict_names_the_unproven_leg():
     w = LegDropWatch()
     _feed(w, [CL] * 6)
-    _feed(w, [CL, IDLE, IDLE, CL, CL, CL], disarm=[0, CURRENT_LIMIT, MISSING_ESTIMATE, 0, 0, 0])
-    mixed, dropped, refusal = mixed_case_verdict((CL, IDLE, IDLE, CL, CL, CL), True, True, w)
-    assert mixed and dropped == [1, 2]
+    _feed(w, [CL, CL, IDLE, CL, CL, CL], disarm=[0, 0, MISSING_ESTIMATE, 0, 0, 0])
+    mixed, dropped, refusal = mixed_case_verdict((CL, CL, IDLE, CL, CL, CL), True, True, w)
+    assert mixed and dropped == [2]
     assert 'Leg 2: ' in refusal and 'MISSING_ESTIMATE' in refusal
-    assert 'Leg 1:' not in refusal
+
+
+@pytest.mark.parametrize('states,dropped', [
+    ((CL, IDLE, IDLE, CL, CL, CL), [1, 2]),
+    ((CL, IDLE, IDLE, IDLE, IDLE, IDLE), [1, 2, 3, 4, 5]),
+])
+def test_verdict_refuses_two_or_more_dropped_legs_even_when_each_is_proven(states, dropped):
+    """FW 53 audit follow-up: the owner approved the recovery for ONE dropped Leg.
+    Every dropped Leg here is proven (CURRENT_LIMIT, sealed), so only the count
+    refuses. Mutation caught: the count check removed (refusal None)."""
+    w = LegDropWatch()
+    _feed(w, [CL] * 6)
+    _feed(w, list(states), disarm=[0 if s == CL else CURRENT_LIMIT for s in states])
+    w.seal()
+    _feed(w, list(states))
+    for i in dropped:
+        assert reference_unproven(w.drop(i), is_homed=True, state=IDLE, fresh=True) is None
+    mixed, got, refusal = mixed_case_verdict(states, True, True, w)
+    assert mixed and got == dropped
+    assert refusal is not None
+    assert f'{len(dropped)} Legs' in refusal
+    assert 'one dropped Leg only' in refusal and 'E-stop button' in refusal

@@ -17,6 +17,7 @@ files_changed:
   - tests/ros/test_orchestrator_node.py
   - tests/ros/test_teensy_bridge_node_coldstart.py
   - tests/firmware/native/test_leg_deactivate.cpp
+  - ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md
 subsystem: [orchestrator, ros, safety]
 ---
 
@@ -230,3 +231,17 @@ Platform and a hand on the E-stop button, from a low pose:
 3. Measure the Leg ODrive heartbeat period: it bounds how far the five descend before a Leg
    that re-faults on engage is seen (the walk's 10 mm estimate assumes 100 ms).
 4. Check `REF_DRIFT_TOL_REV` (0.25 rev) against the sag the free Leg actually shows.
+
+## Audit follow-up (2026-11-26)
+
+The FW 53 audit found that `mixed_case_verdict` offered the recovery whenever at least one Leg was Closed-loop and every other Leg was proven. That covered 2 to 5 dropped Legs. The owner approved the recovery for one ("If the dropped Leg provably kept its reference ... re-enable it where it is and stow all six together"). The verdict now refuses when more than one Leg is not Closed-loop, before any per-Leg proof. The refusal still counts as `mixed`, so the FAULT exit goes to BOOT and BOOT's A7 hold applies. Its notice names the count and the Legs ("recovery is offered for one dropped Leg only") and the E-stop-button remedy. `ARMING_CONTRACT.md` A6, A7, A2 and the operator cases now say one Leg, and so does `INVARIANTS.md` I-FW-19. The firmware audit fixes and their contract wording are under the same heading in `2026-11-26-fw53-u8-cl-confirm-before-motion.md`. The two contract documents ride in this commit.
+
+Tests:
+- New: `test_verdict_refuses_two_or_more_dropped_legs_even_when_each_is_proven` (two and five dropped, each proven on its own) and `TestMixedCaseRecovery::test_two_dropped_legs_are_refused_with_the_count`.
+- Changed: `test_verdict_names_every_unproven_leg` became `test_verdict_names_the_unproven_leg`. It now drops one Leg, because with two dropped the count refusal comes first. The old assertions were `dropped == [1, 2]`, `'Leg 2: ' in refusal`, `'MISSING_ESTIMATE' in refusal` and `'Leg 1:' not in refusal`. The new ones are `dropped == [2]`, `'Leg 2: ' in refusal` and `'MISSING_ESTIMATE' in refusal`.
+- Mutation: the count check disabled (`if False and len(dropped) != 1`, run on the file and then restored). All three new tests failed (3 failed, 10 passed).
+
+### Verification (audit follow-up)
+- **Host and docs, scoped** (2026-11-26). Command: `python -m pytest -q -p no:cacheprovider tests/ros/test_leg_reference.py tests/ros/test_state_machine.py -k "verdict or MixedCase"`. Result: **13 passed**. The mutated run gave 3 failed, 10 passed.
+- **Scoped suite** (2026-11-26). The same run as the firmware follow-up: `flock /tmp/jugglebot-tests.lock nice -n 10 python -m pytest -q -p no:cacheprovider -n 4 --dist loadfile tests/firmware tests/teensy_link tests/ros/test_leg_reference.py tests/ros/test_state_machine.py tests/ros/test_orchestrator_node.py tests/sim/test_docs_links.py tests/sim/test_glossary_avoid_words.py tests/sim/test_logbook_front_matter.py`. Result: **1617 passed, 4 skipped in 418.58 s**.
+- **Not run:** `./run_tests.sh`, and no `colcon build`. The host change is live only after the orchestrator rebuilds the live checkout.

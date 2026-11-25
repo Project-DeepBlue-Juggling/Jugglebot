@@ -15,7 +15,8 @@ it, so the FAULT handler SEALS the open records when it sends the operator's
 clear_errors: from then on a reason going back to 0 is the clear, not a drive reboot.
 
 :func:`reference_unproven` is the predicate (None = proven, else the reason).
-:func:`mixed_case_verdict` applies it to every Leg that is not Closed-loop.
+:func:`mixed_case_verdict` applies it to the one Leg that is not Closed-loop, and
+refuses outright when two or more are not (the owner approved one).
 """
 from __future__ import annotations
 
@@ -176,14 +177,23 @@ def mixed_case_verdict(leg_states: Optional[Sequence[int]], fresh: bool,
                        ) -> Tuple[bool, List[int], Optional[str]]:
     """``(mixed, dropped, refusal)``. ``mixed``: some Legs read Closed-loop and the
     rest do not (from a full, fresh state set). ``dropped``: the Legs not
-    Closed-loop. ``refusal``: None when every dropped Leg is proven, else the
-    operator text naming each one that is not and why."""
+    Closed-loop. ``refusal``: None when exactly one Leg dropped and it is
+    proven, else the operator text: the count when two or more dropped (the
+    owner approved the recovery for ONE dropped Leg; FW 53 audit follow-up), or
+    each unproven Leg and why."""
     if leg_states is None or len(leg_states) != NUM_LEGS or not fresh:
         return False, [], None
     closed = [i for i, s in enumerate(leg_states) if s == ODRIVE_AXIS_CLOSED_LOOP]
     dropped = [i for i in range(NUM_LEGS) if i not in closed]
     if not closed or not dropped:
         return False, dropped, None
+    if len(dropped) != 1:
+        return True, dropped, (
+            f'Mixed-case recovery not offered: {len(dropped)} Legs '
+            f'({", ".join(str(i) for i in dropped)}) are not Closed-loop, and '
+            f'recovery is offered for one dropped Leg only. Support the Platform '
+            f'and press the E-stop button to bring it down, restore power, then '
+            f'send clear_errors (ARMING_CONTRACT A6 mixed case).')
     why = []
     for i in dropped:
         r = reference_unproven(watch.drop(i), is_homed=is_homed,

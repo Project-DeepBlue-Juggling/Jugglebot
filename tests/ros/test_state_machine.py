@@ -2500,6 +2500,47 @@ class TestMixedCaseRecovery:
         assert sm.state == RobotState.BOOT           # A7 holds the mixed set
         assert any('E-stop button' in n for n in ctx.operator_notices)
 
+    def test_two_dropped_legs_are_refused_with_the_count(self):
+        """FW 53 audit follow-up: the owner approved the recovery for ONE dropped
+        Leg. Legs 2 and 3 both drop with a proven-kept reason (CURRENT_LIMIT,
+        sealed at the clear): BOOT holds, no deactivate, one notice naming the
+        count and the E-stop-button remedy. Mutation caught: the count check
+        removed from mixed_case_verdict (a deactivate is requested)."""
+        two = (_CL, _CL, _IDLE, _IDLE, _CL, _CL)
+        pos = [2.19, 2.19, 2.10, 2.12, 2.19, 2.19]
+
+        def feed(ctx, states, dis):
+            ctx.leg_drops.observe(states, [0] * 6, [0, 0, dis, dis, 0, 0], pos, False)
+            _legs(ctx, states)
+
+        sm, ctx = TestFaultExitStow._armed_active()
+        feed(ctx, (_CL,) * 6, 0)
+        feed(ctx, two, 4096)
+        ctx.legs_closed_loop = False
+        ctx.errors = ['Legs 2, 3 disarmed']
+        ctx.fatal_error = True
+        ctx.guard_latched = True
+        _force_fault(sm, ctx)
+        sm.tick(ctx)
+        assert sm.state == RobotState.FAULT
+        assert _dispatch(ctx) == ['disarm_setpoints']
+        ctx.operator_notices.clear()
+        ctx.enqueue_command('clear_errors')
+        sm.tick(ctx)
+        assert _dispatch(ctx) == ['clear_errors']
+        _resolve(ctx, True)
+        feed(ctx, two, 0)
+        ctx.errors = []
+        ctx.fatal_error = False
+        ctx.guard_latched = False
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+        assert _dispatch(ctx) == []
+        said = [n for n in ctx.operator_notices if 'not offered' in n]
+        assert len(said) == 1
+        assert '2 Legs' in said[0] and 'one dropped Leg only' in said[0]
+        assert 'E-stop button' in said[0]
+
     def test_unhomed_drop_is_not_offered(self):
         sm, ctx = self._dropped_in_fault()
         ctx.is_homed = False
