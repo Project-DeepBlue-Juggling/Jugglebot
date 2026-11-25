@@ -16,7 +16,7 @@ const REFUSALS = {
     recording_in_progress: 'This recording is still being written; open it once the recording has stopped.',
     in_progress: 'This recording is still being written; open it once the recording has stopped.',
     no_index: 'This recording has no index (the recorder was killed before closing it), so it cannot be opened.',
-    compressed: 'This recording uses compressed chunks, which the replay reader does not support.',
+    compressed: 'This recording uses compressed chunks in a format the replay reader does not support (only zstd is).',
     changed: 'The recording changed on disk while it was being read. Close and reopen it.',
     http: 'The recording could not be read from the server. Check the connection and try again.',
     empty: 'This recording contains no replayable messages.',

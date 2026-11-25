@@ -251,8 +251,8 @@ def write_bag(path, duration_s: float = 35.0, *, seed: int = 0, unindexed: bool 
               compression: str = "none", edge_messages: bool = False) -> Dict:
     """Write a synthetic rosbag2-style MCAP at ``path``; return what was written.
 
-    ``compression``: "none" (rosbag2's default; the browser reader refuses
-    compressed chunks) or "zstd"/"lz4" for the refusal test. ``edge_messages``:
+    ``compression``: "none" (rosbag2's default; the browser reader reads none and zstd and refuses
+    any other codec) or "zstd"/"lz4" (lz4 is the refusal test). ``edge_messages``:
     opt-in equal-timestamp pairs on slot edges (the MCAP oracle test).
     ``unindexed``: the file stops before the footer/summary (a killed recording)
     and one /orchestrator_state message is written 0.3 s late in file order.

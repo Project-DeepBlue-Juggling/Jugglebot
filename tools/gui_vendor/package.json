@@ -6,7 +6,8 @@
   "dependencies": {
     "@foxglove/rosmsg": "5.0.5",
     "@foxglove/rosmsg2-serialization": "3.1.2",
-    "@mcap/core": "2.3.0"
+    "@mcap/core": "2.3.0",
+    "fzstd": "0.1.1"
   },
   "devDependencies": {
     "esbuild": "0.28.2"

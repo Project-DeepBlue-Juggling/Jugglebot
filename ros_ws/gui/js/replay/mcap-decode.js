@@ -1,8 +1,9 @@
 // Direct MCAP decode core (Phase 4, design § 2). Pure ESM: no worker or DOM
 // globals, so node imports it for the Python-oracle test and the worker wraps it.
 // Builds the schema.py chunk record ({t, cols} per topic) for one 10 s slot
-// straight from an indexed, uncompressed rosbag2 MCAP.
-import { McapIndexedReader, parse, MessageReader } from '../../lib/mcap-bundle.min.js';
+// straight from an indexed rosbag2 MCAP whose chunks are uncompressed or zstd (fzstd, bundled; any other
+// chunk compression is refused up front as 'compressed').
+import { McapIndexedReader, parse, MessageReader, decompressHandlers } from '../../lib/mcap-bundle.min.js';
 import { buildColumns } from './chunk.js';
 
 // The typed columnar layout (buildColumn/buildColumns) lives in chunk.js beside its readers.
@@ -68,13 +69,13 @@ const nsOf = (t) => BigInt(Math.round(t * 1e9));
 export async function openRecording(readable, allowlist) {
   const allow = new Set(allowlist);
   let reader;
-  try { reader = await McapIndexedReader.Initialize({ readable }); }
+  try { reader = await McapIndexedReader.Initialize({ readable, decompressHandlers }); }
   catch (e) {
     if (e && e.reason) throw e;
     throw new McapError('no_index', 'no MCAP summary: ' + (e && e.message));
   }
   for (const ci of reader.chunkIndexes) {
-    if (ci.compression !== '') throw new McapError('compressed', 'chunk compression ' + ci.compression);
+    if (ci.compression !== '' && ci.compression !== 'zstd') throw new McapError('compressed', 'unsupported chunk compression ' + ci.compression);
   }
   const decoders = new Map();
   const skipped = {};

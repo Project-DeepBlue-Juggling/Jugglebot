@@ -2,7 +2,7 @@
 """Phase 4 contract (design § 5a, 5d): the browser's direct MCAP decode
 (``js/replay/mcap-decode.js``) equals the Python converter's chunk records.
 
-A synthetic rosbag2-shaped bag (uncompressed, with equal-timestamp pairs on slot
+A synthetic rosbag2-shaped bag (uncompressed and zstd-chunked, with equal-timestamp pairs on slot
 edges) is converted by ``replay.convert`` (the ORACLE) and decoded by the JS core
 read directly from the file (node IReadable, and again through ``httpReadable``
 over a fake Range fetch). Every slot's topic set, ``n``, ``t`` array, column
@@ -213,13 +213,28 @@ def test_latest_row_reads_back_past_sixty_seconds(world):
 def test_refusals(world, tmp_path):
     sb = world["sb"]
     z = tmp_path / "z"; z.mkdir()
-    write_bag(z / "bag_0.mcap", 12.0, seed=1, compression="zstd")
+    write_bag(z / "bag_0.mcap", 12.0, seed=1, compression="lz4")      # zstd is supported; any other codec is refused
     p = _run(sb, z / "bag_0.mcap", tmp_path / "o.json")
     assert p.returncode != 0 and re.search(r"reason.*compressed|compressed", p.stderr)
     u = tmp_path / "u"; u.mkdir()
     write_bag(u / "bag_0.mcap", 20.0, seed=1, unindexed=True, chunk_size=16 * 1024)
     p = _run(sb, u / "bag_0.mcap", tmp_path / "o.json")
     assert p.returncode != 0 and "no_index" in p.stderr
+
+
+def test_zstd_chunks_decode_identically(world, tmp_path):
+    """Same fixture (same seed, edge messages) written with zstd chunks: the JS decode (fzstd) equals the Python
+    oracle AND the uncompressed decode, through both the file and the http (Range) readable."""
+    zbag = tmp_path / "zbag"; zbag.mkdir()
+    write_bag(zbag / "bag_0.mcap", DURATION, seed=7, edge_messages=True, compression="zstd")
+    assert (zbag / "bag_0.mcap").stat().st_size < world["bag"].stat().st_size   # really compressed
+    assert b"zstd" in (zbag / "bag_0.mcap").read_bytes()
+    for mode in ("file", "http"):
+        js = _decode(world["sb"], zbag / "bag_0.mcap", tmp_path / ("z_%s.json" % mode), mode, ("--vector",))
+        assert _compare(world, js) > 0
+        assert js["slots"] == world["js"]["slots"]
+        assert js["opened"] == world["js"]["opened"]
+        assert js.get("latest") == world["js"].get("latest")
 
 
 def test_allowlist_js_pin():

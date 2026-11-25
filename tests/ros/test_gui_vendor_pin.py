@@ -22,6 +22,7 @@ PINS = {
     "@mcap/core": "2.3.0",
     "@foxglove/rosmsg": "5.0.5",
     "@foxglove/rosmsg2-serialization": "3.1.2",
+    "fzstd": "0.1.1",
     "esbuild": "0.28.2",
 }
 
@@ -63,7 +64,9 @@ def test_node_import_exposes_named_exports(tmp_path):
     shutil.copy(BUNDLE, tmp_path / "b.js")
     js = ("import * as m from './b.js';"
           "console.log(JSON.stringify(Object.keys(m).sort()),"
-          "typeof m.McapIndexedReader, typeof m.parse, typeof m.MessageReader)")
+          "typeof m.McapIndexedReader, typeof m.parse, typeof m.MessageReader,"
+          "typeof m.decompressHandlers.zstd)")
     out = subprocess.run([NODE, "--input-type=module", "-e", js], cwd=tmp_path,
                          capture_output=True, text=True, check=True).stdout.split()
-    assert out == ['["McapIndexedReader","MessageReader","parse"]', "function", "function", "function"]
+    assert out == ['["McapIndexedReader","MessageReader","decompressHandlers","parse"]', "function", "function", "function",
+                   "function"]

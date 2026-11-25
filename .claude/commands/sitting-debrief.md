@@ -285,6 +285,11 @@ outcome, give numbers only where they carry the point, and keep the whole to abo
 The same text is the logbook entry's `## Big picture` section, written at section 5 step 2 and
 placed straight after `## Summary`.
 
+Then compress the bags (lossless, verified per file before it replaces anything; it skips bags
+younger than 24 h, so each debrief mops up the Sittings before it, and it refuses to run beside a
+live recorder): `nice -n 15 python tools/bag_compress.py ~/Desktop/rosbags --replace`. Report its
+TOTAL line; a `FAILED` line left its original untouched and is the owner's to hear about.
+
 Offer the owner `/sitting-sheet <rig>` for the next Sitting (the Sitting index lists what waits) and nothing else.
 
 Pinned by `tests/sim/test_sitting_debrief_protocol.py`: this file names every close-out step
