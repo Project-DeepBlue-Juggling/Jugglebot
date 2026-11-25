@@ -162,20 +162,49 @@ def test_catch_correlation_node_comes_up_and_exits_on_sigint(rclpy_env):
     assert node.returncode == 0, f'unclean exit {node.returncode}:\n{log}'
 
 
-def _fake_peer(answer_home=False):
+def _fake_peer(answer_home=False, unpowered=False):
     """Loopback can-bridge stand-in (the shared FakeTeensy), ephemeral ports.
 
     Silent by default (every RPC times out). With answer_home it ACKs HOME like the
     firmware does, which puts the bridge's homing loop into its monitor phase.
+    With unpowered=True it behaves like the robot with the motor supply off (BUG-47,
+    BUG-129 series 2026-11-25): every RPC is answered ERR_REJECTED, and once the
+    bridge has spoken it pumps HEARTBEAT_T2J frames with fault_state=ODRIVE_FATAL
+    (the guard latched on INITIALIZING + DC_BUS_UNDER_VOLTAGE) at 10 Hz.
     """
     from tests.teensy_link.conftest import FakeTeensy
     from teensy_link import protocol as p
     peer = FakeTeensy(bind_host='127.0.0.1', stream_port=0, rpc_port=0)
     if answer_home:
         peer.on_rpc(int(p.RpcMethod.HOME), lambda _rid, _args: (int(p.RpcStatus.OK), b''))
+    stop = threading.Event()
+    if unpowered:
+        for m in p.RpcMethod:
+            peer.on_rpc(int(m), lambda _rid, _args: (int(p.RpcStatus.ERR_REJECTED), b''))
+
+        def _pump():
+            while not stop.is_set():
+                got = peer.received()
+                if got:
+                    peer.set_jetson_addr(got[0].from_addr)
+                    break
+                time.sleep(0.05)
+            while not stop.is_set():
+                try:
+                    peer.send_heartbeat_t2j(fault_state=int(p.FaultState.ODRIVE_FATAL))
+                except OSError:
+                    pass
+                time.sleep(0.1)
+
+        threading.Thread(target=_pump, daemon=True).start()
     peer.start()
     peer.ports = (peer.stream_port, peer.rpc_port)
-    peer.close = peer.stop
+
+    def _close():
+        stop.set()
+        peer.stop()
+
+    peer.close = _close
     return peer
 
 
@@ -206,15 +235,13 @@ def test_bridge_node_comes_up_against_fake_peer_and_exits_on_sigint(rclpy_env):
         peer.close()
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    'BUG-47 reproduced 2026-11-24: the process lingers ~20 s after SIGINT, main thread '
-    'in concurrent.futures.thread._python_exit (atexit) joining the executor worker that '
-    'is still inside the homing monitor loop. Fix not applied: node is on the safety path.'))
 def test_bridge_node_exit_with_home_action_in_flight_bug47(rclpy_env):
     """BUG-47: SIGINT while a home_motors callback is running must still exit promptly.
 
     The fake peer ACKs HOME and then goes silent, so _run_home sits in its monitor
-    loop (20 s timeout, no stop check): a long-running action callback in flight.
+    loop (20 s timeout): a long-running action callback in flight. on_shutdown() sets
+    the shutdown event, the loop sees it, logs the abort and commands the axis IDLE.
+    Before the fix the process lingered ~21 s (strict xfail, 2026-11-24/25).
     A SIGUSR1 faulthandler dump at SIGINT+1.4 s lands in the node log on failure.
     """
     peer = _fake_peer(answer_home=True)
@@ -238,8 +265,67 @@ def test_bridge_node_exit_with_home_action_in_flight_bug47(rclpy_env):
         dt = None if node.returncode is None else time.monotonic() - t0
         log = _log(node)
         print(f'BUG-47 exit time after SIGINT: {dt}\n--- node log ---\n{log}')
-        assert dt is not None and dt < 15.0, (
-            f'bridge did not exit within 15 s of SIGINT (exit time {dt}):\n{log[-3000:]}')
+        assert dt is not None and dt < 8.0, (
+            f'bridge did not exit within 8 s of SIGINT (exit time {dt}):\n{log[-3000:]}')
+        assert 'homing: aborted on axis' in log, log[-3000:]
+        assert node.returncode == 0, f'unclean exit {node.returncode}:\n{log[-3000:]}'
+    finally:
+        peer.close()
+
+
+def test_bridge_node_exits_promptly_on_sigint_when_robot_unpowered_bug47(rclpy_env):
+    """BUG-47 (unpowered case): drives INITIALIZING + guard latched ODRIVE_FATAL, every
+    RPC rejected. SIGINT after 'TeensyBridgeNode up' must run on_shutdown and exit
+    within 8 s. A regression pin: it passes before and after the 2026-11-25 change,
+    because the 24/24 'no exit' of the BUG-129 series was the harness starting the
+    launch with SIGINT ignored (see the logbook entry), not the node."""
+    peer = _fake_peer(unpowered=True)
+    try:
+        node = _bridge(rclpy_env, peer)
+        assert _wait_log(node, 'TeensyBridgeNode up', 60), f'never finished init:\n{_log(node)}'
+        time.sleep(2.0)   # heartbeats with the latched fault reach the node
+        t0 = time.monotonic()
+        node.send_signal(signal.SIGINT)
+        time.sleep(2.0)
+        if node.poll() is None:
+            node.send_signal(signal.SIGUSR1)   # all-thread stack dump into the log
+        try:
+            node.wait(timeout=20.0)
+        except subprocess.TimeoutExpired:
+            _kill(node)
+            node.returncode = None
+        dt = None if node.returncode is None else time.monotonic() - t0
+        log = _log(node)
+        print(f'unpowered exit time after SIGINT: {dt}')
+        assert dt is not None and dt < 8.0, f'exit time {dt}:\n{log[-3000:]}'
+        assert 'Shutting down TeensyBridgeNode' in log, log[-3000:]
+        assert node.returncode == 0, f'unclean exit {node.returncode}:\n{log[-3000:]}'
+    finally:
+        peer.close()
+
+
+def test_bridge_node_sigint_during_boot_read_runs_shutdown_bug141(rclpy_env):
+    """BUG-141: SIGINT while the constructor's boot-state read is blocked on RPC
+    timeouts (silent peer) used to die with a KeyboardInterrupt traceback (exit -2,
+    no on_shutdown). It must now take the normal shutdown path and exit 0."""
+    peer = _fake_peer()
+    try:
+        node = _bridge(rclpy_env, peer)
+        assert _wait_log(node, 'LEG TORQUE FEEDFORWARD', 60), f'ctor never got going:\n{_log(node)}'
+        assert not any('TeensyBridgeNode up' in ln for ln in node.lines), 'boot read already over'
+        t0 = time.monotonic()
+        node.send_signal(signal.SIGINT)
+        try:
+            node.wait(timeout=20.0)
+        except subprocess.TimeoutExpired:
+            _kill(node)
+            node.returncode = None
+        log = _log(node)
+        dt = None if node.returncode is None else time.monotonic() - t0
+        assert dt is not None and dt < 8.0, f'exit time {dt}:\n{log[-3000:]}'
+        assert 'Traceback' not in log, log[-3000:]
+        assert 'Shutting down TeensyBridgeNode' in log, log[-3000:]
+        assert node.returncode == 0, f'exit {node.returncode}:\n{log[-3000:]}'
     finally:
         peer.close()
 

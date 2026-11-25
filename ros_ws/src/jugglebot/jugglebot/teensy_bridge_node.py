@@ -2440,6 +2440,13 @@ class TeensyBridgeNode(Node):
         # to the orchestrator's declared clients so a future rename fails the suite,
         # not the bench.
         self._home_lock = threading.Lock()
+        # BUG-47 / BUG-141: set by on_shutdown() (first thing) so a long-running
+        # executor callback (the homing monitor loop) can see that the process is
+        # going down and return, instead of the process joining it at exit.
+        self._shutdown_event = threading.Event()
+        # BUG-141: a SIGINT during the boot-state read is caught there and recorded
+        # here; main() then skips the spin and takes the normal shutdown path.
+        self._boot_interrupted = False
         self._home_in_progress = False   # guards concurrent home_motors goals
         self._home_action = ActionServer(
             self, HomeMotors, 'home_motors',
@@ -2821,7 +2828,16 @@ class TeensyBridgeNode(Node):
         # Disabled in unit tests (boot_state_read=False) that don't wire a Platform
         # responder — they exercise _refresh_cold_start_state directly instead.
         if boot_state_read:
-            self._boot_read_cold_start_state()
+            try:
+                self._boot_read_cold_start_state()
+            except KeyboardInterrupt:
+                # BUG-141: SIGINT during the (up to ~5 s) boot read. Finish the
+                # constructor with the conservative cold cache (is_homed=False) and
+                # let main() run on_shutdown() instead of dying with a traceback.
+                self._boot_interrupted = True
+                self.get_logger().warning(
+                    "SIGINT during the boot-state read: skipping the spin, "
+                    "running the normal shutdown")
 
         peer = (self.get_parameter('teensy_ip').value
                 if client is None else 'injected')
@@ -8749,6 +8765,31 @@ class TeensyBridgeNode(Node):
             homing_result=int(d.homing_result),   # authoritative outcome from the HomingResult uplink
             homing_epoch=int(d.homing_epoch))     # per-home epoch (FW 34, BUG-18): attributes a fast home's result
 
+    def _home_abort_requested(self) -> bool:
+        """BUG-47 stop check for the homing monitor loop: True once the node is
+        shutting down. OWNER DECISION PENDING (2026-11-25): whether SIGINT should
+        abort a homing in flight and Idle the axis. The default implemented here is
+        the recommended one (abort + IDLE); returning False here restores the old
+        behaviour (homing keeps running to its own result, the process lingers up to
+        ~20 s at exit)."""
+        return self._shutdown_event.is_set()
+
+    def _abort_homing_axis(self, axis: int, home_accepted: bool) -> None:
+        """Stop the axis a homing was driving: SET_AXIS_STATE(axis, IDLE). Only when
+        the firmware had ACCEPTED the HOME (otherwise it is not driving anything).
+        One bounded RPC, best-effort, logged."""
+        self.get_logger().warning(
+            f"homing: aborted on axis {axis} by shutdown"
+            + ("; commanding the axis to IDLE" if home_accepted else ""))
+        if not home_accepted:
+            return
+        try:
+            ok, msg, _ = self.teensy_set_axis_state(axis, 1)   # AXIS_STATE_IDLE
+            if not ok:
+                self.get_logger().error(f"homing abort: IDLE on axis {axis} failed — {msg}")
+        except Exception as e:  # noqa: BLE001 — best-effort during teardown
+            self.get_logger().error(f"homing abort: IDLE on axis {axis} raised {e}")
+
     def _run_home(self, axes, *, poll_dt=0.05):
         """Home ``axes`` over the can-bridge link, one axis at a time.
 
@@ -8801,6 +8842,11 @@ class TeensyBridgeNode(Node):
             home_accepted = False     # firmware has ACCEPTED the HOME for this axis
             reject_retries = 0
             while True:
+                if self._home_abort_requested():
+                    self._abort_homing_axis(axis, home_accepted)
+                    failed[axis] = "aborted by shutdown"
+                    mon = None
+                    break
                 now = time.monotonic()
                 st = self._homing_axis_status(axis)
                 res = mon.step(now, {axis: st} if st is not None else {})
@@ -11433,6 +11479,9 @@ class TeensyBridgeNode(Node):
           4. Transport teardown (only stops the client if we created it).
         """
         self.get_logger().info("Shutting down TeensyBridgeNode...")
+        # BUG-47: tell any in-flight homing callback to stop (see _home_abort_requested).
+        # An Event.set() puts nothing on the wire; the disarm below is still first.
+        self._shutdown_event.set()
         # 1. DISARM. _stop_setpoint_output stops the setpoint thread then drops
         # mpc_active on the WIRE (not just the local flag) — even for an injected
         # client whose heartbeat thread keeps running after on_shutdown. It is fully
@@ -11501,31 +11550,43 @@ class TeensyBridgeNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = TeensyBridgeNode()
-    # MultiThreadedExecutor so the bb/throw action's result-wait (which can block
-    # an executor thread for up to throw_time + margin in execute_callback) never
-    # stalls the 100 Hz telemetry / heartbeat timers — they run on other threads.
-    executor = MultiThreadedExecutor()
-    executor.add_node(node)
+    node = None
+    executor = None
     try:
-        executor.spin()
+        # BUG-141: constructed INSIDE the guarded block. A SIGINT during the boot
+        # read is caught in the constructor (_boot_interrupted); one earlier in the
+        # constructor leaves node None and only rclpy is shut down (nothing armed,
+        # no client yet that matters).
+        node = TeensyBridgeNode()
+        if not node._boot_interrupted:
+            # MultiThreadedExecutor so the bb/throw action's result-wait (which can
+            # block an executor thread for up to throw_time + margin in
+            # execute_callback) never stalls the 100 Hz telemetry / heartbeat
+            # timers — they run on other threads.
+            executor = MultiThreadedExecutor()
+            executor.add_node(node)
+            executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
-        node.on_shutdown()
-        executor.shutdown()
-        # Foxy destroys the node before the action servers are garbage-collected,
-        # and ActionServer.__del__ then raises InvalidHandle at exit. Destroy
-        # them first; a double destroy is harmless.
-        for _name in ('_home_action', '_bb_throw_action'):
-            _srv = getattr(node, _name, None)
-            try:
-                if _srv is not None and hasattr(_srv, 'destroy'):
-                    _srv.destroy()
-            except Exception:  # noqa: BLE001
-                pass
-        node.destroy_node()
-        rclpy.shutdown()
+        if node is None:
+            rclpy.shutdown()   # a constructor error still propagates
+        else:
+            node.on_shutdown()
+            if executor is not None:
+                executor.shutdown()
+            # Foxy destroys the node before the action servers are garbage-collected,
+            # and ActionServer.__del__ then raises InvalidHandle at exit. Destroy
+            # them first; a double destroy is harmless.
+            for _name in ('_home_action', '_bb_throw_action'):
+                _srv = getattr(node, _name, None)
+                try:
+                    if _srv is not None and hasattr(_srv, 'destroy'):
+                        _srv.destroy()
+                except Exception:  # noqa: BLE001
+                    pass
+            node.destroy_node()
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
