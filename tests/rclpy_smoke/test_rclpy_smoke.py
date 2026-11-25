@@ -194,6 +194,8 @@ def _fake_peer(answer_home=False, unpowered=False):
     stop = threading.Event()
 
     def _learn_jetson_addr():
+        """Block until the bridge's first frame names its address, then aim
+        send_to_jetson at it. False if the peer was closed first."""
         while not stop.is_set():
             got = peer.received()
             if got:
