@@ -32,7 +32,7 @@ Design `emit_lead_design.md` section 5 asked what lead 1 costs: every Catch re-a
 | Columns 45 deg | 1 | 100 / 0 | 43 (7,12,7,9,8) | 638 / 733 / 770 (609) | 5 | WITHIN-TOLERANCE 100 |
 | Columns 90 deg | 0 | 100 / 0 | 1 (0,0,0,0,1) | 708 (one) | 5 | WITHIN-TOLERANCE 100 |
 | Columns 90 deg | 1 | 100 / 0 | 35 (5,9,7,8,6) | 646 / 736 / 768 (567) | 5 | WITHIN-TOLERANCE 100 |
-| one-ball oval (Ball Butler reload entry) | 0 and 1 | 60 / 0 | 52 (7,10,11,10,14), identical | 777 / 801 / 833 (633), identical | 60 | CAP-SPENT 2, WITHIN-TOLERANCE 60 |
+| one-ball oval (Ball Butler Feed entry) | 0 and 1 | 60 / 0 | 52 (7,10,11,10,14), identical | 777 / 801 / 833 (633), identical | 60 | CAP-SPENT 2, WITHIN-TOLERANCE 60 |
 | one-ball fed Columns | 0 | 80 / 0 | 0 (the gate sets `resend_max_per_catch=0`) | - | 20 | CAP-SPENT 2, WITHIN-TOLERANCE 80 |
 | one-ball fed Columns | 1 | 80 / 0 | 0 (same) | - | 20 | CAP-SPENT 31, WITHIN-TOLERANCE 79 |
 

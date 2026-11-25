@@ -397,8 +397,11 @@ def test_a_long_rest_in_the_bug95_band_installs_fresh_at_the_running_records_end
     # AT the record's end, rounded UP onto the emit grid (the record's end is
     # off-grid by the real clock's phase at install: a phase-dependent flake
     # at EVERY lead, seen 1 in 3 at lead 0, when this asserted equality)
+    # ... and when float noise puts the end a hair above a grid point, the
+    # round-up is one WHOLE knot, so the upper bound is inclusive (full-tier
+    # gate 2026-11-25: t0 == rest_end + dt exactly, at emit lead 1).
     dt = float(hw.JB_TRAJ_KNOT_DT_S)
-    assert rest_end - 1e-6 <= resp2.t0_mono < rest_end + dt
+    assert rest_end - 1e-6 <= resp2.t0_mono <= rest_end + dt + 1e-6
     new_plan, _m, _t0 = node._cycle
     assert float(new_plan.hand_rev[0]) == pytest.approx(
         float(rest_plan.hand_rev[-1]), abs=1e-9)
