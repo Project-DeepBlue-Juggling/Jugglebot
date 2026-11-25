@@ -31,3 +31,7 @@ Today `/robot_state` samples carry an encoder sample that is 0 to 10 ms older th
 
 - It removes the last 0 to 10 ms per axis from every offline comparison against `/robot_state`.
 - It gives the true Leg tracking lag behind the command, which in turn settles how much of the 13 ms Mocap envelope offset is QTM latency (BUG-134).
+
+## Progress
+
+- 2026-11-25: built as ENCODER_AGE 0x96 and flashed inside FW 52 (20:54; decoded by the host, additive, PROTOCOL 14). Open until the uplink is read on a powered robot.

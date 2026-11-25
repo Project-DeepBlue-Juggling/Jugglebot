@@ -41,3 +41,7 @@ Four can-bridge firmware paths the 2026-11-13 maintainer review (Opus read of th
 ## Wanted
 
 Confirm each row against the code and the native tests, then decide per row: fix, pin with a `static_assert` or test, or record as accepted with its bound.
+
+## Progress
+
+- 2026-11-25: FW 52 flashed 20:54 (BridgeIdentity 52/14, unpowered launch check clean). It carries the stamp bound, the lead-clamp assert and the pins (FW 50) and the owner decisions D1 to D5: Armed refusals, per-axis clear scope, held clock offset, Jetson-only UDP. Contract row I-FW-18. Open until a powered Sitting confirms nothing regressed.

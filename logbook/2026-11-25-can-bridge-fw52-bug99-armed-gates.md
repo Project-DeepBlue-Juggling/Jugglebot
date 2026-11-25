@@ -2,7 +2,7 @@
 title: "BUG-99 FW 52: the can-bridge refuses reconfiguration RPCs while Armed, only an all-axes clear releases the global latches, a scheduled stream keeps its held clock offset through a sync loss and a legacy-to-scheduled entry is checked like a resume, UDP from any host but the Jetson is dropped and counted; I-FW-10 scoped to the bounded legacy Mode-1 hold; NOT flashed"
 type: bugfix
 date: 2026-11-25
-status: in-progress
+status: complete
 phase: "BUG-99"
 subsystem: can-bridge
 related_issues:
@@ -254,8 +254,8 @@ Python:
 
 Firmware image: 2026-11-25 16:07, `pio run -e teensy41` (BUILD ONLY, never uploaded): SUCCESS; `arm-none-eabi-size firmware.elf`: text 259392, data 35520, bss 113440 (dec 408352); firmware.hex sha256 70696bd6cde321f4...
 
-Status stays in-progress until FW 52 is flashed.
+**Flashed 2026-11-25 20:54 from main 3387da7f (`pio run -e teensy41 -t upload`, firmware.hex sha256 70696bd6cde3...).** Receipt: 10 of 10 BridgeIdentity frames read (52, 14) in a 10 s listen with the launch down. Unpowered launch 20:55 (`temp/logs/fw52_unpowered_check_20261125_205546.log`): `BRIDGE_FW_CHECK: OK, can-bridge v52`, `PLATFORM_FW_CHECK: OK, v15`, no foreign-source line, `trajectory/levelled_activate_targets` listed. Not yet run on a powered robot.
 
 Integration gate (the FW 50 to 52 chain rebased onto main c21bd54e, tip f5dc77c4):
 - 2026-11-25 20:27, `flock /tmp/jugglebot-tests.lock ./run_tests.sh --full`: 11306 passed, 57 skipped, 2 xfailed in 830 s; serial phase 16 passed; exit 0.
-- 2026-11-25 21:10, after the document audit added the I-FW-18 row, the ARMING_CONTRACT A5 sentence and corrected one comment in `canbridge_config.h` (no code change), `python -m pytest -q -n 4 --dist loadfile -m "not nightly" tests/firmware tests/sim/test_docs_links.py tests/sim/test_glossary_avoid_words.py tests/sim/test_logbook_index.py tests/sim/test_logbook_front_matter.py tests/ros/test_state_machine.py`: 581 passed, 4 skipped.
+- 2026-11-25 20:43, after the document audit added the I-FW-18 row, the ARMING_CONTRACT A5 sentence and corrected one comment in `canbridge_config.h` (no code change), `python -m pytest -q -n 4 --dist loadfile -m "not nightly" tests/firmware tests/sim/test_docs_links.py tests/sim/test_glossary_avoid_words.py tests/sim/test_logbook_index.py tests/sim/test_logbook_front_matter.py tests/ros/test_state_machine.py`: 581 passed, 4 skipped.

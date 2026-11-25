@@ -42,3 +42,4 @@ Recommendation: 2 now (cheap, no motion); 3 as well if Level should be the defau
 ## Progress
 
 - 2026-11-22: 2026-11-23: traced, designed behaviour, no code defect. ACTIVATE goes to the uncorrected neutral and the hold is encoder-seeded (levelling_frame.md C-LEVEL-1); every planned move is corrected, and an Attempt's pre-level REST re-levels. levelling_frame.md corrected. Open for the owner: a GUI not-Level indicator, or an automatic go_home after ACTIVATE.
+- 2026-11-25: on main and flashed in FW 52 (ACTIVATE_TO, 0.10 rev band). The operator activate is refused in IDLE without a fresh loaded correction and otherwise raises to the Levelled Active pose; it composes with the Homing gate A6 (test TestHomingGateAndLevelledActivateCompose). Open until a powered levelled activate is measured.
