@@ -373,7 +373,10 @@
             <div id="chart-toolbar">
                 <div id="signal-toggles"></div>
                 <div id="chart-right-group">
-                    <!-- IMU charts (imu-charts.js): show/hide, capture dropdown, jump-to-capture -->
+                    <!-- IMU charts (imu-charts.js): show/hide, capture dropdown, jump-to-capture.
+                         The show/hide button is moved at init (telemetry-charts.js
+                         initChartGridToggle) to sit with the ODrive and all-charts
+                         show/hide buttons (FEAT-66); the capture tools stay here. -->
                     <div id="imu-chart-controls">
                         <button id="imu-charts-toggle-btn" class="signal-toggle" type="button" title="Show/hide the Platform IMU charts (linear acceleration and angular rate of the selected capture, on the same time axis as the motor charts)">IMU charts</button>
                         <select id="imu-capture-select" hidden title="IMU capture to plot (captures of this launch, or of the recording being replayed)"></select>
@@ -391,7 +394,7 @@
                             <option value="0">0 to Nyquist</option>
                         </select>
                     </div>
-                    <span class="chart-toolbar-divider"></span>
+                    <span id="imu-controls-divider" class="chart-toolbar-divider" hidden></span>
                     <span id="chart-delta-readout" title="Click two points while paused to measure &#916;t"></span>
                     <div id="chart-visibility-toggles"></div>
                     <div id="chart-time-window" title="Live window size. Mouse-wheel zoom can expand past this, up to 10&#160;min of cached history. Shortcuts: [ / ] to step, R to reset pan/zoom.">

@@ -496,3 +496,21 @@ def test_source_wiring_of_the_event_markers_and_the_spectrum_debounce():
     assert "setTimeout(() => { specTimer = null; computeSpectrum(); }, wait)" in imu
     assert "core.SPEC_DEBOUNCE_MS, specFirstReq + SPEC_MAX_WAIT_MS - now" in imu and "SPEC_MAX_WAIT_MS = 500" in imu
     assert "SPEC_DEBOUNCE_MS = 150" in (JS / "imu-charts-core.js").read_text()
+
+
+def test_the_imu_show_hide_button_sits_with_the_odrive_one_feat66():
+    """FEAT-66: the IMU charts button is moved at init to the right of the mm/rev
+    divider and the left of "Hide ODrive charts", so the show/hide buttons share one
+    section; the rule after the capture tools hides with them."""
+    tel = (JS / "telemetry-charts.js").read_text()
+    body = tel[tel.index("function initChartGridToggle()"):]
+    i_div = body.index("rightGroup.insertBefore(unitsDivider, visToggles);")
+    i_imu = body.index("rightGroup.insertBefore(imuBtn, visToggles);")
+    i_hide = body.index("rightGroup.insertBefore(btn, visToggles);")
+    assert i_div < i_imu < i_hide
+    assert "document.getElementById('imu-charts-toggle-btn')" in body[:i_imu]
+    html = (GUI / "index.html").read_text()
+    assert '<span id="imu-controls-divider" class="chart-toolbar-divider" hidden></span>' in html
+    assert "#imu-controls-divider[hidden] { display: none; }" in (GUI / "css" / "charts.css").read_text()
+    imu = (JS / "imu-charts.js").read_text()
+    assert "if (toolsDivider) toolsDivider.hidden = !on;" in imu
