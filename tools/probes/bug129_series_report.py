@@ -161,20 +161,34 @@ def read_bag_rows(bag_dir: str) -> Optional[List[Tuple[int, float]]]:
     """/robot_state (log_time_ns, header stamp s), streamed message by message. None if the
     bag is unreadable or mcap is not importable."""
     try:
-        from mcap.reader import NonSeekingReader  # type: ignore
+        from mcap.records import Channel, Message  # type: ignore
+        from mcap.stream_reader import StreamReader  # type: ignore
     except Exception:  # noqa: BLE001
         return None
     files = sorted(glob.glob(os.path.join(bag_dir, '*.mcap')))
     if not files:
         return None
     rows: List[Tuple[int, float]] = []
-    try:
-        for f in files:
+    for f in files:
+        # StreamReader, not NonSeekingReader.iter_messages: the latter reads the whole file to sort
+        # before yielding anything, so a bag whose recorder was killed with the launch (it ends
+        # inside the message-index / summary section, after every data chunk: all 24 bags of the
+        # first series, 2026-11-25) raised before the first message and every launch was marked
+        # invalid. Here messages are taken as they stream and a truncated tail is ignored; an
+        # unreadable bag yields no rows and stays invalid.
+        robot_state_ids = set()
+        try:
             with open(f, 'rb') as fh:
-                for _sch, ch, msg in NonSeekingReader(fh).iter_messages(topics=['/robot_state']):
-                    sec, nsec = struct.unpack_from('<iI', msg.data, 4)   # CDR: header.stamp first
-                    rows.append((msg.log_time, sec + nsec * 1e-9))
-    except Exception:  # noqa: BLE001
+                for rec in StreamReader(fh).records:
+                    if isinstance(rec, Channel):
+                        if rec.topic == '/robot_state':
+                            robot_state_ids.add(rec.id)
+                    elif isinstance(rec, Message) and rec.channel_id in robot_state_ids:
+                        sec, nsec = struct.unpack_from('<iI', rec.data, 4)   # CDR: header.stamp first
+                        rows.append((rec.log_time, sec + nsec * 1e-9))
+        except Exception:  # noqa: BLE001
+            continue
+    if not rows:
         return None
     rows.sort()
     return rows

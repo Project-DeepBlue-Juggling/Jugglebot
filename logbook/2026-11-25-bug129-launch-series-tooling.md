@@ -65,3 +65,13 @@ The series aborted after 8 launches (09:13) because the auto-pull timer fast-for
 only over `ros_ws/src teensy_link controller config sim` (what the live nodes load), and `--first-slot N` resumes at
 slot N keeping earlier logs. Verification: 2026-11-25, `bash -n tools/probes/bug129_launch_series.sh` clean;
 `pytest tests/sim/test_bug129_series_report.py -q` (parser untouched).
+
+## Parser read no bag at all (2026-11-25, after the series)
+
+All 24 launches came out "no readable bag". The recorder is killed with the launch, so each mcap ends inside the
+message-index / summary section, after every data chunk. `NonSeekingReader.iter_messages` reads and sorts the whole
+file before yielding, so it raised EndOfFile before the first message. `read_bag_rows` now streams records with
+`StreamReader` and keeps what it has when the tail is truncated (an unreadable bag still gives None). Check on
+`~/Desktop/rosbags/2026-11-25_10-48-56`: 29456 /robot_state messages over 295.7 s (about 100 Hz), 1.7 s.
+Verification: 2026-11-25, `pytest tests/sim/test_bug129_series_report.py -q`: 12 passed; the new test
+`test_read_bag_rows_keeps_rows_of_a_bag_truncated_in_its_index` fails with the old reader (checked by stashing the fix).

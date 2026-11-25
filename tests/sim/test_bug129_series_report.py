@@ -175,3 +175,29 @@ def test_runner_refuses_stop_at_inside_quiet_window():
     out = subprocess.run(['bash', str(sh), '--dry-run', '--stop-at', '02:15', '--main', str(REPO)],
                          capture_output=True, text=True, timeout=60)
     assert out.returncode == 64 and 'refused' in out.stderr
+
+
+def test_read_bag_rows_keeps_rows_of_a_bag_truncated_in_its_index(tmp_path):
+    """The recorder is killed with the launch: the mcap ends inside the index section."""
+    import struct
+    pytest = __import__('pytest')
+    writer_mod = pytest.importorskip('mcap.writer')
+    d = tmp_path / 'bag'
+    d.mkdir()
+    f = d / 'b_0.mcap'
+    with open(f, 'wb') as fh:
+        w = writer_mod.Writer(fh)
+        w.start()
+        sid = w.register_schema(name='x', encoding='ros2msg', data=b'')
+        cid = w.register_channel(topic='/robot_state', message_encoding='cdr', schema_id=sid)
+        for i in range(5):
+            w.add_message(channel_id=cid, log_time=1_000_000_000 + i * 10_000_000,
+                          data=b'\x00\x01\x00\x00' + struct.pack('<iI', 7, i * 10_000_000),
+                          publish_time=0)
+        w.finish()
+    raw = f.read_bytes()
+    f.write_bytes(raw[:-60])          # cut inside the index / summary / footer
+    rows = R.read_bag_rows(str(d))
+    assert rows is not None and len(rows) == 5
+    (d / 'b_0.mcap').write_bytes(b'garbage')
+    assert R.read_bag_rows(str(d)) is None
