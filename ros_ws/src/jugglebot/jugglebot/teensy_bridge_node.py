@@ -2143,27 +2143,6 @@ class TeensyBridgeNode(Node):
         # (started as the LAST statement of __init__: the heartbeat reads _sp_thread
         # and _loop_gap, and a slow init is not a stall)
 
-        # ── Subscriptions to T→J streams (RX-thread callbacks) ──
-        self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
-        self._client.subscribe(int(MsgType.TELEMETRY), self._on_telemetry)
-        self._client.subscribe(int(MsgType.DIAGNOSTIC), self._on_diagnostic)
-        self._client.subscribe(int(MsgType.PROFILE), self._on_profile)
-        self._client.subscribe(int(MsgType.CONE_FRAME), self._on_cone_frame)
-        self._client.subscribe(int(MsgType.BB_YAW_ESTIMATE), self._on_bb_yaw_estimate)
-        self._client.subscribe(int(MsgType.BB_AXIS_ESTIMATES), self._on_bb_estimates)
-        self._client.subscribe(int(MsgType.CMD_RESULT), self._on_cmd_result)
-        self._client.subscribe(int(MsgType.PLATFORM_FRAME), self._on_platform_frame)
-        self._client.subscribe(int(MsgType.HAND_CMD_ECHO), self._on_hand_cmd_echo)  # hand conduit
-        self._client.subscribe(int(MsgType.HAND_SENSOR), self._on_hand_sensor)  # ball-present switch
-        self._client.subscribe(int(MsgType.CAN_ERRORS), self._on_can_errors)    # CAN3 wire-error counters
-        self._client.subscribe(int(MsgType.BRIDGE_TX_DIAG), self._on_bridge_tx_diag)      # TX pressure + hand stages
-        self._client.subscribe(int(MsgType.LEG_CLAMP_DIAG), self._on_leg_clamp_diag)      # per-leg lead-clamp census
-        self._client.subscribe(int(MsgType.BRIDGE_IDENTITY), self._on_bridge_identity)    # bridge FW identity
-        self._client.subscribe(int(MsgType.LEG_CMD), self._on_leg_cmd)          # post-clamp executed leg cmd
-        self._client.subscribe(int(MsgType.CLOCK_DIAG), self._on_clock_diag)    # per-anchor clock + interp occupancy
-        self._client.subscribe(int(MsgType.CACHE_DIAG), self._on_cache_diag)    # encoder-cache age + CAN RX ring
-        self._client.subscribe(int(MsgType.RING_DIAG), self._on_ring_diag)      # TRUE RX-ring occupancy + delivery lag
-        self._client.subscribe(int(MsgType.PLATFORM_IMU_BATCH), self._on_platform_imu_batch)  # Platform IMU upload data
         self._setup_platform_imu()
 
         # ── Publishers (production names — leg-side cutover) ──
@@ -2835,6 +2814,37 @@ class TeensyBridgeNode(Node):
         # Instance-level so tests can shorten the descent-convergence wait (a
         # never-converging descent otherwise blocks the test for the full timeout).
         self._recover_verify_timeout_s = _RECOVER_VERIFY_TIMEOUT_S
+
+        # ── Subscriptions to T→J streams (RX-thread callbacks) ──
+        # REGISTERED LAST, deliberately (homelock-race, 2026-11-25): the client's RX
+        # thread is live since start() above, and a callback registered here can run
+        # the instant it is subscribed. Registered up near the client, a DIAGNOSTIC
+        # reaching _on_reference_loss before _home_lock existed raised AttributeError
+        # (swallowed by the client) and LOST the BUG-122 edge, which ReferenceLossWatch
+        # had already consumed. Every attribute any callback path reads is assigned
+        # above this line; tests/ros/test_teensy_bridge_node_ctor_ordering.py pins it.
+        # The cold-start boot read below needs CMD_RESULT / PLATFORM_FRAME live, so
+        # this block stays ahead of it.
+        self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
+        self._client.subscribe(int(MsgType.TELEMETRY), self._on_telemetry)
+        self._client.subscribe(int(MsgType.DIAGNOSTIC), self._on_diagnostic)
+        self._client.subscribe(int(MsgType.PROFILE), self._on_profile)
+        self._client.subscribe(int(MsgType.CONE_FRAME), self._on_cone_frame)
+        self._client.subscribe(int(MsgType.BB_YAW_ESTIMATE), self._on_bb_yaw_estimate)
+        self._client.subscribe(int(MsgType.BB_AXIS_ESTIMATES), self._on_bb_estimates)
+        self._client.subscribe(int(MsgType.CMD_RESULT), self._on_cmd_result)
+        self._client.subscribe(int(MsgType.PLATFORM_FRAME), self._on_platform_frame)
+        self._client.subscribe(int(MsgType.HAND_CMD_ECHO), self._on_hand_cmd_echo)  # hand conduit
+        self._client.subscribe(int(MsgType.HAND_SENSOR), self._on_hand_sensor)  # ball-present switch
+        self._client.subscribe(int(MsgType.CAN_ERRORS), self._on_can_errors)    # CAN3 wire-error counters
+        self._client.subscribe(int(MsgType.BRIDGE_TX_DIAG), self._on_bridge_tx_diag)      # TX pressure + hand stages
+        self._client.subscribe(int(MsgType.LEG_CLAMP_DIAG), self._on_leg_clamp_diag)      # per-leg lead-clamp census
+        self._client.subscribe(int(MsgType.BRIDGE_IDENTITY), self._on_bridge_identity)    # bridge FW identity
+        self._client.subscribe(int(MsgType.LEG_CMD), self._on_leg_cmd)          # post-clamp executed leg cmd
+        self._client.subscribe(int(MsgType.CLOCK_DIAG), self._on_clock_diag)    # per-anchor clock + interp occupancy
+        self._client.subscribe(int(MsgType.CACHE_DIAG), self._on_cache_diag)    # encoder-cache age + CAN RX ring
+        self._client.subscribe(int(MsgType.RING_DIAG), self._on_ring_diag)      # TRUE RX-ring occupancy + delivery lag
+        self._client.subscribe(int(MsgType.PLATFORM_IMU_BATCH), self._on_platform_imu_batch)  # Platform IMU upload data
 
         # ── Cold-start boot read ─────────────────────
         # Read the Platform Teensy's persisted RobotState BEFORE construction
