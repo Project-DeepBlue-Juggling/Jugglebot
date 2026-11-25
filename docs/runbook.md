@@ -85,4 +85,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- TKT-96 BUG-140: for out-of-band REST rebases, cap and snap to the Knot grid, snap only, cap only at a bound you name, or leave both? (parent BUG-140)
+- none
