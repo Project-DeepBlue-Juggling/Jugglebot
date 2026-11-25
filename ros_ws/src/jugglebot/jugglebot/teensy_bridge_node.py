@@ -968,6 +968,7 @@ _BB_HAND_AXIS = proto.NODE_ID_BB_HAND     # 8
 # source of truth; these bits have been stable since they were introduced.
 _DIAG_FLAG_HB_STALE = 0x1   # ODrive CAN heartbeat older than CAN_AXIS_SILENCE_TIMEOUT_US (2.0 s);
                             # HeartbeatT2J HB_STALE_MASK is the sharper 0.5 s diagnostic (FW 23)
+_AXIS_STATE_CLOSED_LOOP = 8   # ODrive AXIS_STATE_CLOSED_LOOP_CONTROL
 _DIAG_FLAG_HB_SEEN = 0x2    # ODrive has heartbeated at least once this firmware boot
 _DIAG_FLAG_ACTIVATE_STALL = 0x4  # FW 36 (BUG-56): the cold-start ladder's stall guard IDLEd
                                  # this axis (sticky until the next ladder targeting it)
@@ -5594,6 +5595,12 @@ class TeensyBridgeNode(Node):
             if not flags & _DIAG_FLAG_HB_SEEN:
                 continue                                   # not on this rig
             out[leg] = None if flags & _DIAG_FLAG_HB_STALE else int(d.axis_state)
+        if not out:
+            # No Leg has heartbeated this can-bridge boot (just after a
+            # can-bridge reboot, or the drives are off the bus): that is
+            # "unknown", never "no Legs on this rig", or the gate would pass
+            # with the Platform up. A Hand-only request never gets here.
+            return {leg: None for leg in range(p.NUM_LEGS)}
         return out
 
     def _leg_idle_rule_refusal(self, what: str, axes, *, exempt_target=False):
@@ -5614,11 +5621,20 @@ class TeensyBridgeNode(Node):
         named = ', '.join(
             f'Leg {i} {"state unknown" if s is None else f"state {s}"}'
             for i, s in blockers)
+        closed = [i for i, st in blockers if st == _AXIS_STATE_CLOSED_LOOP]
+        parts = []
+        if closed:
+            parts.append('Stow it first with the profiled deactivate (ros2 service '
+                         'call /deactivate std_srvs/srv/Trigger), then retry.')
+        if len(closed) < len(blockers):
+            parts.append('A Leg whose state is unknown or not Closed-loop or Idle '
+                         '(searching, calibrating) cannot be Stowed by a deactivate: '
+                         'wait for its fresh Idle state and retry, or power-cycle '
+                         'the drives with the E-stop button, then clear_errors.')
         return (f'{what} REFUSED: {named} (not Idle), so the Platform cannot be '
                 f'shown to be at Stow, and a Leg must never be made Idle or moved '
-                f'alone while others may hold it up (ARMING_CONTRACT A7). Stow it '
-                f'first with the profiled deactivate (ros2 service call '
-                f'/deactivate std_srvs/srv/Trigger), then retry.')
+                f'alone while others may hold it up (ARMING_CONTRACT A7). '
+                + ' '.join(parts))
 
     def _wait_wire_disarmed(self, timeout_s: float = 1.0) -> bool:
         """Wait until the FIRMWARE confirms disarmed (HeartbeatT2J bit3 drops).
