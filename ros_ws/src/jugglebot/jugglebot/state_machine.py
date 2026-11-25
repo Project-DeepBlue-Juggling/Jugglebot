@@ -839,7 +839,9 @@ class LevellingHandler(StateHandler):
 # Replies on which a failed DEACTIVATE is RETRIED -- only those that mean the
 # firmware latched NOTHING: ERR_REJECTED (leg_deactivate.cpp deactivate_request:
 # the wire still armed -- the disarm-staging race of 2026-10-19/23 -- a
-# cold-start move or a deactivate already running, or a fault stow pending) and
+# cold-start move or a deactivate already running, a fault stow pending, or --
+# FW 53, I-FW-19 -- a single-Leg DEACTIVATE while another present Leg is not at
+# Stow) and
 # the orchestrator's own 'not ready' (nothing was sent). ERR_TIMEOUT is NOT
 # here: a lost ack may mean the lower DID latch, so the bridge observes the legs
 # to a verdict instead of reporting a refusal (owner, 2026-10-23); a bare

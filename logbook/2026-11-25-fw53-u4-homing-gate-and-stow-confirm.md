@@ -52,7 +52,7 @@ The stream (500 Hz, `interp_isr`) keeps sending the Stow target (0 rev, v = 0) a
 - **One Leg lagging 0.5 rev behind the commanded profile at completion.** Tick k: the predicate refuses (NOT_AT_STOW for that Leg). Nothing is sent; the stream keeps commanding 0 and the lagging Leg closes the 0.5 rev under its own position loop (at most 2.5 rev/s, so about 0.2 to 0.5 s). The first tick on which it is inside the window and below 0.1 rev/s, all six are IDLE'd. FW 52 would have IDLE'd it 0.5 rev (about 35 mm) up.
 - **One Leg already Idle (dropped) while five descend.** The stream sends setpoints to the dropped Leg too; an IDLE ODrive ignores them. The dropped Leg's fresh IDLE heartbeat satisfies clause (a), so it does not block. When the other five confirm, all six present Legs are sent the gated IDLE (an IDLE to an IDLE ODrive is harmless). Which Legs the stow lowers is unchanged.
 - **A Leg that never arrives** (blocked, or its encoder stale). The predicate refuses every tick. At 10 s after commanded completion: `interp_end_stow()` first (so no further stream frame overwrites the hold), then `leg_freeze_tx(i, STOW_WINDOW_MIN_REV, STROKE_MAX_REV[i])` for every present Leg not reporting IDLE: the target is the measured position plus the stopping distance (about 0 at rest), clamped to the stroke; HELD set. A Leg with a stale encoder gets no frame and holds its last setpoint (0, the Stow target), HELD still set. `s_stowing`, `s_stow_pending` cleared, so DEACTIVATE, HOME and REBOOT are no longer refused for ever (FW 52 never reached this case: it IDLE'd on the commanded completion). Every Leg stays Closed-loop; nothing drops.
-- **A guard E-STOP during CONFIRM.** Unchanged by design: the output gate keeps `allow = true` while `s_stowing`, the stream continues, `leg_idle_permitted` does not read the guard, and the IDLE goes out once the Legs confirm. The latched E-STOP holds after the stow ends, as before.
+- **A Soft E-stop during CONFIRM.** Unchanged by design: the output gate keeps `allow = true` while `s_stowing`, the stream continues, `leg_idle_permitted` does not read the guard, and the IDLE goes out once the Legs confirm. The latched E-STOP holds after the stow ends, as before.
 - **The bus going down again during CONFIRM.** The detection branch already ends the stream and clears `s_stowing` and re-arms `s_stow_pending`; it now also clears the CONFIRM flag and its IDLE'd-Leg mask. No frame is sent on the dead bus (the gate is off by `s_fatal_can_error`). On the next confirmed reconnect the stow restarts from the measured positions (FW 52 behaviour), Legs IDLE'd before the re-drop included: they are at Stow, so their descent completes at once and they do not block.
 - **The bench.** `rig_is_bench` makes `leg_idle_permitted` true at commanded completion: the bench Leg is IDLE'd in the completion tick, as in FW 52.
 
@@ -103,7 +103,7 @@ All runs 2026-11-25, in the `offline/fw53` worktree, nothing flashed.
 | F4 | the timeout leaves the stow pending | never-confirms case |
 | F6 | CONFIRM asks `platform_at_stow` (no bench exemption) | bench case |
 | F7 | a re-drop does not clear CONFIRM | re-drop case |
-| F8 | a guard E-STOP ends CONFIRM | E-STOP case |
+| F8 | a Soft E-stop ends CONFIRM | E-STOP case |
 | F9 | IDLE sent to absent node ids | bench case |
 | F10 | the timeout freezes a dropped (IDLE) Leg | never-confirms case |
 | F11 | CONFIRM asks the wrapper every tick without the predicate (census and HELD noise) | lagging-Leg and never-confirms cases |
