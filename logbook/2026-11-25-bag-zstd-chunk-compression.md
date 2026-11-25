@@ -2,7 +2,7 @@
 title: "Bags: lossless in-place zstd chunk compression (tools/bag_compress.py) and a zstd decoder in the GUI replay, so the bag corpus shrinks about 4x with every path and reader unchanged"
 type: feature
 date: 2026-11-25
-status: in-progress
+status: resolved
 phase: ""
 related_plan: ""
 related_issues: []
@@ -53,3 +53,5 @@ The SSD was at 89 % (25 GB free) and the bags were the only consumer that grows 
 - 2026-11-25, `python -m pytest tests/ros/test_replay_mcap_oracle.py tests/ros/test_gui_vendor_pin.py tests/ros/test_gui_replay_ui_lobby.py tests/ros/test_gui_replay_mcap_source.py tests/ros -q -k "replay or vendor or gui or mcap"`: **922 passed, 1 skipped**.
 - Real data, on copies: 33 MB (2025), 567 MB (2026-06) and 1.57 GB (2026-11-13) bags compressed 2.69x, 3.84x and 3.77x; `ros2 bag info` reported identical message counts and topics; peak RSS 32 MB.
 - The gate result is in the commit message; the corpus run's per-file report (content hashes included) is `temp/reports/bag_compress_2026-11-25.json`.
+- Corpus run, 2026-11-25 to 26, `nice -n 15 ionice -c3 python tools/bag_compress.py /home/jetson/Desktop/rosbags --replace --workers 2 --report temp/reports/bag_compress_2026-11-25.json`: **944 compressed, 0 failed verification, 69.27 GB to 17.37 GB (3.99x) in 3504 s**; 35 unindexed, 5 younger than 24 h and 8 already-done files skipped. Disk went from 62 % to 39 % used.
+- 2026-11-26, the GUI JS reader (`openRecording` plus a CRC-validated `readMessages` pass, in node) on two compressed real bags, `2026-11-13_11-42-08` and `2026-07-25_15-17-48`: opened as zstd and read 1,859,602 and 175,072 allow-listed messages. `python -m pytest tests/ros/test_hand_sensor_replay.py -q` against the compressed `2026-08-10_16-30-44`: **14 passed**.
