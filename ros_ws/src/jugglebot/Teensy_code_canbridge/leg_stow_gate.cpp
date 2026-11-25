@@ -1,0 +1,192 @@
+// =============================================================================
+//  leg_stow_gate.cpp — no Leg leaves Closed-loop above Stow (FW 53, I-FW-19)
+// =============================================================================
+//  See leg_stow_gate.h for the contract. Design: fw53_design.md 1.2 and 1.3.
+//
+//  Why a wrapper and not a frame filter inside can_jugglebot_tx: only the caller
+//  knows the alternative to IDLE (freeze on a segment, stay silent, retry) and
+//  the caller's intent (the homing Leg); a filter could only drop the frame and
+//  the ladder would then report an IDLE it never got. can_jugglebot_tx is also
+//  the 500 Hz IRQ-off hot path and is not compiled natively, so a check there
+//  would be the one safety check in the system with no native test.
+//
+//  Concurrency. The wrappers run in several tasks (net/RPC, fault, the ladders'
+//  task). The predicate reads only RX-task-written caches: per Leg it reads the
+//  heartbeat STAMP first and the state after it. The RX decode writes axis_state
+//  BEFORE last_heartbeat_us (can_buses.cpp heartbeat case), so a stamp read here
+//  is never paired with an OLDER state than the one it stamped: a fresh stamp
+//  cannot certify a stale IDLE. The HELD mask and the census are read-modify-
+//  write from several tasks, so they change under a PRIMASK guard.
+// =============================================================================
+
+#include "leg_stow_gate.h"
+
+#include <cmath>
+
+#include "canbridge_config.h"
+#include "protocol_config.h"    // ODriveState, ODriveCmd
+#include "hardware_config.h"    // JBOp::TARGET_REACHED_*, ODriveDefaults::TRAP_DEC_LIMIT_RPS2
+#include "axis_state.h"         // axes[], leg_present, snapshot_pos_vel
+#include "odrive_protocol.h"    // the encoders this file alone may call
+#include "can_buses.h"          // can_jugglebot_tx, tx_reached_the_wire, TxCls
+#include "time_base.h"          // micros64, atomic_*_u64, rx_older_than
+#include "leg_homing.h"         // homing_axis_in_flight
+
+namespace CanBridge {
+
+// ── State ────────────────────────────────────────────────────────────────────
+static volatile uint64_t s_cl_cmd_us[NUM_LEGS] = { 0 };   // atomic_*_u64 only
+static volatile uint8_t  s_held_mask = 0;
+static volatile uint32_t s_refusals  = 0;
+
+void leg_stow_gate_init() {
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) atomic_write_u64(&s_cl_cmd_us[i], 0);
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  s_held_mask = 0;
+  s_refusals  = 0;
+  __set_PRIMASK(pm);
+}
+
+// ── Per-Leg freshness ────────────────────────────────────────────────────────
+// The heartbeat-derived state of a present Leg, or a refusal reason. Reads the
+// stamp FIRST, then the state (see the concurrency note at the top).
+static uint8_t fresh_state(uint8_t j, uint64_t now, uint8_t* state_out) {
+  const uint64_t hb = atomic_read_u64(&axes[j].last_heartbeat_us);
+  if (hb == 0 || rx_older_than(now, hb, CAN_HEARTBEAT_STALE_US)) return StowReason::STALE_HB;
+  const uint64_t cl = atomic_read_u64(&s_cl_cmd_us[j]);
+  // A heartbeat cached before (or just after) our last CLOSED_LOOP command may
+  // still report IDLE for a Leg that is now holding. Direct comparison, no
+  // subtraction: nothing here can wrap.
+  if (cl != 0 && hb < cl + CL_ENGAGE_SETTLE_US) return StowReason::CL_UNCONFIRMED;
+  *state_out = axes[j].axis_state;
+  return StowReason::OK;
+}
+
+// Clause (b): a Closed-loop Leg at rest inside the Stow window.
+static uint8_t closed_loop_at_stow(uint8_t j, uint64_t now) {
+  if (axes[j].active_errors != 0) return StowReason::ERRORED;
+  float pos = 0.0f, vel = 0.0f; uint64_t ts = 0;
+  snapshot_pos_vel(axes[j], pos, vel, ts);
+  if (ts == 0 || rx_older_than(now, ts, MOTOR_FB_STALENESS_US)) return StowReason::STALE_ENC;
+  // Written so a NaN fails each test (every comparison with NaN is false).
+  if (!(pos >= STOW_WINDOW_MIN_REV &&
+        pos <= STOW_OFF_POSE_REV + JBOp::TARGET_REACHED_POS_TOL_REV)) return StowReason::NOT_AT_STOW;
+  if (!(std::fabs(vel) <= JBOp::TARGET_REACHED_VEL_TOL_RPS)) return StowReason::MOVING;
+  return StowReason::OK;
+}
+
+StowVerdict platform_at_stow(uint64_t now, uint8_t except_leg) {
+  for (uint8_t j = 0; j < NUM_LEGS; ++j) {
+    if (j == except_leg || !leg_present(j)) continue;
+    uint8_t st = 0;
+    uint8_t r = fresh_state(j, now, &st);
+    if (r == StowReason::OK) {
+      if (st == ODriveState::IDLE || st == ODriveState::ENCODER_INDEX_SEARCH) continue;   // (a)
+      r = (st == ODriveState::CLOSED_LOOP) ? closed_loop_at_stow(j, now)               // (b)
+                                           : StowReason::UNKNOWN_STATE;
+    }
+    if (r != StowReason::OK) return StowVerdict{ false, j, r };
+  }
+  return StowVerdict{ true, 0xFF, StowReason::OK };
+}
+
+bool all_present_legs_idle(uint64_t now) {
+  for (uint8_t j = 0; j < NUM_LEGS; ++j) {
+    if (!leg_present(j)) continue;
+    uint8_t st = 0;
+    if (fresh_state(j, now, &st) != StowReason::OK) return false;
+    if (st != ODriveState::IDLE) return false;
+  }
+  return true;
+}
+
+// ── HELD mask + census ───────────────────────────────────────────────────────
+static void set_held(uint8_t leg) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  s_held_mask = (uint8_t)(s_held_mask | (uint8_t)(1u << leg));
+  __set_PRIMASK(pm);
+}
+uint8_t leg_held_mask() { return s_held_mask; }
+void leg_held_clear(uint8_t leg) {
+  if (leg >= NUM_LEGS) return;
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  s_held_mask = (uint8_t)(s_held_mask & (uint8_t)~(1u << leg));
+  __set_PRIMASK(pm);
+}
+void leg_held_clear_all() {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  s_held_mask = 0;
+  __set_PRIMASK(pm);
+}
+uint32_t leg_deenergise_refusals() { return s_refusals; }
+uint64_t leg_cl_cmd_us(uint8_t leg) {
+  return leg < NUM_LEGS ? atomic_read_u64(&s_cl_cmd_us[leg]) : 0;
+}
+
+static void note_refusal(uint8_t leg, Who who) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  s_refusals = s_refusals + 1;
+  __set_PRIMASK(pm);
+  if (who == Who::LADDER || who == Who::STOW) set_held(leg);
+}
+
+// ── The one gate in front of every Leg de-energise ───────────────────────────
+// True = the request for `leg` may go out. On false the refusal is recorded.
+static bool leg_deenergise_allowed(uint8_t leg, Who who) {
+  if (platform_at_stow(micros64()).ok) return true;
+  note_refusal(leg, who);
+  return false;
+}
+
+static DeResult send(const ODrive::CanFrame& f, uint8_t cls) {
+  return tx_reached_the_wire(can_jugglebot_tx(f, cls)) ? DeResult::SENT : DeResult::TX_FAILED;
+}
+
+DeResult odrive_set_state_tx(uint8_t axis, uint32_t state, uint8_t cls, Who who) {
+  if (axis >= NUM_AXES) return DeResult::REFUSED;
+  if (axis == HAND_AXIS) return send(ODrive::encode_set_state(axis, state), cls);   // exempt
+  if (state == ODriveState::CLOSED_LOOP) {
+    atomic_write_u64(&s_cl_cmd_us[axis], micros64());   // stamp BEFORE the send
+    return send(ODrive::encode_set_state(axis, state), cls);
+  }
+  const bool homing_owner = who == Who::HOMING_OWNER && state == ODriveState::IDLE &&
+                            axis == homing_axis_in_flight();
+  if (!homing_owner && !leg_deenergise_allowed(axis, who)) return DeResult::REFUSED;
+  return send(ODrive::encode_set_state(axis, state), cls);
+}
+
+DeResult odrive_reboot_tx(uint8_t axis, uint8_t cls, Who who) {
+  if (axis >= NUM_AXES) return DeResult::REFUSED;
+  if (axis != HAND_AXIS && !leg_deenergise_allowed(axis, who)) return DeResult::REFUSED;
+  return send(ODrive::encode_reboot(axis), cls);
+}
+
+DeResult odrive_sdo_write_tx(uint8_t axis, uint16_t endpoint_id, float value, uint8_t cls, Who who) {
+  if (axis >= NUM_AXES) return DeResult::REFUSED;
+  if (axis != HAND_AXIS && !leg_deenergise_allowed(axis, who)) return DeResult::REFUSED;
+  return send(ODrive::encode_sdo_write(axis, endpoint_id, value), cls);
+}
+
+// ── The hold ─────────────────────────────────────────────────────────────────
+float leg_freeze_target(float pos, float vel, float seg_lo, float seg_hi) {
+  const float lo = seg_lo < seg_hi ? seg_lo : seg_hi;
+  const float hi = seg_lo < seg_hi ? seg_hi : seg_lo;
+  const float t  = pos + vel * std::fabs(vel) / (2.0f * ODriveDefaults::TRAP_DEC_LIMIT_RPS2);
+  return t < lo ? lo : (t > hi ? hi : t);
+}
+
+bool leg_freeze_tx(uint8_t leg, float seg_lo, float seg_hi) {
+  if (leg >= NUM_LEGS) return false;
+  set_held(leg);
+  float pos = 0.0f, vel = 0.0f; uint64_t ts = 0;
+  const uint64_t now = micros64();
+  snapshot_pos_vel(axes[leg], pos, vel, ts);
+  if (ts == 0 || rx_older_than(now, ts, MOTOR_FB_STALENESS_US)) return false;
+  if (!std::isfinite(pos) || !std::isfinite(vel) ||
+      !std::isfinite(seg_lo) || !std::isfinite(seg_hi)) return false;
+  const float target = leg_freeze_target(pos, vel, seg_lo, seg_hi);
+  return tx_reached_the_wire(can_jugglebot_tx(
+      ODrive::encode_set_input_pos(leg, ODrive::leg_sign(leg, target), 0, 0), TxCls::SAFETY));
+}
+
+}  // namespace CanBridge

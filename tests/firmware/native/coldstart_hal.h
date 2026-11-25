@@ -72,4 +72,15 @@ void               cs_set_send_fail_index(int attempt_index);
 // wrapper reads TRUE and a ladder must NOT abort on it. -1 (the default) = never.
 void               cs_set_send_defer_index(int attempt_index);
 
+// ── Axis-cache staging (FW 53, leg_stow_gate) ──────────────────────────────────
+// Ages are relative to the CURRENT fake clock (set it first): a stamp is written
+// as now - age, so a NEGATIVE age writes a stamp AFTER now (the BUG-93 case).
+// CS_NO_STAMP writes the stamp as 0 ("no frame since boot"). Staging a Leg also
+// marks it present (heartbeat_seen) and clears its active_errors.
+constexpr int64_t CS_NO_STAMP = INT64_MIN;
+void cs_stage_leg(uint8_t i, uint8_t state, float pos, float vel,
+                  int64_t hb_age_us, int64_t enc_age_us);
+// Every axis back to absent with zeroed caches (heartbeat_seen false, stamps 0).
+void cs_clear_axes();
+
 }  // namespace CanBridge

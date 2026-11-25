@@ -55,6 +55,12 @@ _ALLOWED_MOTION_TUS = {
     "leg_activate.cpp": "the one-shot ACTIVATE park (behind the coldstart interlock)",
     "leg_deactivate.cpp": "the legs' profiled descent (the hand only ever IDLEs)",
     "leg_homing.cpp": "the homing drive onto the hardstop (behind the interlock)",
+    # FW 53 (I-FW-19): leg_freeze_tx, the hold that replaces an IDLE above Stow. It is
+    # not a new writer of axis 6: it refuses every axis >= NUM_LEGS before encoding
+    # (native test_leg_stow_gate case 13 pins "Hand: nothing sent"), and it only ever
+    # runs on behalf of a ladder above (or the fault machine's deferred stow after
+    # interp_end_stow), so it inherits their serialisation with the streamed lane.
+    "leg_stow_gate.cpp": "the Leg-only hold of a ladder or stow that may not IDLE (never axis 6)",
 }
 
 

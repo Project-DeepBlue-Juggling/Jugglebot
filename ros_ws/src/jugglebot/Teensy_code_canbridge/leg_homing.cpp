@@ -129,6 +129,11 @@ static void finish(uint8_t result) {
   s_axis  = 0xFF;
 }
 
+// Read from the net task (RPC) and the ladders through leg_stow_gate.cpp; the
+// homing task is the only writer. A single-byte read is atomic on Cortex-M7, and
+// the volatile access stops the compiler caching it across the caller's checks.
+uint8_t homing_axis_in_flight() { return *(const volatile uint8_t*)&s_axis; }
+
 void homing_init() {
   s_start_req = false;
   s_phase = Phase::IDLE;

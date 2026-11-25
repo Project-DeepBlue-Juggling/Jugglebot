@@ -19,6 +19,7 @@
 #include "time_base.h"         // declares micros64 / now_wall_us
 #include "fault_machine.h"     // declares fault_can_bus_down / fault_guard_mode
 #include "udp_protocol.h"      // JbUdp::BusHealth / GuardMode
+#include "axis_state.h"        // axes[], write_pos_vel (the staging helpers)
 
 namespace CanBridge {
 
@@ -125,5 +126,32 @@ TxResult can_jugglebot_tx(const ODrive::CanFrame& f, uint8_t /*cls*/) {   // HAL
 size_t             cs_sent_count() { return g_sent.size(); }
 const CsSentFrame& cs_sent_at(size_t i) { return g_sent.at(i); }
 void               cs_clear_sent() { g_sent.clear(); }
+
+// ── Axis-cache staging ───────────────────────────────────────────────────────
+static uint64_t stamp_at(int64_t age_us) {
+  if (age_us == CS_NO_STAMP) return 0;
+  return (uint64_t)((int64_t)g_mono_us - age_us);
+}
+void cs_stage_leg(uint8_t i, uint8_t state, float pos, float vel,
+                  int64_t hb_age_us, int64_t enc_age_us) {
+  AxisState& a = axes[i];
+  a.heartbeat_seen = true;
+  a.active_errors = 0;
+  a.axis_state = state;
+  a.last_heartbeat_us = stamp_at(hb_age_us);
+  write_pos_vel(a, pos, vel, stamp_at(enc_age_us));
+}
+void cs_clear_axes() {
+  for (uint8_t i = 0; i < NUM_AXES; ++i) {
+    AxisState& a = axes[i];
+    a.heartbeat_seen = false;
+    a.active_errors = 0;
+    a.disarm_reason = 0;
+    a.axis_state = 0;
+    a.last_heartbeat_us = 0;
+    a.last_rx_us = 0;
+    write_pos_vel(a, 0.0f, 0.0f, 0);
+  }
+}
 
 }  // namespace CanBridge

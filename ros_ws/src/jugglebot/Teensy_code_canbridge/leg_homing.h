@@ -65,6 +65,11 @@ uint16_t homing_request(uint8_t axis);
 void homing_step();
 
 bool    homing_active();             // a homing is pending or running
+// FW 53 (I-FW-19): the axis the homing task is driving RIGHT NOW (set at the
+// first SETUP tick, cleared to 0xFF by finish() AFTER its IDLE frame and on
+// success), 0xFF when none. leg_stow_gate.cpp reads it for the HOMING_OWNER
+// carve-out: only this Leg may be commanded IDLE outside the Stow predicate.
+uint8_t homing_axis_in_flight();
 uint8_t homing_result(uint8_t axis); // last HomingResult for an axis (legs 0..5 + hand 6)
 // FW 34 (BUG-18): the (result, per-home epoch) pair, read together under one IRQ
 // guard. The epoch is bumped on every ACCEPTED HOME; the Diagnostic uplinks both.

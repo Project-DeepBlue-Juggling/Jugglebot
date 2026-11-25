@@ -150,23 +150,11 @@ void fault_set_mpc_active(bool a) {
   s_mpc_active = a;
 }
 
-// ── THE ONE AGE PREDICATE over a receive-stamped timestamp (FW 46, BUG-93) ─────
-// True iff `ts` is strictly older than `now` by MORE than `limit`. Every
-// "has axis i gone quiet?" test in this file goes through here, because the
-// naive form `now - ts > limit` is wrong on this scheduler in one specific way:
-// the caller captures `now = micros64()` FIRST and reads the timestamp AFTER,
-// and the writer (task_can_rx, priority 5) preempts this task (priority 3) in
-// between. A frame stamped in that window is NEWER than `now`, the unsigned
-// subtraction wraps to ~2^64, and a live axis reads as silent for one
-// evaluation. On the fatal predicate that is a CAN_BUS_DOWN trip and a Stow
-// mid-Attempt whose latch names leg 0xFF with age 0 (first_silent_leg re-reads
-// a clock that has moved on). A stamp at or after `now` is age zero: NOT older,
-// so NOT silent / NOT stale and, in the inverted predicates, ALIVE / fresh.
-// Same semantics as the MOTOR_FB_STALE guard has carried since FW 27; this
-// helper is that guard made the single enforcement point for the whole class.
-static inline bool rx_older_than(uint64_t now, uint64_t ts, uint64_t limit) {
-  return now > ts && (now - ts) > limit;
-}
+// ── THE ONE AGE PREDICATE: rx_older_than(now, ts, limit) (FW 46, BUG-93) ──────
+// Every "has axis i gone quiet?" test in this file goes through it. It lives in
+// time_base.h since FW 53, shared with leg_stow_gate.cpp so the Stow predicate
+// and the silence/staleness predicates here age a stamp by one rule; the
+// rationale (a stamp newer than `now` is age zero, never ~2^64) is written there.
 
 // ── Cache predicates over the leg axes ────────────────────────────────────────
 static bool legs_all_closed_loop() {

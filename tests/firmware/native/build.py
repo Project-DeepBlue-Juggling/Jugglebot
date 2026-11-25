@@ -67,6 +67,10 @@ _OBJECTS = {
     # alongside fake_hal.o) for the leg_homing/activate/deactivate drivers — their
     # bus/fault gate + *_active() ODR needs differ from the fault/interp TUs.
     "coldstart_hal":     NATIVE_DIR / "coldstart_hal.cpp",
+    # FW 53 (I-FW-19): the Stow gate, LINKED (not #included) so the cold-start ladder drivers can link
+    # the same object once their call sites migrate (U2..U5). It calls homing_axis_in_flight(), which
+    # each driver that links it must supply unless it #includes leg_homing.cpp (test_leg_homing).
+    "leg_stow_gate":     FIRMWARE_DIR / "leg_stow_gate.cpp",
     # A-N1: leg_interp.cpp's `hand7 reset` now calls fault_machine.h's
     # fault_hand_dev_prev_reset() so a reset re-baselines fault_machine.cpp's
     # own exceed-tick baseline too. test_leg_interp #includes leg_interp.cpp
@@ -176,6 +180,12 @@ _BINARIES = {
     "test_leg_homing": (
         NATIVE_DIR / "test_leg_homing.cpp",
         ["axis_state", "ball_butler_state", "coldstart_hal"],
+    ),
+    # FW 53 (I-FW-19): the Stow predicate, the de-energise wrappers, the hold and the HELD census,
+    # against the cold-start fake (recording CAN3 TX, controllable clock, cs_stage_leg).
+    "test_leg_stow_gate": (
+        NATIVE_DIR / "test_leg_stow_gate.cpp",
+        ["axis_state", "ball_butler_state", "coldstart_hal", "leg_stow_gate"],
     ),
     # UDP-framing coverage: EXECUTE the hand-written C++ UDP framing (the network
     # trust boundary). Pure header (udp_protocol.h) — no linked objects.

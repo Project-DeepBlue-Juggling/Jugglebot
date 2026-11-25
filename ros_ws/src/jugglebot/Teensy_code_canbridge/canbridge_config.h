@@ -477,6 +477,29 @@ constexpr float GENTLE_MOVE_VEL_LIMIT_RPS = JBOp::GENTLE_MOVE_VEL_LIMIT_RPS;  //
 constexpr float ACTIVATE_TO_BAND_REV = 0.10f;
 constexpr float STOW_OFF_POSE_REV = 0.0f;    // off pose = fully retracted (can_node stows to 0.0)
 constexpr float STOW_DONE_EPS_REV = 0.01f;   // legs within this of the off pose ⇒ stow complete
+// ── The Stow window (FW 53, I-FW-19, leg_stow_gate.cpp) ───────────────────────
+// A Closed-loop Leg is "at Stow" for the de-energise gate iff its fresh encoder
+// reads inside [STOW_WINDOW_MIN_REV, STOW_OFF_POSE_REV + TARGET_REACHED_POS_TOL_REV]
+// and |vel| <= TARGET_REACHED_VEL_TOL_RPS. The lower bound is DERIVED, not a
+// literal: a homed Leg on its bottom stop reads -Homing::LEG_ABS_POS_REV in
+// Jugglebot sign (encode_set_absolute_position does not sign-flip, the RX decode
+// does), so the window must reach it plus the arrival tolerance. About 7.7 mm
+// wide (1 rev ~ 70 mm): an IDLE from anywhere in it drops < 8 mm onto the stop.
+// The upper bound and the velocity term are DEACTIVATE's own arrival constants,
+// so DEACTIVATE's arrival test always implies the gate (pinned below and by
+// tests/firmware/native/test_leg_stow_gate.cpp).
+constexpr float STOW_WINDOW_MIN_REV =
+    -Homing::LEG_ABS_POS_REV - JBOp::TARGET_REACHED_POS_TOL_REV;   // -0.11 rev
+static_assert(STOW_WINDOW_MIN_REV < STOW_OFF_POSE_REV,
+              "the Stow window must contain the off pose");
+static_assert(STOW_WINDOW_MIN_REV <= STOW_OFF_POSE_REV - JBOp::TARGET_REACHED_POS_TOL_REV,
+              "DEACTIVATE's arrival band [off - tol, off + tol] must lie inside the Stow window");
+// How long after the bridge's last CLOSED_LOOP command to a Leg a heartbeat must
+// be received before its reported state counts for the gate: a heartbeat cached
+// before the command (<= 100 ms at 10 Hz) still says IDLE. 10 ms, the ladders'
+// SETUP settle (leg_activate/leg_deactivate SETTLE_SETUP_US). The ODrive's CL
+// engage latency is assumed, not measured (fw53_design.md section 9).
+constexpr uint64_t CL_ENGAGE_SETTLE_US = 10000ull;   // 10 ms
 // Accel limit for the stow descent so the commanded velocity ramps (no startup
 // step). Reaches the gentle-move velocity limit in ~0.25 s.
 constexpr float STOW_ACCEL_RPS2 = 10.0f;
