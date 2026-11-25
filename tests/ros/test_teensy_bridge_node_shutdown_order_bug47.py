@@ -8,6 +8,7 @@ reorder or add anything on the wire. Pinned here at the method level (mocks).
 from __future__ import annotations
 
 import threading
+import time
 from unittest.mock import MagicMock
 
 from teensy_link.protocol import BusHealth, FaultState, HeartbeatT2J, RpcMethod, RpcStatus
@@ -91,7 +92,7 @@ def test_run_home_abort_sends_no_idle_when_home_was_never_accepted():
 
 
 def test_home_abort_hook_is_a_single_named_function():
-    """The owner-pending decision lives behind one function: forcing it False
+    """The owner decision (2026-11-25: abort + Idle) lives behind one function: forcing it False
     restores the old (run-to-result) behaviour with no other edit."""
     teensy, client, node = _build_paired_node()
     try:
@@ -128,3 +129,68 @@ def test_main_keyboard_interrupt_in_constructor_still_shuts_rclpy_down(monkeypat
     monkeypatch.setattr(tbn.rclpy, 'shutdown', shut, raising=False)
     tbn.main([])
     shut.assert_called_once()
+
+
+def test_on_shutdown_waits_for_the_not_homed_write_before_the_client_stops():
+    """BUG-47: with a homing in flight, the aborted homing's is_homed=False write is
+    observed BEFORE the transport closes and client.stop(); the step order for the
+    rest is unchanged."""
+    teensy, client, node = _build_paired_node()
+    try:
+        node._stow_on_shutdown = False
+        calls = []
+        node._stop_setpoint_output = MagicMock()
+        node._shutdown_hand_fan_auto = MagicMock()
+        node._tod = MagicMock(); node._tod.close.side_effect = lambda: calls.append('tod')
+        node._rpc_server = MagicMock(); node._rpc_server.close.side_effect = lambda: calls.append('rpc_server')
+        node._rpc = MagicMock(); node._rpc.close.side_effect = lambda: calls.append('rpc')
+        node._own_client = True
+        node._client = MagicMock(); node._client.stop.side_effect = lambda: calls.append('client_stop')
+        node._write_is_homed = MagicMock(side_effect=lambda v: (calls.append(('write', v)), (True, ''))[1])
+        node._home_idle.clear()   # a homing is in flight
+
+        def worker():   # the aborted homing: sees the event, then persists not-homed
+            node._shutdown_event.wait(2)
+            time.sleep(0.2)
+            node._write_is_homed(False)
+            node._home_idle.set()
+        t = threading.Thread(target=worker); t.start()
+        node.on_shutdown()
+        t.join()
+        assert calls == [('write', False), 'tod', 'rpc_server', 'rpc', 'client_stop']
+    finally:
+        node._client = client
+        _teardown(teensy, client, node)
+
+
+def test_on_shutdown_writes_not_homed_itself_if_the_homing_worker_never_finishes(monkeypatch):
+    teensy, client, node = _build_paired_node()
+    try:
+        node._stow_on_shutdown = False
+        monkeypatch.setattr(tbn, '_SHUTDOWN_HOMING_ABORT_WAIT_S', 0.1)
+        calls = []
+        node._stop_setpoint_output = MagicMock()
+        node._shutdown_hand_fan_auto = MagicMock()
+        node._tod = MagicMock(); node._tod.close.side_effect = lambda: calls.append('tod')
+        node._rpc_server = MagicMock(); node._rpc = MagicMock()
+        node._own_client = False
+        node._write_is_homed = MagicMock(side_effect=lambda v: (calls.append(('write', v)), (True, ''))[1])
+        node._home_idle.clear()   # never set: the worker is stuck
+        node.on_shutdown()
+        assert calls == [('write', False), 'tod']
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_do_home_holds_the_idle_event_cleared_until_its_write_is_done():
+    teensy, client, node = _build_paired_node()
+    try:
+        seen = {}
+        node._run_home = MagicMock(return_value=(False, 'aborted by shutdown'))
+        node._write_is_homed = MagicMock(side_effect=lambda v: (
+            seen.__setitem__('idle_during_write', node._home_idle.is_set()), (True, ''))[1])
+        node._do_home()
+        assert seen['idle_during_write'] is False
+        assert node._home_idle.is_set()
+    finally:
+        _teardown(teensy, client, node)

@@ -1070,6 +1070,10 @@ _SHUTDOWN_HAND_FAN_BUDGET_S = _SHUTDOWN_HAND_FAN_RPC_TIMEOUT_S * (1 + _SHUTDOWN_
 # budget. A healthy profiled stow reaches STOW+IDLE in ~2-4 s; this only bounds the
 # stall case (DeactivateMonitor declares FAILED at timeout_s, the poll loop breaks).
 _SHUTDOWN_DEACTIVATE_TIMEOUT_S = 6.0
+# BUG-47: on_shutdown waits at most this long (just before the transport closes) for an
+# aborted homing to finish its is_homed=False write; worst case for that worker is its
+# current RPC + the IDLE RPC + the write (3 x 0.5 s x 3 attempts, the RPC defaults).
+_SHUTDOWN_HOMING_ABORT_WAIT_S = 5.0
 
 # ── One-call guard recovery (/recover, FIX 3) ──
 # Recovery convergence gate: after trajectory_node reseeds its hold at the measured
@@ -2447,6 +2451,11 @@ class TeensyBridgeNode(Node):
         # BUG-141: a SIGINT during the boot-state read is caught there and recorded
         # here; main() then skips the spin and takes the normal shutdown path.
         self._boot_interrupted = False
+        # BUG-47: SET while no _do_home is in flight (cleared for its whole body,
+        # including the is_homed persist). on_shutdown waits on it before closing
+        # the transport so an aborted homing's is_homed=False write is not lost.
+        self._home_idle = threading.Event()
+        self._home_idle.set()
         self._home_in_progress = False   # guards concurrent home_motors goals
         self._home_action = ActionServer(
             self, HomeMotors, 'home_motors',
@@ -8767,11 +8776,10 @@ class TeensyBridgeNode(Node):
 
     def _home_abort_requested(self) -> bool:
         """BUG-47 stop check for the homing monitor loop: True once the node is
-        shutting down. OWNER DECISION PENDING (2026-11-25): whether SIGINT should
-        abort a homing in flight and Idle the axis. The default implemented here is
-        the recommended one (abort + IDLE); returning False here restores the old
-        behaviour (homing keeps running to its own result, the process lingers up to
-        ~20 s at exit)."""
+        shutting down. OWNER DECISION (2026-11-25): SIGINT aborts a homing in flight
+        and Idles the axis (the Hand is not heavy enough to drop by itself and
+        dropping would be no hazard). Returning False here would restore the old
+        behaviour (homing runs to its own result, the process lingers up to ~20 s)."""
         return self._shutdown_event.is_set()
 
     def _abort_homing_axis(self, axis: int, home_accepted: bool) -> None:
@@ -10125,6 +10133,7 @@ class TeensyBridgeNode(Node):
             if self._home_in_progress:
                 return False, "home already in progress"
             self._home_in_progress = True
+            self._home_idle.clear()
         try:
             with self._lock:
                 # BUG-122: a reference loss seen before this Homing started is
@@ -10148,6 +10157,7 @@ class TeensyBridgeNode(Node):
         finally:
             with self._home_lock:
                 self._home_in_progress = False
+                self._home_idle.set()
 
     def _svc_home(self, req, res):
         # the manual /home Trigger service shares _do_home() with
@@ -11534,6 +11544,18 @@ class TeensyBridgeNode(Node):
                 self._stall_wd.stop()
             except Exception:  # noqa: BLE001
                 pass
+        # 3b. BUG-47: a homing aborted by this shutdown persists is_homed=False on its
+        # worker thread; that write needs the RPC client, so wait (bounded) for it
+        # BEFORE the transport closes. If the worker is still in flight at the bound,
+        # write the not-homed state here (best-effort): a stale is_homed=True after an
+        # aborted homing is the unsafe direction. No-op (instant) when no homing ran.
+        if not self._home_idle.wait(_SHUTDOWN_HOMING_ABORT_WAIT_S):
+            self.get_logger().error(
+                "shutdown: homing abort did not finish in time; writing is_homed=False here")
+            try:
+                self._write_is_homed(False)
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().error(f"shutdown is_homed=False write raised {e}")
         # 4. Transport teardown.
         try:
             self._tod.close()

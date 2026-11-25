@@ -175,8 +175,18 @@ def _fake_peer(answer_home=False, unpowered=False):
     from tests.teensy_link.conftest import FakeTeensy
     from teensy_link import protocol as p
     peer = FakeTeensy(bind_host='127.0.0.1', stream_port=0, rpc_port=0)
+    peer.rpc_log = []   # (monotonic, method, args) of the RPCs the answer_home fake accepted
     if answer_home:
         peer.on_rpc(int(p.RpcMethod.HOME), lambda _rid, _args: (int(p.RpcStatus.OK), b''))
+
+        def _record(method):
+            def _h(_rid, args):
+                peer.rpc_log.append((time.monotonic(), method, bytes(args)))
+                return int(p.RpcStatus.OK), b''
+            return _h
+        # BUG-47: an aborted homing sends IDLE then persists is_homed=False (STATE_WRITE).
+        peer.on_rpc(int(p.RpcMethod.SET_AXIS_STATE), _record('SET_AXIS_STATE'))
+        peer.on_rpc(int(p.RpcMethod.STATE_WRITE), _record('STATE_WRITE'))
     stop = threading.Event()
     if unpowered:
         for m in p.RpcMethod:
@@ -269,6 +279,17 @@ def test_bridge_node_exit_with_home_action_in_flight_bug47(rclpy_env):
             f'bridge did not exit within 8 s of SIGINT (exit time {dt}):\n{log[-3000:]}')
         assert 'homing: aborted on axis' in log, log[-3000:]
         assert node.returncode == 0, f'unclean exit {node.returncode}:\n{log[-3000:]}'
+        # The not-homed write must reach the peer BEFORE the transport closed (it can
+        # only arrive while the socket is open): IDLE for the homing axis, then the
+        # STATE_WRITE with is_homed=False. A write that raced the close never arrives.
+        from teensy_link import rpc_args
+        names = [m for _t, m, _a in peer.rpc_log]
+        idle = [a for _t, m, a in peer.rpc_log if m == 'SET_AXIS_STATE']
+        writes = [a for _t, m, a in peer.rpc_log if m == 'STATE_WRITE']
+        assert rpc_args.encode_set_axis_state(0, 1) in idle, (names, log[-3000:])
+        assert writes, f'no is_homed=False STATE_WRITE reached the peer: {names}\n{log[-3000:]}'
+        assert writes[-1] == rpc_args.encode_state_write(False, False), writes[-1]
+        assert names.index('STATE_WRITE') > names.index('SET_AXIS_STATE'), names
     finally:
         peer.close()
 
