@@ -200,3 +200,30 @@ def test_multi_axis_all_succeed_only_when_all_terminal():
     m.step(1.5, {1: st(CL, pos_rev=0.01, vel_rps=-0.2)})   # 1 latches arrival
     r = m.step(1.7, {1: st(IDLE, pos_rev=-0.02, vel_rps=0.0)})
     assert r.done and sorted(m.succeeded) == [0, 1]
+
+
+# ── FW 53 (I-FW-19): a HELD Leg fails the deactivate at once ─────────────────
+# Mutations caught: deleting the HELD branch (runs to the 20 s timeout), and
+# honouring HELD without a clear bit first (the stale-bit test fails at t=0).
+
+def _held(pos, held=True, state=CL):
+    return AxisStatus(axis_state=state, pos_rev=pos, vel_rps=0.0, held=held)
+
+
+def test_held_leg_fails_fast_with_the_reason():
+    from teensy_link.deactivate import REASON_HELD
+    m = mon([0, 1])
+    assert not m.step(0.0, {0: _held(2.0, False), 1: _held(2.0, False)}).done
+    r = m.step(0.5, {0: _held(1.4), 1: _held(1.4)})       # frozen mid-descent
+    assert r.done and m.succeeded == []
+    assert all(m.failed[a].startswith(REASON_HELD) for a in (0, 1))
+    assert "NOT at Stow" in m.failed[0]
+
+
+def test_stale_held_bit_from_an_earlier_abort_is_ignored_until_seen_clear():
+    m = mon([0])
+    assert not m.step(0.0, {0: _held(1.4)}).done           # cache: the old abort
+    m.step(0.1, {0: _held(1.4, False)})                    # accepted: bit cleared
+    m.step(0.8, {0: _held(0.05, False)})                   # arrival (Closed-loop)
+    r = m.step(0.9, {0: st(IDLE, pos_rev=0.0)})
+    assert r.done and m.succeeded == [0]

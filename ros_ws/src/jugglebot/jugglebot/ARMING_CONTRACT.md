@@ -308,19 +308,20 @@ work (2026-07-15) hit three distinct doors into that hole:
 6. Real fault at any point → FAULT entry disarms (A2). Guard-only fault from
    ACTIVE → stays armed, guard suppresses output, resume re-verifies the arm
    through A1 (idempotent if still armed).
-   **The real-fault exit stows the legs when the visit began in ACTIVE or
-   LEVELLING** (2026-10-06, LEVELLING added 2026-10-07). The trigger: a forced
+   **The real-fault exit stows the legs whenever all six are Closed-loop**
+   (2026-10-06 for ACTIVE, LEVELLING added 2026-10-07, any origin since FW 53
+   on 2026-11-26: an aborted FW 53 rise holds the six Closed-loop mid-air
+   after any ladder). The trigger: a forced
    ACTIVE→FAULT cancels ActiveHandler.on_exit's deactivate, and a fault during
    LEVELLING (whose `level_activate` holds the same active pose through its
    settle / tilt / correction / persist / mocap-check phases until
    `level_deactivate`) has no stow at all — LevellingHandler.on_exit only
    clears requests — so either way the legs could reach IDLE still holding an
    active pose. Once every error and the guard latch have cleared, a real
-   fault whose FAULT visit began in ACTIVE or LEVELLING (`prev_state` in
-   {ACTIVE, LEVELLING} at entry, which includes a guard-only fault promoted
-   mid-FAULT; both states hold the legs at an active pose in CLOSED_LOOP)
-   requests the profiled DEACTIVATE when all six legs are in CLOSED_LOOP with
-   no active error. (Until 2026-11-20 it also required the robot to be homed.
+   fault (whatever state the visit began in, a guard-only fault promoted
+   mid-FAULT included) requests the profiled DEACTIVATE when all six legs are
+   in CLOSED_LOOP with no active error; otherwise it goes to BOOT, whose A7/A6
+   predicate holds a mixed set. (Until 2026-11-20 it also required the robot to be homed.
    BUG-122 made the bridge clear `is_homed` whenever any drive loses its
    position reference, the Hand included, so that gate would have skipped the
    stow on a Hand-only loss and started HOMING with the legs at an active pose.

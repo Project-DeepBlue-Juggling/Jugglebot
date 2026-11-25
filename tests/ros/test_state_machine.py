@@ -1458,13 +1458,36 @@ class TestFaultExitStow:
         ctx.link_status_seen = True
         assert boot.execute(ctx) == RobotState.HOMING
 
-    @pytest.mark.parametrize('origin', [RobotState.HOMING, RobotState.IDLE])
-    def test_real_fault_not_from_active_exits_to_boot_at_once(self, origin):
+    @pytest.mark.parametrize('origin', [RobotState.HOMING, RobotState.IDLE,
+                                        RobotState.BOOT])
+    def test_real_fault_from_any_state_with_six_closed_loop_stows(self, origin):
+        """FW 53 (2026-11-26): the exit stow is decided on drive state alone. An
+        aborted ladder can leave the six HELD Closed-loop mid-air after any
+        visit, so a visit that began outside ACTIVE/LEVELLING stows too.
+        Mutation: restoring the prev_state-in-(ACTIVE, LEVELLING) condition
+        returns BOOT here with the Legs up."""
         handler = FaultHandler()
         ctx = Context()
         ctx.prev_state = origin
         ctx.is_homed = True
         ctx.legs_closed_loop = True
+        ctx.errors = ['SOME_ERROR']
+        handler.on_enter(ctx)
+        ctx.drain_requests()
+        ctx.errors = []
+        assert handler.execute(ctx) is None
+        assert ctx.drain_requests() == ['deactivate']
+
+    @pytest.mark.parametrize('origin', [RobotState.HOMING, RobotState.IDLE,
+                                        RobotState.ACTIVE, RobotState.LEVELLING])
+    def test_real_fault_with_legs_not_all_closed_loop_exits_to_boot(self, origin):
+        """All six Idle (an FW 53 rise returned to Stow) or a mixed set: BOOT at
+        once, no stow; BOOT's A7/A6 predicate decides from there."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.prev_state = origin
+        ctx.is_homed = True
+        ctx.legs_closed_loop = False
         ctx.errors = ['SOME_ERROR']
         handler.on_enter(ctx)
         ctx.drain_requests()
@@ -2344,10 +2367,10 @@ class TestBootIdleGate:
         assert sm.state == RobotState.IDLE
         assert notes == []
 
-    def test_fault_exit_with_posed_legs_from_idle_does_not_claim_idle(self):
-        """A FAULT visit that began outside ACTIVE/LEVELLING skips the exit
-        stow and goes to BOOT; with all six Legs still Closed-loop (a manual
-        /activate in IDLE) BOOT now holds instead of claiming IDLE."""
+    def test_fault_exit_with_posed_legs_from_idle_stows_then_claims_idle(self):
+        """A FAULT visit that began outside ACTIVE/LEVELLING with all six Legs
+        Closed-loop (a manual /activate in IDLE) stows them first since FW 53,
+        and BOOT claims IDLE only once all six read Idle (A7)."""
         sm, ctx, notes = self._homed_boot([_IDLE] * 6)
         sm.tick(ctx)
         assert sm.state == RobotState.IDLE
@@ -2355,11 +2378,19 @@ class TestBootIdleGate:
         ctx.legs_closed_loop = True
         sm.force_transition(RobotState.FAULT, ctx)
         ctx.errors = []
+        reqs = []
         for _ in range(3):
             sm.tick(ctx)
+            reqs += _dispatch(ctx)
+        assert sm.state == RobotState.FAULT          # held while the stow runs
+        assert reqs.count('deactivate') == 1
+        _resolve(ctx, True)
+        ctx.legs_closed_loop = False
+        _legs(ctx, [_IDLE] * 6)
+        sm.tick(ctx)
         assert sm.state == RobotState.BOOT
-        assert 'deactivate' not in ctx.drain_requests()
-        assert any(n.startswith('IDLE refused: all six') for n in notes)
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
 
     def test_predicate_rows(self):
         from jugglebot.state_machine import (

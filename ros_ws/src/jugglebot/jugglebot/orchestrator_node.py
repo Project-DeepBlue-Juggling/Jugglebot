@@ -257,8 +257,9 @@ class OrchestratorNode(Node):
         # ODrive CLOSED_LOOP_CONTROL (odrive.AXIS_STATES['CLOSED_LOOP'], i.e.
         # protocol_config.ODRIVE_STATES — the constant the bridge's activate path
         # uses) with no active error, on every LEG axis. FaultHandler's
-        # real-fault exit stow (ACTIVE or LEVELLING) runs only when this is true
-        # (ARMING_CONTRACT choreography step 6). A message too short to carry
+        # real-fault exit stow runs exactly when this is true, whatever state
+        # the FAULT visit began in (ARMING_CONTRACT choreography step 6, FW 53:
+        # an aborted rise can leave the six HELD mid-air). A message too short to carry
         # every leg reads False: no evidence the legs are holding.
         states = msg.motor_states
         self.ctx.legs_closed_loop = (
