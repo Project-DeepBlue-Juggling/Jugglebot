@@ -4,7 +4,7 @@ kind: bug
 title: teensy_bridge_node does not exit after a rejected shutdown Stow; launch SIGTERM-killed it 4.8 s later (2026-10-31 13:06)
 status: in_progress
 created: '2026-11-01'
-updated: '2026-11-25T00:02:43Z'
+updated: '2026-11-25T00:34:55Z'
 owners: []
 priority: medium
 effort: s
@@ -55,3 +55,4 @@ So the executor may be waiting on the homing goal's callback. This is not proven
 - 2026-11-08: Night Shift 2026-11-08: not reproduced offline; on_shutdown takes 0.9 s. Hypothesis: executor.shutdown waits on a homing callback, which needs real rclpy (detail below)
 - 2026-11-25: reproduced under real rclpy: exit 21 s after SIGINT with a home_motors goal in flight (strict xfail in tests/rclpy_smoke). Cause: the process joins the worker still in _run_home's monitor loop, which has no stop check; not executor.shutdown(). Fix waits on an owner answer (abort homing and Idle the axis on SIGINT).
 - 2026-11-25: 24 of 24 unpowered launches (BUG-129 series, 2026-11-25) left the bridge unexited 30 s after SIGINT with no homing in flight and no shutdown line in the log; it had to be killed. A cheap, reliable reproduction without the robot powered. The blocking point is not yet located.
+- 2026-11-25: CORRECTION to the previous line: the 24 of 24 unpowered no-exits were the BUG-129 series runner, not the node. It started the launch as a bash background job, so the whole launch ignored SIGINT (the bag grew until the SIGKILL). On a fake unpowered peer the node exits in 2.0 s. The homing-in-flight case (21 s) is fixed on branch offline/bug47, held for the owner's answer on abort and Idle.
