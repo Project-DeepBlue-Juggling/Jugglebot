@@ -89,6 +89,10 @@ work (2026-07-15) hit three distinct doors into that hole:
   so the clear cannot jolt) instead of wedging the first guard-gated verb of
   HOMING. Seeding is gated on `is_homed` so mid-homing telemetry no longer
   produces workspace-gate ERROR spam that buries real errors.
+  While Armed the bridge also refuses the RPCs that re-zero, re-tune, re-mode
+  or reboot a live loop (`/configure`, `set_hand_gains`, `set_hand_state` to
+  anything but IDLE, `reboot_odrives`), in the firmware and with a message on
+  the host (FW 52, `INVARIANTS.md` I-FW-18): disarm first.
 - **A6 — Homing starts only from a Platform that is down** (owner,
   2026-11-25). Homing drives the Legs one at a time to their bottom stops
   (`leg_homing.cpp`, `_run_home` is sequential). If it starts while the

@@ -255,3 +255,7 @@ Python:
 Firmware image: 2026-11-25 16:07, `pio run -e teensy41` (BUILD ONLY, never uploaded): SUCCESS; `arm-none-eabi-size firmware.elf`: text 259392, data 35520, bss 113440 (dec 408352); firmware.hex sha256 70696bd6cde321f4...
 
 Status stays in-progress until FW 52 is flashed.
+
+Integration gate (the FW 50 to 52 chain rebased onto main c21bd54e, tip f5dc77c4):
+- 2026-11-25 20:27, `flock /tmp/jugglebot-tests.lock ./run_tests.sh --full`: 11306 passed, 57 skipped, 2 xfailed in 830 s; serial phase 16 passed; exit 0.
+- 2026-11-25 21:10, after the document audit added the I-FW-18 row, the ARMING_CONTRACT A5 sentence and corrected one comment in `canbridge_config.h` (no code change), `python -m pytest -q -n 4 --dist loadfile -m "not nightly" tests/firmware tests/sim/test_docs_links.py tests/sim/test_glossary_avoid_words.py tests/sim/test_logbook_index.py tests/sim/test_logbook_front_matter.py tests/ros/test_state_machine.py`: 581 passed, 4 skipped.

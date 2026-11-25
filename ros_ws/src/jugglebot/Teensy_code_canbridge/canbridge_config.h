@@ -502,8 +502,11 @@ constexpr float RECOVER_SLEW_DONE_EPS_REV  = 0.002f;  // per-leg converged band 
 
 // ── FW 22 scheduled (stamped) playback — hand C2 spec 2026-09-14 ─────────────
 // A HAS_SCHED setpoint is PLAYED at its t_origin_us stamp, not at arrival. It
-// needs the full knot set (HAS_U1|HAS_U2|HAS_V1|HAS_V2) and a synced bridge
-// clock; otherwise it is counted (sched_demoted) and played as a legacy frame.
+// needs the full knot set (HAS_U1|HAS_U2|HAS_V1|HAS_V2) and a bridge clock:
+// synced, or (FW 52) held for up to TIME_OFFSET_HOLD_MAX_US (180 s) while the
+// output is enabled and a scheduled group is active, after which the frame is
+// dropped (sched_future_drops). Otherwise it is counted (sched_demoted) and
+// played as a legacy frame.
 constexpr uint32_t SP_FLAG_HAS_V2       = 0x10u;
 constexpr uint32_t SP_FLAG_HAS_SCHED    = 0x20u;
 constexpr uint32_t SCHED_REQUIRED_FLAGS = 0x1Bu;   // HAS_U1|HAS_U2|HAS_V1|HAS_V2
