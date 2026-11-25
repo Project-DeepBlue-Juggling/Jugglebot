@@ -5,11 +5,12 @@ Given a target landing ``y_d`` and a :class:`ThrowContext` (the physics of the T
 commanded), :meth:`Learner.command` returns the command ``u``::
 
     model command   u_m = f0^-1(y_d)                                  (plant_model.PlantModel)
-    residual        r_hat = sum w_i (y_i - f0(u_i)) / sum w_i         (L2, over the k most recent
-                    w_i = exp(-d_i^2),                                 support rows with the SAME
-                    d^2 = |dp|^2/h_p^2 + |dv|^2/h_v^2 (+ ddwell^2/h_d^2)   ball_id and release_kind)
-    trust           alpha = sum w / (sum w + w0)
-    command         u = f0^-1(y_d - alpha r_hat), then |u - u_m| <= c_max (1 - exp(-sum w / w0))
+    residual        r_hat = sum w_i (y_i - f0(u_i)) / sum w_i         (L2, over ALL support rows
+                    w_i = exp(-d_i^2),                                 with the SAME ball_id and
+                    d^2 = |dp|^2/h_p^2 + |dv|^2/h_v^2 (+ ddwell^2/h_d^2)   release_kind)
+    shrinkage       g = n_eff / (n_eff + s_noise^2 / s_prior^2), per axis, n_eff the Kish
+                    effective sample size (sum w)^2 / sum w^2          (FEAT-65, 2026-11-26)
+    command         u = f0^-1(y_d - g r_hat), then |u - u_m| <= c_max (1 - exp(-sum w / w0))
                     per lateral axis and in apex                       (L3, the cap about the MODEL)
 
 ``dp`` is over the release Site xy and release height (:func:`_kernel_pos`: the release position
@@ -27,12 +28,12 @@ whole law. The old law survives frozen for the replay probe only, in
 The constants come from the P1 replay probe (``tools/probes/learner_replay.py``, 2026-11-06,
 3276-row corpus; ``temp/probes/learner_replay/SUMMARY.md``): the L2 surface is flat (969-1003 mm^2
 summed MSE over 243 settings), best k = 8, h_v = 0.15, w0 = 4, h_p anywhere in 0.02-0.10, the
-dwell term irrelevant (k and w0 nonetheless take the plan's start values 16 and 2: the predictor
-optimum is within noise, and the closed loop needs the trust; see ``LearnerConfig.k``); L2's proposed apex corrections have p99 12.9 mm and max 18.0 mm in command
+dwell term irrelevant (w0 takes the plan's start value 2); L2's proposed apex corrections have p99 12.9 mm and max 18.0 mm in command
 space, so an apex c_max of 20 mm covers them.
 
 Rows enter the residual memory only if the plant model ACCEPTED them (its inlier rule): the
-probe's pools are the accepted rows; a 300 mm outlier must not steer r_hat for k throws.
+probe's pools are the accepted rows; a 300 mm outlier must not steer r_hat (it is one row among
+all the in-kernel rows, and the shrinkage gain bounds a lone row's pull).
 
 Queries (:meth:`model_command`, :meth:`command`, :meth:`predict`, :meth:`local_model`,
 :meth:`evidence`) are READ-ONLY: the executor's early command calls them on a tick that must not
@@ -121,14 +122,6 @@ class LearnerConfig:
     """Constants of L2 and L3. Origin: the P1 replay probe (``tools/probes/learner_replay.py``,
     2026-11-06, 3276-row corpus, 243-setting sweep) unless stated. SI units."""
 
-    #: Most recent support rows used. The plan's start value (§ 2.3), NOT the probe's k = 8: the
-    #: probe scored each law as a PREDICTOR on rows flown under the old law, where the (k, w0)
-    #: surface is flat within noise (969-1003 mm^2 over 243 settings), so its k = 8 / w0 = 4 optimum
-    #: could not see the closed loop. In the loop a persistent offset f0 does not carry is
-    #: corrected only by alpha <= k / (k + w0), leaving (1 - alpha) of it for ever (k 8 / w0 4: a
-    #: third; measured 2026-11-06 in the P1 L1 synthetic loop). k 16 / w0 2: alpha up to 0.889,
-    #: still inside the flat part of the surface.
-    k: int = 16
     #: Release-position bandwidth [m] (probe: 0.02-0.10 within 0.03 mm of each other).
     h_p: float = 0.05
     #: Release-velocity bandwidth [m/s] (probe sweep best).
@@ -136,11 +129,19 @@ class LearnerConfig:
     #: Dwell bandwidth [s]; inf = the term is inert (probe: no effect on the corpus, which cannot
     #: size it; the field stays so a later Sitting can).
     h_d: float = math.inf
-    #: Trust pseudo-count: alpha = sum w / (sum w + w0); cap factor 1 - exp(-sum w / w0). The
-    #: plan's start value 2 (the probe's predictor optimum 4 is within noise of it; see ``k``: the
-    #: closed loop needs the trust). At full evidence the cap factor is 1 - e^-8 = 0.9997, so the
-    #: cap reaches c_max (at k 8 / w0 4 it topped out at 0.865 c_max).
+    #: Evidence scale of the CAP only: cap factor 1 - exp(-sum w / w0), ``sum w`` over all in-kernel
+    #: rows (the trust alpha = sum w / (sum w + w0) is retired; the correction's gain is the
+    #: shrinkage ``n_eff / (n_eff + sigma_noise^2 / sigma_prior^2)``). The plan's start value 2.
     w0: float = 2.0
+    #: Per-Throw landing noise sd [m] in x and y (FEAT-65: the scatter the 2026-11-24 review
+    #: measured, 17-20 mm sd lateral). A constant, not an in-kernel variance estimate: with few
+    #: rows a sample variance is itself noise, and would shrink LESS exactly where shrinkage
+    #: matters most.
+    sigma_noise_xy_m: float = 0.018
+    #: The same for the Apex [m] (the review's apex rms about the model, 18.5 mm).
+    sigma_noise_apex_m: float = 0.018
+    #: Prior sd of the true residual (the bias to be learned) [m], all axes (the Item's 10 mm).
+    sigma_prior_m: float = 0.010
     #: Lateral cap about the model command [m] (the node passes ``learner_lateral_authority_mm``;
     #: 30 mm is the owner's BUG-52 value, newer than the plan's 40 mm start).
     c_max_xy_m: float = 0.030
@@ -150,15 +151,13 @@ class LearnerConfig:
     support_d2: float = SUPPORT_D2
 
     def __post_init__(self) -> None:
-        if not isinstance(self.k, int) or isinstance(self.k, bool) or self.k < 1:
-            raise ValueError('LearnerConfig.k must be an int >= 1, got %r' % (self.k,))
-        for name in ('h_p', 'h_v', 'w0', 'support_d2'):
+        for name in ('h_p', 'h_v', 'w0', 'support_d2', 'sigma_prior_m'):
             v = getattr(self, name)
             if not (isinstance(v, (int, float)) and math.isfinite(v) and v > 0):
                 raise ValueError('LearnerConfig.%s must be finite and > 0, got %r' % (name, v))
         if not (isinstance(self.h_d, (int, float)) and not math.isnan(self.h_d) and self.h_d > 0):
             raise ValueError('LearnerConfig.h_d must be > 0 (inf = inert), got %r' % (self.h_d,))
-        for name in ('c_max_xy_m', 'c_max_apex_m'):
+        for name in ('c_max_xy_m', 'c_max_apex_m', 'sigma_noise_xy_m', 'sigma_noise_apex_m'):
             v = getattr(self, name)
             if not (isinstance(v, (int, float)) and math.isfinite(v) and v >= 0):
                 raise ValueError('LearnerConfig.%s must be finite and >= 0, got %r' % (name, v))
@@ -251,7 +250,8 @@ class Learner(object):
         return ctx
 
     def _residual(self, ctx: ThrowContext) -> Tuple[np.ndarray, float, int]:
-        """(alpha r_hat (3,), sum w, rows used) at ``ctx``; zeros when the support is empty."""
+        """(g * r_hat (3,), sum w, rows used) at ``ctx``: the shrunk kernel mean over ALL in-kernel
+        rows; zeros when the support is empty."""
         cfg = self.config
         R = self._rows
         n = R.n
@@ -267,7 +267,7 @@ class Learner(object):
         if math.isfinite(cfg.h_d) and math.isfinite(ctx.dwell_s):
             dd = R.dwell[pool] - ctx.dwell_s
             d2 = d2 + np.where(np.isfinite(dd), dd * dd, 0.0) / cfg.h_d ** 2
-        idx = np.flatnonzero(d2 <= cfg.support_d2)[-cfg.k:]    # the k most RECENT support rows
+        idx = np.flatnonzero(d2 <= cfg.support_d2)             # every in-kernel row
         if idx.size == 0:
             return np.zeros(3), 0.0, 0
         sup = pool[idx]
@@ -277,7 +277,10 @@ class Learner(object):
         r = R.y[sup] - self.model.forward_rows(R.u[sup], R.site_x[sup], ctx.ball_id)
         sw = float(w.sum())
         r_hat = (w[:, None] * r).sum(0) / sw
-        corr = (sw / (sw + cfg.w0)) * r_hat
+        n_eff = sw * sw / float((w * w).sum())               # Kish effective sample size
+        ratio = np.array([cfg.sigma_noise_xy_m, cfg.sigma_noise_xy_m, cfg.sigma_noise_apex_m]) ** 2 \
+            / cfg.sigma_prior_m ** 2
+        corr = (n_eff / (n_eff + ratio)) * r_hat
         if not (np.all(np.isfinite(corr)) and math.isfinite(sw)):
             raise ValueError('the learner residual is not finite (%r) over %d rows; theta %r'
                              % (corr.tolist(), sup.size, th.tolist()))
@@ -311,7 +314,7 @@ class Learner(object):
         return u
 
     def predict(self, ctx: ThrowContext, u, y_d=None) -> np.ndarray:
-        """Expected landing (3,) [m] of command ``u`` at ``ctx``: f0(u) + alpha r_hat (uncapped;
+        """Expected landing (3,) [m] of command ``u`` at ``ctx``: f0(u) + g r_hat (uncapped;
         what the Catch aim prior uses). ``y_d`` is accepted for the executor's call shape and
         unused (the query physics is the context's)."""
         ctx = self._ctx(ctx)
@@ -322,7 +325,7 @@ class Learner(object):
 
     def local_model(self, ctx: ThrowContext, y_d):
         """The affine forward map ``(u_bar, D, d)`` with ``predict(ctx, u) == d + D (u - u_bar)``:
-        u_bar = the model command, D = diag(1, 1, K), d = f0(u_bar) + alpha r_hat. Never None."""
+        u_bar = the model command, D = diag(1, 1, K), d = f0(u_bar) + g r_hat. Never None."""
         ctx = self._ctx(ctx)
         u_bar = self.model.inverse(y_d, ctx.site_xy_m[0], ctx.ball_id)
         K = float(self.model.theta()[0])

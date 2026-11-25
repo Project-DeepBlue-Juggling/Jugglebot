@@ -88,18 +88,17 @@ def test_t_u3_alpha_is_monotone_in_the_evidence_and_zero_at_empty_support():
     rng = np.random.default_rng(1)
     prev_sw, prev_step = 0.0, 0.0
     cfg = L.config
-    for n in range(1, cfg.k + 5):
+    for n in range(1, 21):
         u = np.array([0.0, 0.0, 0.9])
         L.observe(_exp(ctx, u, _plant(u, ctx.site_xy_m[0], (0.010, 0.0, 0.0)) + rng.normal(0, 1e-4, 3)))
         sw, used = L.evidence(ctx)
-        assert used == min(n, cfg.k)
+        assert used == n                         # FEAT-65: every in-kernel row, no recency cut
         assert sw >= prev_sw - 1e-12
-        alpha = sw / (sw + cfg.w0)
         step = abs(L.command(ctx, Y_D)[0] - L.model_command(ctx, Y_D)[0])
         assert step >= prev_step - 2e-4          # monotone up to the 0.1 mm row noise
-        assert 0.0 < alpha < 1.0
+        assert 0.0 < step
         prev_sw, prev_step = sw, step
-    assert prev_sw == pytest.approx(cfg.k, rel=1e-9)   # k rows exactly at the query: w = 1 each
+    assert prev_sw == pytest.approx(20, rel=1e-9)      # 20 rows exactly at the query: w = 1 each
 
 
 @pytest.mark.parametrize('other', [dict(ball=1), dict(kind='free_cup')])
@@ -116,19 +115,19 @@ def test_t_u3_rows_of_another_ball_or_release_kind_contribute_nothing(other):
         L.observe(_exp(c_other, u, _plant(u, ctx.site_xy_m[0], (0.050, -0.050, 0.02))))
     assert L.evidence(ctx) == (0.0, 0)
     np.testing.assert_allclose(L.command(ctx, Y_D), L.model_command(ctx, Y_D), rtol=0, atol=0)
-    assert L.evidence(c_other)[1] == L.config.k
+    assert L.evidence(c_other)[1] >= 20                # every in-kernel row, no recency cut
     del base
 
 
 def test_t_u3_rows_beyond_the_support_gate_contribute_nothing():
     """Rows just outside the gate (d^2 = (0.155 / 0.05)^2 = 9.61 > 9), interleaved with the
     query's rows and carrying a 50 mm residual, do not enter: the Learner's correction equals
-    alpha r_hat computed by hand over the k most recent rows AT the query only."""
+    g r_hat computed by hand over ALL rows AT the query only."""
     def build(with_far):
         L = Learner()
         rng = np.random.default_rng(3)
         q = _ctx(0.0, kind='carried', vel=(0.1, 0.0, 4.4))
-        far = _ctx(0.0, rel=(0.155, 0.0, 0.4), kind='carried', vel=(0.1, 0.0, 4.4))
+        far = _ctx(0.155, rel=(0.155, 0.0, 0.4), kind='carried', vel=(0.1, 0.0, 4.4))
         for i in range(30):
             u = np.array([0.0, 0.0, 0.9])
             L.observe(_exp(q, u, _plant(u, 0.0, (0.004, 0.003, 0.002)) + rng.normal(0, 0.002, 3)))
@@ -143,14 +142,17 @@ def test_t_u3_rows_beyond_the_support_gate_contribute_nothing():
     rb = Lb.command(q, Y_D) - Lb.model_command(q, Y_D)
     # the far rows moved f0's b (they are real rows), so compare the residual layer through the
     # rows it used: same count, and the correction equals alpha r_hat recomputed by hand
-    k, w0 = La.config.k, La.config.w0
+    k = 30
+    cfg = La.config
     assert La.evidence(q)[1] == Lb.evidence(q)[1] == k
     for L, r in ((La, ra), (Lb, rb)):
         n = L._rows.n
-        idx = [i for i in range(n) if L._rows.rel[i][0] == 0.0][-k:]
+        idx = [i for i in range(n) if L._rows.rel[i][0] == 0.0]
         res = np.array([L._rows.y[i] - L.model.forward(L._rows.u[i], 0.0, 0) for i in idx])
-        sw = float(k)
-        corr = sw / (sw + w0) * res.mean(0)
+        # equal weights (all rows at the query): n_eff = k
+        g = k / (k + np.array([cfg.sigma_noise_xy_m, cfg.sigma_noise_xy_m, cfg.sigma_noise_apex_m]) ** 2
+                 / cfg.sigma_prior_m ** 2)
+        corr = g * res.mean(0)
         expect = -np.array([corr[0], corr[1], corr[2] / L.model.theta()[0]])
         np.testing.assert_allclose(r, expect, rtol=0, atol=1e-12)
 
@@ -189,18 +191,107 @@ def _opposed(cfg, n):
 
 
 def test_t_u4_a_large_residual_is_held_at_the_cap_and_dense_evidence_reaches_c_max():
-    """At the DEFAULT config (k 16, w0 2) full evidence gives the cap factor 1 - e^-8 = 0.9997:
+    """At the DEFAULT config (16 rows, w0 2) full evidence gives the cap factor 1 - e^-8 = 0.9997:
     the cap reaches c_max (to 0.01 mm), in the direction that opposes the residual."""
     cfg = LearnerConfig()
-    L, ctx = _opposed(cfg, cfg.k)
+    L, ctx = _opposed(cfg, 16)
     sw = L.evidence(ctx)[0]
-    assert sw == pytest.approx(cfg.k, rel=1e-12)
+    assert sw == pytest.approx(16, rel=1e-12)
     f = 1.0 - math.exp(-sw / cfg.w0)
     c_max = np.array([cfg.c_max_xy_m, cfg.c_max_xy_m, cfg.c_max_apex_m])
     dlt = L.command(ctx, Y_D) - L.model_command(ctx, Y_D)
     np.testing.assert_allclose(np.abs(dlt), c_max * f, rtol=0, atol=1e-12)
     np.testing.assert_allclose(np.abs(dlt), c_max, rtol=0, atol=1.1e-5)
     assert np.sign(dlt[0]) == -1 and np.sign(dlt[1]) == 1 and np.sign(dlt[2]) == -1
+
+
+# --------------------------------------------------------------------------- FEAT-65
+def _biased(n, bias_x, noise=0.0, seed=0, ctx_kind='carried'):
+    """Rows at the query context land ``+bias_x`` (x) off, rows of the other release kind land
+    ``-bias_x`` off at the same Site, so f0's pooled b cancels and the context residual is the
+    bias (the ``_opposed`` trick), plus iid ``noise`` sd [m] on x."""
+    rng = np.random.default_rng(seed)
+    L, ctx = _trained(n=0)
+    other_kind = 'free_cup' if ctx.release_kind == 'carried' else 'carried'
+    other = _ctx(ctx.site_xy_m[0], rel=ctx.release_m, vel=ctx.release_vel_mps, kind=other_kind)
+    u = np.array([0.0, 0.0, 0.9])
+    for _ in range(n):
+        L.observe(_exp(other, u, _plant(u, ctx.site_xy_m[0], (-bias_x + rng.normal(0, noise), 0, 0))))
+        L.observe(_exp(ctx, u, _plant(u, ctx.site_xy_m[0], (bias_x + rng.normal(0, noise), 0, 0))))
+    return L, ctx
+
+
+def test_feat65_empty_memory_is_exactly_the_identity_and_one_row_moves_u_by_a_bounded_step():
+    L, ctx = Learner(), _ctx()
+    y_d = np.array([0.004, -0.003, 0.95])
+    assert np.array_equal(L.command(ctx, y_d), y_d)
+    u0 = L.command(ctx, y_d).copy()
+    u = np.array([0.0, 0.0, 0.9])
+    L.observe(_exp(ctx, u, _plant(u, ctx.site_xy_m[0], (0.05, 0.0, 0.0))))
+    step = np.abs(L.command(ctx, y_d) - u0)
+    # one row: n_eff 1, g = 1 / (1 + 3.24) = 0.236; the 50 mm residual (less what f0 absorbed)
+    # moves x by at most g * 50 mm = 11.8 mm, never the whole residual
+    assert 0.0 < step[0] < 0.0125
+
+
+def test_feat65_no_step_in_u_when_the_support_count_crosses_the_old_k_of_16():
+    """The failure the recency cut had: the 17th row displaced the 1st, a jump in r_hat of
+    (r_17 - r_1) / 16. Now every row stays, so consecutive commands differ by a smooth, shrinking
+    amount: the largest step across the old k is no larger than the median step before it."""
+    L, ctx = _trained(n=0)
+    rng = np.random.default_rng(11)
+    u = np.array([0.0, 0.0, 0.9])
+    us = []
+    for n in range(1, 31):
+        L.observe(_exp(ctx, u, _plant(u, ctx.site_xy_m[0], (0.0, 0.0, 0.0)) + rng.normal(0, 0.018, 3)))
+        us.append(L.command(ctx, Y_D)[0])
+    steps = np.abs(np.diff(us))
+    assert steps[15:20].max() <= np.median(steps[:15]) * 1.5 + 1e-9
+    assert np.all(steps[20:] < steps[:5].max())
+
+
+def test_feat65_pure_noise_is_shrunk_toward_zero_and_a_real_bias_is_kept():
+    # zero-mean 18 mm noise, 40 rows: the correction is the shrunk sample mean, about the
+    # standard error 18/sqrt(40) = 2.8 mm times g = 0.93, far below the 18 mm scatter
+    L, ctx = _biased(40, 0.0, noise=0.018, seed=2)
+    noise_corr = abs(L.command(ctx, Y_D)[0] - L.model_command(ctx, Y_D)[0])
+    assert noise_corr < 0.008
+    # a +15 mm bias with the same noise: most of it comes through (n_eff 40: g = 0.925)
+    L, ctx = _biased(40, 0.015, noise=0.018, seed=2)
+    bias_corr = -(L.command(ctx, Y_D)[0] - L.model_command(ctx, Y_D)[0])
+    assert 0.010 < bias_corr <= 0.015 + 0.006
+    # the gain itself, noiseless: 40 rows of +15 mm give g * 15 = 0.925 * 15 = 13.9 mm
+    L, ctx = _biased(40, 0.015)
+    cfg = L.config
+    g = 40 / (40 + cfg.sigma_noise_xy_m ** 2 / cfg.sigma_prior_m ** 2)
+    assert -(L.command(ctx, Y_D)[0] - L.model_command(ctx, Y_D)[0]) == pytest.approx(g * 0.015, abs=2e-4)
+
+
+def test_feat65_the_gain_uses_the_kish_size_a_lone_near_row_does_not_get_full_trust():
+    """Many rows at the edge of the kernel have a large sum of weights but a small n_eff when one
+    row dominates: the gain follows n_eff, not sum w."""
+    L2, ctx = _trained(n=0)
+    u = np.array([0.0, 0.0, 0.9])
+    x0 = ctx.site_xy_m[0]
+    L2.observe(_exp(ctx, u, _plant(u, x0, (0.02, 0.0, 0.0))))
+    near = _ctx(x0 + 0.13, rel=(x0 + 0.13, 0.0, ctx.release_m[2]), vel=ctx.release_vel_mps,
+                kind=ctx.release_kind)                 # d^2 = (0.13 / 0.05)^2 = 6.76: in the gate
+    for _ in range(6):
+        L2.observe(_exp(near, u, _plant(u, x0 + 0.13, (-0.02, 0.0, 0.0))))
+    sw, n = L2.evidence(ctx)
+    assert n == 7
+    w = np.array([1.0] + [math.exp(-6.76)] * 6)
+    assert sw == pytest.approx(w.sum(), rel=1e-9)
+    n_eff = w.sum() ** 2 / (w * w).sum()
+    assert 1.0 < n_eff < 1.05                      # one row carries all the weight
+    R = L2._rows
+    sl = slice(R.n - 7, R.n)                       # the arrays are over-allocated: slice by R.n
+    res = R.y[sl, 0] - L2.model.forward_rows(R.u[sl], R.site_x[sl], 0)[:, 0]
+    r_hat = float((w * res).sum() / w.sum())
+    cfg = L2.config
+    g = n_eff / (n_eff + cfg.sigma_noise_xy_m ** 2 / cfg.sigma_prior_m ** 2)
+    assert L2._residual(ctx)[0][0] == pytest.approx(g * r_hat, rel=1e-9)
+    assert g < 0.25                                # not the old alpha = sw / (sw + w0) = 0.33+
 
 
 def test_t_u4_zero_evidence_gives_exactly_the_model_command():
@@ -334,7 +425,8 @@ def test_a_dwell_of_nan_is_unknown_and_accepted():
 
 
 def test_learner_config_rejects_bad_values():
-    for kw in (dict(k=0), dict(k=2.0), dict(h_p=0.0), dict(h_v=math.nan), dict(w0=-1.0),
+    for kw in (dict(sigma_prior_m=0.0), dict(sigma_noise_xy_m=-0.01), dict(sigma_noise_apex_m=math.nan),
+                   dict(h_p=0.0), dict(h_v=math.nan), dict(w0=-1.0),
                dict(h_d=0.0), dict(h_d=math.nan), dict(c_max_xy_m=-0.01), dict(c_max_apex_m=math.inf)):
         with pytest.raises(ValueError):
             LearnerConfig(**kw)
