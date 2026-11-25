@@ -51,16 +51,30 @@ def test_the_twin_conditional_rows():
 
 
 def test_the_enforcement_points():
-    """Two call sites and no more: send_axis_frame (every per-axis frame) and the
-    REBOOT_ODRIVES AXIS_ALL broadcast, the one refused method with a loop that
-    bypasses send_axis_frame."""
+    """Two call sites and no more: axis_precheck (every per-axis frame; FW 53 split it out
+    of send_axis_frame so the Stow-gated methods share it) and the REBOOT_ODRIVES
+    AXIS_ALL broadcast, the one refused method with a loop that bypasses the pre-check."""
     text = _RPC_CPP.read_text(encoding='utf-8')
     calls = re.findall(r'fault_mpc_active\(\) && refused_while_armed\(', text)
     assert len(calls) == 2
     reboot = re.search(r'case RpcMethod::REBOOT_ODRIVES: \{(.*?)\n    case ', text, re.S).group(1)
     all_branch = reboot.split('if (a.axis == AXIS_ALL) {', 1)[1].split('for (uint8_t i', 1)[0]
     assert 'fault_mpc_active() && refused_while_armed(method, AXIS_ALL, 0)' in all_branch
+    pre = re.search(r'static uint16_t axis_precheck\(.*?\n\}\n', text, re.S).group(0)
+    assert 'fault_mpc_active() && refused_while_armed(method, axis, requested_state)' in pre
+    # The ungated frames and every Stow-gated handler run the pre-check; the Armed
+    # gate precedes the Stow gate (a Leg IDLE passes the one, is refused by the other).
     send = re.search(r'static uint16_t send_axis_frame\(.*?\n\}\n', text, re.S).group(0)
-    assert 'fault_mpc_active() && refused_while_armed(method, axis, requested_state)' in send
+    assert 'axis_precheck(method, axis, requested_state)' in send
     # SET_AXIS_STATE hands its requested state to the gate.
-    assert 'encode_set_state(a.axis, a.state), a.state);' in text
+    assert 'axis_precheck(method, a.axis, a.state)' in text
+
+
+def test_a_leg_idle_passes_the_armed_gate_and_the_stow_gate_decides():
+    """FW 53: SET_AXIS_STATE IDLE is still NOT refused by the Armed predicate (the twin
+    and the firmware agree), but it is a Stow-gated request, so while Armed (posed) the
+    bridge refuses it at the Stow gate. The Hand IDLE is neither."""
+    idle = rpc_args.refused_while_armed(RpcMethod.SET_AXIS_STATE, 0, 1)
+    assert idle is False
+    assert rpc_args.requires_platform_at_stow(RpcMethod.SET_AXIS_STATE, 0, 1) is True
+    assert rpc_args.requires_platform_at_stow(RpcMethod.SET_AXIS_STATE, 6, 1) is False

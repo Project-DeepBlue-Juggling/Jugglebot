@@ -50,18 +50,10 @@ _FORBIDDEN = re.compile(
 _HOMING_OWNER = re.compile(r"\bHOMING_OWNER\b")
 _HOMING_OWNER_FILES = {"leg_stow_gate.h", "leg_stow_gate.cpp", "leg_homing.cpp", "rpc.cpp"}
 
-# The FW 52 direct call sites (file, code line), exact multiset. Shrinks unit by unit; empty at U5.
-_ALLOWLIST: list[tuple[str, str]] = [
-    # U2: leg_deactivate.cpp (migrated in FW 53 U2; no entries left)
-    # U3: leg_activate.cpp (migrated in FW 53 U3; no entries left)
-    # U4: leg_homing.cpp + fault_machine.cpp (migrated in FW 53 U4; no entries left)
-    # U5: rpc.cpp + gpio_poll.cpp (the Hand ball-sensor SDO function-invoke, Hand: pass-through)
-    ("rpc.cpp", "return send_axis_frame(method, a.axis, ODrive::encode_set_state(a.axis, a.state), a.state);"),
-    ("rpc.cpp", "can_jugglebot_tx(ODrive::encode_reboot(i), TxCls::SAFETY));"),
-    ("rpc.cpp", "const uint16_t st = send_axis_frame(method, a.axis, ODrive::encode_reboot(a.axis));"),
-    ("rpc.cpp", "return send_axis_frame(method, a.axis, ODrive::encode_sdo_write(a.axis, a.endpoint, a.value));"),
-    ("gpio_poll.cpp", "ODrive::encode_sdo_write("),
-]
+# The FW 52 direct call sites (file, code line), exact multiset. Shrank unit by unit;
+# empty since FW 53 U5 (rpc.cpp and gpio_poll.cpp were the last), and it stays empty:
+# test_allowlist_is_empty pins it, so a new direct site cannot be waved through here.
+_ALLOWLIST: list[tuple[str, str]] = []
 
 
 def _strip_comments(src: str) -> str:
@@ -93,11 +85,18 @@ def direct_sites() -> list[tuple[str, str]]:
     return sites
 
 
+def test_allowlist_is_empty():
+    """FW 53 U5: no raw Set_Axis_State / Reboot / SDO-write site survives outside the
+    gate. A new direct site must go through odrive_*_tx, not into an allowlist."""
+    assert _ALLOWLIST == []
+    assert direct_sites() == []
+
+
 def test_scan_covers_the_firmware_tree():
     names = {p.name for p in _firmware_sources()}
     # The exempt files and every allowlisted file exist (a rename must update this lint).
     assert _EXEMPT <= names, _EXEMPT - names
-    assert {f for f, _ in _ALLOWLIST} <= names
+    assert {f for f, _ in _ALLOWLIST} <= names   # (empty since U5)
     # The wrappers really are where the encoders are called.
     gate = (FW_DIR / "leg_stow_gate.cpp").read_text()
     for token in ("encode_set_state(", "encode_reboot(", "encode_sdo_write("):
@@ -115,7 +114,7 @@ def test_deenergise_encoders_only_in_the_gate():
         f"odrive_sdo_write_tx instead:\n{sorted(new.elements())}")
     assert not migrated, (
         "These allowlisted FW 52 direct sites no longer exist: delete their _ALLOWLIST "
-        f"entries in this file (the list must only shrink to empty at U5):\n{sorted(migrated.elements())}")
+        f"entries in this file (the list is empty since U5):\n{sorted(migrated.elements())}")
 
 
 def test_homing_owner_token_is_confined():

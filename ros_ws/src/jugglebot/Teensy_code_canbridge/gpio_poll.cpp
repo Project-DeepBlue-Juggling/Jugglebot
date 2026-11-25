@@ -18,7 +18,8 @@
 
 #include "canbridge_config.h"  // HAND_AXIS, JBBallDetect::*
 #include "can_buses.h"         // can_jugglebot_send, jugglebot_commands_allowed
-#include "odrive_protocol.h"   // encode_sdo_write, decode_get_version
+#include "odrive_protocol.h"   // decode_get_version
+#include "leg_stow_gate.h"    // odrive_sdo_write_tx: the Hand ball-sensor Function-Invoke (FW 53: every SDO write goes through the gate; the Hand passes straight through)
 #include "protocol_config.h"   // EndpointId::odrive_pro_0_6_11::get_gpio_states
 #include "time_base.h"         // micros64 (intervals), now_wall_us (wire stamp), time_synced
 #include "version_check.h"     // version_raw_copy (the Get_Version gate's input)
@@ -416,10 +417,10 @@ void gpio_poll_step() {
   // instrument's whole job is to measure the round-trip FLOOR truthfully. Only
   // TxResult::FAILED (the presence gate refusing a partner-less bus) means no
   // frame exists to wait for.
-  if (tx_reached_the_wire(can_jugglebot_tx(
-          ODrive::encode_sdo_write(
-              HAND_AXIS, EndpointId::odrive_pro_0_6_11::get_gpio_states, 0.0f),
-          TxCls::POLLER)))
+  // FW 53: through odrive_sdo_write_tx (the Hand is exempt from the Stow gate, so it is
+  // never REFUSED); AWAIT on anything but TX_FAILED keeps "DEFERRED is in flight".
+  if (odrive_sdo_write_tx(HAND_AXIS, EndpointId::odrive_pro_0_6_11::get_gpio_states, 0.0f,
+                          TxCls::POLLER, Who::RPC) != DeResult::TX_FAILED)
     s_phase = PPhase::AWAIT;
   else
     rtt_disarm();

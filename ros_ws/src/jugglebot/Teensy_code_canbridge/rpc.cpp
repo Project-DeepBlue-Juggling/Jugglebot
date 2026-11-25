@@ -16,6 +16,7 @@
 #include "leg_homing.h"
 #include "leg_activate.h"
 #include "leg_deactivate.h"
+#include "leg_stow_gate.h"   // FW 53 (I-FW-19): the Stow gate every Leg IDLE / reboot / SDO write goes through
 #include "platform_relay.h"
 #include "version_check.h"
 
@@ -220,8 +221,38 @@ static bool refused_while_armed(uint16_t method, uint8_t axis, uint32_t requeste
   }
 }
 
-static uint16_t send_axis_frame(uint16_t method, uint8_t axis, const ODrive::CanFrame& f,
-                                uint32_t requested_state = 0) {
+// FW 53 (I-FW-19): the firmware classifiers behind the Stow gate. Python twins:
+// teensy_link/rpc_args.py requires_platform_at_stow / home_requires_all_legs_idle
+// (pinned by tests/firmware/test_stow_gate_xref.py). The owner rule: "A Leg should
+// never be made IDLE unless the Platform is already at the Stow position."
+// requires_platform_at_stow is true for every request that can de-energise a Leg:
+// SET_AXIS_STATE to anything but CLOSED_LOOP, REBOOT_ODRIVES on a Leg or
+// AXIS_ALL, and SDO_WRITE on a Leg (an SDO write can set requested_state). The Hand
+// is exempt. The enforcement is leg_stow_gate.cpp's wrappers (single point; the lint
+// forbids the raw encoders everywhere else); rpc.cpp asks this classifier for the
+// REBOOT AXIS_ALL up-front check, which must refuse the whole call before any frame.
+static bool requires_platform_at_stow(uint16_t method, uint8_t axis, uint32_t requested_state) {
+  using namespace JbUdp;
+  switch (method) {
+    case RpcMethod::SET_AXIS_STATE:
+      return axis < NUM_LEGS && requested_state != ODriveState::CLOSED_LOOP;
+    case RpcMethod::REBOOT_ODRIVES:
+      return axis < NUM_LEGS || axis == RpcArgs::AXIS_ALL;
+    case RpcMethod::SDO_WRITE:
+      return axis < NUM_LEGS;
+    default:
+      return false;
+  }
+}
+// HOME(Leg) is refused by homing_request unless every present Leg is IDLE (the
+// firmware twin of ARMING_CONTRACT A6). HOME(Hand) is not gated. Not asked by the
+// dispatch (homing_request owns its check, leg_homing.cpp); it exists so the host
+// twin has a firmware counterpart the xref test can parse.
+[[maybe_unused]] static bool home_requires_all_legs_idle(uint8_t axis) { return axis < NUM_LEGS; }
+
+// The pre-checks every per-axis frame shares: axis range, the hand-axis-6 allow
+// table, the FW 52 Armed reconfiguration gate and the bus gate. OK means "go on".
+static uint16_t axis_precheck(uint16_t method, uint8_t axis, uint32_t requested_state = 0) {
   if (axis == HAND_AXIS) {
     if (!JbUdp::hand_axis6_permitted(method)) return JbUdp::RpcStatus::ERR_REJECTED;
   } else if (axis >= NUM_LEGS) {
@@ -232,15 +263,39 @@ static uint16_t send_axis_frame(uint16_t method, uint8_t axis, const ODrive::Can
   if (fault_mpc_active() && refused_while_armed(method, axis, requested_state))
     return JbUdp::RpcStatus::ERR_REJECTED;
   if (!gate_allows(method)) return JbUdp::RpcStatus::ERR_BUS_DOWN;
-  // TxCls (2026-08-24) derived from the SAME predicate that picks the gate basis,
-  // so the classification has one enforcement point and no call site can drift:
-  // CLEAR_ERRORS / REBOOT_ODRIVES are the recovery one-shots and ride the
-  // dedicated safety-deferral counter; everything else is ordinary RPC. DEFERRED
-  // = SENT, so the ack is OK — the frame is queued and transmits in order.
-  // TxResult::FAILED (no bus partner) is the only ERR_TIMEOUT, which is exactly
-  // the true-failure retry basis the callers below already act on.
-  const uint8_t cls = method_gates_on_bus_transmittable(method) ? TxCls::SAFETY : TxCls::RPC;
-  return tx_reached_the_wire(can_jugglebot_tx(f, cls))
+  return JbUdp::RpcStatus::OK;
+}
+
+// TxCls (2026-08-24) derived from the SAME predicate that picks the gate basis,
+// so the classification has one enforcement point and no call site can drift:
+// CLEAR_ERRORS / REBOOT_ODRIVES are the recovery one-shots and ride the
+// dedicated safety-deferral counter; everything else is ordinary RPC.
+static uint8_t axis_tx_cls(uint16_t method) {
+  return method_gates_on_bus_transmittable(method) ? TxCls::SAFETY : TxCls::RPC;
+}
+
+// FW 53: the stow gate's three-way answer as an RpcStatus. SENT (incl. DEFERRED: the
+// frame is queued and transmits in order) is OK; REFUSED is ERR_REJECTED with nothing
+// on CAN (an existing code: a new one would make an FW 52 host's RpcStatus(status)
+// raise during skew); TX_FAILED (no bus partner, nothing on the wire) is the only
+// ERR_TIMEOUT, the true-failure retry basis the callers already act on.
+static uint16_t gate_status(CanBridge::DeResult r) {
+  switch (r) {
+    case CanBridge::DeResult::SENT:      return JbUdp::RpcStatus::OK;
+    case CanBridge::DeResult::REFUSED:   return JbUdp::RpcStatus::ERR_REJECTED;
+    default:                             return JbUdp::RpcStatus::ERR_TIMEOUT;
+  }
+}
+
+// The ungated per-axis frames (gains, modes, absolute position, clear, SDO read):
+// pre-checks, then the raw frame. De-energising frames never come through here.
+static uint16_t send_axis_frame(uint16_t method, uint8_t axis, const ODrive::CanFrame& f,
+                                uint32_t requested_state = 0) {
+  const uint16_t pre = axis_precheck(method, axis, requested_state);
+  if (pre != JbUdp::RpcStatus::OK) return pre;
+  // DEFERRED = SENT, so the ack is OK. TxResult::FAILED (no bus partner) is the only
+  // ERR_TIMEOUT.
+  return tx_reached_the_wire(can_jugglebot_tx(f, axis_tx_cls(method)))
              ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
 }
 
@@ -320,7 +375,20 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
 
     case RpcMethod::SET_AXIS_STATE: {
       ArgAxisState a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return send_axis_frame(method, a.axis, ODrive::encode_set_state(a.axis, a.state), a.state);
+      const uint16_t pre = axis_precheck(method, a.axis, a.state);
+      if (pre != RpcStatus::OK) return pre;
+      // FW 53 (I-FW-19). While a Homing runs, no Leg may be engaged from outside: the
+      // homing sequence is the one thing allowed to move a Leg that is not Closed-loop
+      // at Stow, and its exemptions assume it is the only writer.
+      if (a.axis < NUM_LEGS && a.state == ODriveState::CLOSED_LOOP && homing_active())
+        return RpcStatus::ERR_REJECTED;
+      // BUG-47 (the host's homing-abort IDLE): the Leg the homing task is driving may
+      // be IDLEd on a Homing abort, the A6 twin having made every Leg IDLE when the HOME
+      // was accepted. The only HOMING_OWNER use outside leg_homing.cpp.
+      const CanBridge::Who who = (a.axis < NUM_LEGS && a.state == ODriveState::IDLE &&
+                                  homing_axis_in_flight() == a.axis)
+                                     ? CanBridge::Who::HOMING_OWNER : CanBridge::Who::RPC;
+      return gate_status(CanBridge::odrive_set_state_tx(a.axis, a.state, axis_tx_cls(method), who));
     }
     case RpcMethod::SET_CONTROLLER_MODE: {
       ArgControllerMode a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
@@ -384,7 +452,12 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
               can_jugglebot_tx(ODrive::encode_clear_errors(i), TxCls::SAFETY));
           any |= s; ok = s && ok;
         }
-        if (any) fault_notify_clear_errors();
+        if (any) {
+          fault_notify_clear_errors();
+          // FW 53: the operator's acknowledgement of the whole robot also clears every
+          // Leg's HELD bit (a Leg left holding above Stow by an aborted ladder).
+          CanBridge::leg_held_clear_all();
+        }
         return ok ? RpcStatus::OK : RpcStatus::ERR_TIMEOUT;
       }
       // Per-axis (FW 52, BUG-99 D2): clears THAT axis only — its disarm cache, once
@@ -414,6 +487,11 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
         // reboot is actually going out (after the gate passes), so a refused reboot
         // does not blind the detector against a real, coincident loss.
         if (!gate_allows(method)) return RpcStatus::ERR_BUS_DOWN;
+        // FW 53 (I-FW-19): a reboot drops every Leg's loop. Refused WHOLE (no Leg
+        // frame, no Hand frame, latch not armed) unless the Platform is at Stow or the
+        // rig is the one-Leg bench (leg_idle_permitted, never platform_at_stow alone).
+        if (requires_platform_at_stow(method, AXIS_ALL, 0) && !CanBridge::leg_idle_permitted(micros64()))
+          return RpcStatus::ERR_REJECTED;
         // Send FIRST, arm the watchdog-suppression latch only if at least one reboot
         // frame was actually enqueued — a refused broadcast (SYNCH gate passes on a
         // dead-but-idle bus; the presence gate then refuses every send) must not blind
@@ -421,14 +499,15 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
         // a partial broadcast still reboots some ODrives, so the coming silence is
         // deliberate and the latch must arm. Accumulate the per-axis result:
         // partial failure surfaces as ERR_TIMEOUT; every axis is still attempted.
-        bool ok = true, any = false;
+        bool ok = true, any = false, refused = false;
         for (uint8_t i = 0; i < NUM_AXES; ++i) {
-          const bool s = tx_reached_the_wire(
-              can_jugglebot_tx(ODrive::encode_reboot(i), TxCls::SAFETY));   // TxCls::SAFETY
+          const CanBridge::DeResult r = CanBridge::odrive_reboot_tx(i, TxCls::SAFETY, CanBridge::Who::RPC);
+          const bool s = (r == CanBridge::DeResult::SENT);
+          refused |= (r == CanBridge::DeResult::REFUSED);   // only a state change between the check and the loop
           any |= s; ok = s && ok;
         }
         if (any) fault_notify_reboot_started();
-        return ok ? RpcStatus::OK : RpcStatus::ERR_TIMEOUT;
+        return ok ? RpcStatus::OK : ((refused && !any) ? RpcStatus::ERR_REJECTED : RpcStatus::ERR_TIMEOUT);
       }
       // Per-axis: send via the shared gate; arm the latch only if the reboot went out
       // AND it targets a LEG. The CAN-loss detector watches leg heartbeats only
@@ -436,7 +515,9 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       // it — arming for it would blind LEG-loss detection for the full window with zero
       // benefit (saw_stale never sets → no fresh-after-stale release). AXIS_ALL arms in
       // its own branch (it reboots the legs too).
-      const uint16_t st = send_axis_frame(method, a.axis, ODrive::encode_reboot(a.axis));
+      const uint16_t pre = axis_precheck(method, a.axis);
+      if (pre != RpcStatus::OK) return pre;
+      const uint16_t st = gate_status(CanBridge::odrive_reboot_tx(a.axis, axis_tx_cls(method), CanBridge::Who::RPC));
       if (st == RpcStatus::OK && a.axis < NUM_LEGS) fault_notify_reboot_started();
       return st;
     }
@@ -451,7 +532,13 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     }
     case RpcMethod::SDO_WRITE: {
       ArgSdoWrite a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      return send_axis_frame(method, a.axis, ODrive::encode_sdo_write(a.axis, a.endpoint, a.value));
+      const uint16_t pre = axis_precheck(method, a.axis);
+      if (pre != RpcStatus::OK) return pre;
+      // FW 53: an SDO write can set requested_state, and the gate alone passes it when
+      // every Leg is IDLE, so no Leg SDO write runs while a Homing owns the Legs.
+      if (a.axis < NUM_LEGS && homing_active()) return RpcStatus::ERR_REJECTED;
+      return gate_status(CanBridge::odrive_sdo_write_tx(a.axis, a.endpoint, a.value,
+                                                        axis_tx_cls(method), CanBridge::Who::RPC));
     }
     case RpcMethod::ENCODER_SEARCH:
       // Encoder index search stays Jetson-orchestrated over SET_AXIS_STATE

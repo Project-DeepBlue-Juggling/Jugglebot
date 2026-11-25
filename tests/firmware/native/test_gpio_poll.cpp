@@ -38,6 +38,10 @@
 #include "axis_state.h"
 #include "fake_hal.h"
 
+// Link only: leg_stow_gate.o (the SDO write wrapper, FW 53) reads the bus-down latch in
+// its descent step, which this driver never runs.
+namespace CanBridge { bool fault_can_bus_down() { return false; } }
+
 #include "version_check.cpp"   // the Get_Version cache the gate reads (seed seam)
 #include "gpio_poll.cpp"       // the unit under test
 

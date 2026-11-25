@@ -12,6 +12,7 @@
 #include "can_buses.h"
 #include "ball_butler_state.h"   // bb_yaw — the BB YAW_ESTIMATE cache forwarded as BB_YAW_ESTIMATE (FW 28)
 #include "time_base.h"
+#include "leg_stow_gate.h" // FW 53: DIAG_FLAG_LEG_HELD / DIAG_FLAG_RIG_BENCH (leg_held_mask, rig_is_bench)
 #include "leg_activate.h" // activate_stalled() — Diagnostic flags bit2, the FW 36 hand stall guard (BUG-56)
 #include "leg_homing.h"   // homing_result() — uplinked in the Diagnostic (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 #include "gpio_poll.h"    // gpio_poll_snapshot() — the hand ball-sensor cache uplinked as HAND_SENSOR
@@ -78,6 +79,15 @@ static bool diag_changed(const AxisState& a, const DiagBaseline& b) {
   return false;
 }
 
+// FW 53 (I-FW-19) Diagnostic flag bits: LEG_HELD (a Leg held Closed-loop above Stow by
+// an aborted ladder or a refused de-energise; sticky until the next accepted
+// ACTIVATE/DEACTIVATE/HOME of that Leg or CLEAR_ERRORS AXIS_ALL) and RIG_BENCH (the
+// board infers a one-Leg bench: the Stow gate is exempt).
+static uint8_t fw53_gate_flags(uint8_t axis, uint64_t now) {
+  return (uint8_t)((axis < NUM_LEGS && (leg_held_mask() & (1u << axis)) ? DIAG_FLAG_LEG_HELD : 0x0u) |
+                   (rig_is_bench(now) ? DIAG_FLAG_RIG_BENCH : 0x0u));
+}
+
 static void send_diag(uint8_t axis) {
   AxisState& a = axes[axis];
   const uint64_t now = micros64();   // interval clock: staleness + last_sent_us age
@@ -95,7 +105,9 @@ static void send_diag(uint8_t axis) {
   d.flags         = (uint8_t)((stale ? 0x1u : 0x0u) | (a.heartbeat_seen ? 0x2u : 0x0u) |
                               (activate_stalled(axis) ? DIAG_FLAG_ACTIVATE_STALL : 0x0u) |
                               // bit3 (FW 48, BUG-123): the lane stall guard IDLEd the Hand.
-                              (hand_lane_stalled(axis) ? DIAG_FLAG_LANE_STALL : 0x0u));
+                              (hand_lane_stalled(axis) ? DIAG_FLAG_LANE_STALL : 0x0u) |
+                              // bits 4-5 (FW 53, I-FW-19): see fw53_gate_flags.
+                              fw53_gate_flags(axis, now));
   d.active_errors = a.active_errors;
   d.disarm_reason = a.disarm_reason;
   d.iq_setpoint   = a.iq_setpoint;
@@ -794,7 +806,10 @@ void telemetry_step() {
     const bool stall_flip = (activate_stalled(i) !=
                              ((s_base[i].flags & DIAG_FLAG_ACTIVATE_STALL) != 0)) ||
                             (hand_lane_stalled(i) !=
-                             ((s_base[i].flags & DIAG_FLAG_LANE_STALL) != 0));
+                             ((s_base[i].flags & DIAG_FLAG_LANE_STALL) != 0)) ||
+                            // FW 53: a Leg going HELD (or the rig reading bench) is news.
+                            ((fw53_gate_flags(i, micros64()) & (DIAG_FLAG_LEG_HELD | DIAG_FLAG_RIG_BENCH)) !=
+                             (s_base[i].flags & (DIAG_FLAG_LEG_HELD | DIAG_FLAG_RIG_BENCH)));
     if (diag_changed(axes[i], s_base[i]) ||
         h_res != s_base[i].homing_result || h_epoch != s_base[i].homing_epoch ||
         stall_flip || due_forced || due_bench) {

@@ -115,7 +115,7 @@ _BINARIES = {
     # (hal_shims/Arduino.h) swallows the console/park lines.
     "test_gpio_poll": (
         NATIVE_DIR / "test_gpio_poll.cpp",
-        ["axis_state", "ball_butler_state", "fake_hal"],
+        ["axis_state", "ball_butler_state", "fake_hal", "leg_stow_gate"],
     ),
     # The Platform Teensy's Hand fan decision: a pure header, so nothing to link.
     # The driver includes it by relative path, not through INCLUDES, because that
@@ -215,7 +215,7 @@ _BINARIES = {
     # inline in the driver (routing isolation), so no leg_*/relay/version .cpp link.
     "test_rpc_dispatch": (
         NATIVE_DIR / "test_rpc_dispatch.cpp",
-        ["axis_state", "ball_butler_state", "fake_hal"],
+        ["axis_state", "ball_butler_state", "fake_hal", "leg_stow_gate"],
     ),
     # TX tri-state coverage: EXECUTE can_buses.h's header-inline classify_tx_write()
     # + the tx_reached_the_wire / tx_was_deferred predicates and the TxCls census

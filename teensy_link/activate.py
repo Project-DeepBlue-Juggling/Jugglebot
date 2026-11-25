@@ -61,6 +61,15 @@ DIAG_FLAG_ACTIVATE_STALL = 0x4
 # leg_activate.h DIAG_FLAG_LANE_STALL (pinned by the same xref test).
 DIAG_FLAG_LANE_STALL = 0x8
 
+# DIAGNOSTIC.flags bits 4 and 5 (can-bridge FW 53, I-FW-19), additive in the existing
+# flags byte (a host that does not name them masks them off). LEG_HELD: the Leg is held
+# Closed-loop above Stow by an aborted ladder or a refused de-energise (sticky until the
+# next accepted ACTIVATE/DEACTIVATE/HOME of that Leg or an AXIS_ALL CLEAR_ERRORS).
+# RIG_BENCH: the bridge infers the one-Leg bench, where the Stow gate is exempt (set on
+# every axis). Mirror leg_stow_gate.h (pinned by tests/firmware/test_stow_gate_xref.py).
+DIAG_FLAG_LEG_HELD = 0x10
+DIAG_FLAG_RIG_BENCH = 0x20
+
 # The FW 48 lane stall guard's thresholds (canbridge_config.h HAND_LANE_STALL_*,
 # owner decision 2026-11-20), mirrored for the operator's reason line only; the
 # firmware is the authority and the xref test pins the two together.

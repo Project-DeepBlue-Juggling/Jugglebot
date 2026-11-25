@@ -348,6 +348,16 @@ def test_the_bump_history_records_what_this_version_carries():
                    'TIME_OFFSET_HOLD_MAX_US', 'RESUME', 'JETSON_IP', 'crc_errors',
                    'PROTOCOL_VERSION stays 14'):
         assert needle in m52.group(1), (needle, m52.group(1))
+    # FW 53 — I-FW-19, no Leg leaves Closed-loop above Stow.  The history line
+    # summarises ALL of FW 53 (U1-U5), not just the RPC layer that made it a release.
+    m53 = re.search(r'^// 52→53:(.*)$', text, re.M)
+    assert m53 is not None, "FW 53 history line missing"
+    for needle in ('I-FW-19', 'leg_stow_gate', 'odrive_set_state_tx', 'rig_is_bench',
+                   'DEACTIVATE', 'ACTIVATE', 'HOME(Leg)', 'HOMING_OWNER', 'encoders confirm Stow',
+                   'ERR_REJECTED', 'DIAG_FLAG_LEG_HELD', 'DIAG_FLAG_RIG_BENCH',
+                   'requires_platform_at_stow', 'EXPECTED_BRIDGE_FW_VERSION 53',
+                   'PROTOCOL_VERSION stays 14'):
+        assert needle in m53.group(1), (needle, m53.group(1))
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

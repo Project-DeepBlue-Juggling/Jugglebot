@@ -27,9 +27,8 @@
 //      and |vel| <= TARGET_REACHED_VEL_TOL_RPS.
 //  Anything else refuses. Zero present Legs is vacuously at Stow.
 //
-//  U1 of the FW 53 arc: this module is compiled and linked into the image but no
-//  call site uses it yet (they migrate in U2..U5), so FW_VERSION stays 52 and
-//  the board's behaviour is unchanged.
+//  FW 53 (U1..U5): every Leg de-energise call site goes through the wrappers
+//  below; FW_VERSION 53 is the first image in which they all do.
 // =============================================================================
 
 #include <cstdint>
@@ -192,9 +191,18 @@ DescentStep stow_descent_step(uint8_t targets, uint8_t& done,
                               const float seg_a[], const float seg_b[],
                               bool timed_out, uint64_t now);
 
+// Diagnostic flags bits (FW 53, additive in the existing flags byte: no struct or
+// MsgType change, PROTOCOL_VERSION stays 14; the host masks unknown bits). Next free
+// bits after DIAG_FLAG_ACTIVATE_STALL 0x04 and DIAG_FLAG_LANE_STALL 0x08 (leg_activate.h).
+// LEG_HELD: this Leg's bit in leg_held_mask() (a Leg held Closed-loop above Stow).
+// RIG_BENCH: rig_is_bench() is true (set on every axis' Diagnostic).
+// Host mirrors: teensy_link/activate.py, pinned by tests/firmware/test_stow_gate_xref.py.
+constexpr uint8_t DIAG_FLAG_LEG_HELD  = 0x10u;
+constexpr uint8_t DIAG_FLAG_RIG_BENCH = 0x20u;
+
 // Per-Leg HELD bits (bit i = Leg i), sticky until cleared by the next accepted
-// ACTIVATE/DEACTIVATE/HOME targeting that Leg or CLEAR_ERRORS(AXIS_ALL) (wired in
-// U2..U5; the Diagnostic's DIAG_FLAG_LEG_HELD lands in U5).
+// ACTIVATE/DEACTIVATE/HOME targeting that Leg or CLEAR_ERRORS(AXIS_ALL) (all wired; the
+// Diagnostic carries it as DIAG_FLAG_LEG_HELD).
 uint8_t  leg_held_mask();
 void     leg_held_clear(uint8_t leg);
 void     leg_held_clear_all();
