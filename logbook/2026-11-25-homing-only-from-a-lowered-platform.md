@@ -96,6 +96,7 @@ Control-loop effect: none on the setpoint stream, the planner, feedforward or ti
 - 2026-11-25, `python -m pytest -q -p no:cacheprovider tests/sim/test_logbook_front_matter.py tests/sim/test_logbook_index.py tests/sim/test_no_legacy_item_ids.py tests/sim/test_docs_links.py`: 46 passed, 2 failed, both in `test_logbook_index.py`, because `logbook/INDEX.md` has no row for this entry yet (regenerated at integration).
 
 - Full-tier gate on the integrated branch, 2026-11-25 15:59 (a4827dc3: main c1b0327c + this change), `flock /tmp/jugglebot-tests.lock ./run_tests.sh --full`: **11220 passed, 57 skipped, 2 xfailed in 785.27 s**, serial tail **16 passed in 60.67 s**; box load average 3 falling to 1.
+
 ## Follow-up 2026-11-25: freshness, the /deactivate remedy, and who bypasses the gate
 
 An audit of the A6 commit found nothing blocking and three follow-ups; all three are done here.
