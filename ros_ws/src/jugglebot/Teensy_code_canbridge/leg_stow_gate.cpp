@@ -286,6 +286,36 @@ bool leg_dropped_out(uint8_t leg, uint64_t now) {
 }
 
 static constexpr uint8_t LEG_BITS = (uint8_t)((1u << NUM_LEGS) - 1u);
+
+// ── The ladders' Closed-loop confirmation before motion (FW 53 U8) ───────────
+uint64_t legs_last_cl_cmd_us(uint8_t legs) {
+  uint64_t t = 0;
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    if (legs & (uint8_t)(1u << i)) { const uint64_t c = leg_cl_cmd_us(i); if (c > t) t = c; }
+  return t;
+}
+
+ClConfirm legs_cl_confirm(uint8_t legs, uint64_t now) {
+  legs = (uint8_t)(legs & LEG_BITS);
+  bool all = true;
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    if (!(legs & (uint8_t)(1u << i))) continue;
+    if (axes[i].active_errors != 0) return ClConfirm::FAILED;
+    // Stamp read before state (the receive decode writes the state first).
+    const uint64_t cl = leg_cl_cmd_us(i);
+    const uint64_t hb = atomic_read_u64(&axes[i].last_heartbeat_us);
+    const bool post_cl = cl != 0 && hb != 0 && !rx_older_than(now, hb, CAN_HEARTBEAT_STALE_US) &&
+                         hb >= cl + CL_ENGAGE_SETTLE_US;
+    if (!post_cl) { all = false; continue; }                   // cached pre-CL, stale or none: no evidence
+    if (axes[i].axis_state != ODriveState::CLOSED_LOOP) return ClConfirm::FAILED;
+  }
+  if (all) return ClConfirm::CONFIRMED;
+  const uint64_t t0 = legs_last_cl_cmd_us(legs);
+  // A window start newer than `now` (BUG-93 order) is still inside the window.
+  if (t0 != 0 && (now < t0 || now - t0 < CL_CONFIRM_WAIT_US)) return ClConfirm::WAIT;
+  return ClConfirm::EXPIRED;
+}
+
 static inline float min3(float a, float b, float c) { const float m = a < b ? a : b; return m < c ? m : c; }
 static inline float max3(float a, float b, float c) { const float m = a > b ? a : b; return m > c ? m : c; }
 

@@ -31,6 +31,11 @@
 //      move they hold and the fault machine's deferred stow lowers the Platform
 //      at reconnect (it starts only while !activate_active(), and the ladder has
 //      ended);
+//    * FW 53 U8: COMMAND sends no target until every target Leg has confirmed
+//      CLOSED_LOOP by a heartbeat received after its own CL command (the Hand
+//      is not in this wait); a Leg reporting IDLE or an error, or no
+//      confirmation within CL_CONFIRM_WAIT_US of the last CL command, takes the
+//      pre-rise abort below, so no Leg rises with another free;
 //    * before the rise is commanded (SETUP, COMMAND): ABORT_WAIT. The gated IDLE
 //      goes out once the Platform is at Stow (the usual case after Homing: FW 52's
 //      outcome), waiting at most CL_CONFIRM_WAIT_US while the only refusals are
@@ -346,6 +351,17 @@ static void abort_ladder(uint64_t now,
     return;
   }
   s_t_abort_us = now;
+  s_phase = APhase::ABORT_WAIT;
+  abort_wait_step(now);
+}
+
+// FW 53 U8: COMMAND's Closed-loop confirmation failed or expired (legs_cl_confirm):
+// nothing has been commanded to move. The pre-rise abort (Hand IDLE, ABORT_WAIT),
+// with ABORT_WAIT's clock at the last target Leg's CLOSED_LOOP command, the start
+// of the window that just ended, so an expiry is not given a second 250 ms.
+static void abort_unconfirmed(uint64_t now) {
+  idle_hand_if_targeted();
+  s_t_abort_us = legs_last_cl_cmd_us((uint8_t)(s_targets & LEG_BITS));
   s_phase = APhase::ABORT_WAIT;
   abort_wait_step(now);
 }
@@ -776,7 +792,17 @@ void activate_step() {
       break;
     }
     case APhase::COMMAND: {
-      if (now - s_t_phase_us < CL_ENGAGE_SETTLE_US) break;  // let CLOSED_LOOP + mode/limits settle
+      // The fixed settle stays: it is the Hand's only engage settle (the Hand is
+      // configured last and is not in the confirmation) and the whole gate of a
+      // HAND_MOVE_TO; for the Legs the confirmation below subsumes it.
+      if (now - s_t_phase_us < CL_ENGAGE_SETTLE_US) break;
+      // FW 53 U8 (owner: no Leg is raised while another is free): no target to ANY
+      // axis until every target Leg's post-CL heartbeat reports CLOSED_LOOP with no
+      // error. A Leg reporting anything else, or no confirmation within
+      // CL_CONFIRM_WAIT_US of the last CLOSED_LOOP command: the pre-rise abort.
+      const ClConfirm cc = legs_cl_confirm((uint8_t)(s_targets & LEG_BITS), now);
+      if (cc == ClConfirm::WAIT) break;
+      if (cc != ClConfirm::CONFIRMED) { abort_unconfirmed(now); return; }
       command_targets();
       s_phase = APhase::MONITOR;  // stay active through the physical move
       break;

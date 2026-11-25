@@ -168,6 +168,25 @@ AbortIdle leg_abort_idle_verdict(uint64_t now, uint64_t t_abort_us);
 // now holding: ACTIVATE starts from IDLE Legs), and reports another state.
 bool leg_dropped_out(uint8_t leg, uint64_t now);
 
+// FW 53 U8 (owner: no Leg is lowered or raised while another is free): the
+// ladders' Closed-loop confirmation, asked by ACTIVATE's and DEACTIVATE's COMMAND
+// before any motion target goes to any Leg. For the Leg bits of `legs`:
+//   FAILED    some target Leg has active_errors != 0, or its post-CL heartbeat
+//             (fresh, received >= its leg_cl_cmd_us + CL_ENGAGE_SETTLE_US) reports
+//             a state other than CLOSED_LOOP;
+//   CONFIRMED every target Leg has such a heartbeat reporting CLOSED_LOOP (and no
+//             Leg bits at all: HAND_MOVE_TO, the Hand alone);
+//   WAIT      otherwise, while fewer than CL_CONFIRM_WAIT_US have passed since the
+//             latest target Leg's CL command (legs_last_cl_cmd_us);
+//   EXPIRED   otherwise.
+// A heartbeat cached before the CL command (an ACTIVATE after Homing: IDLE) is
+// neither a confirmation nor a failure. A Leg with no CL stamp never confirms.
+enum class ClConfirm : uint8_t { CONFIRMED, WAIT, FAILED, EXPIRED };
+ClConfirm legs_cl_confirm(uint8_t legs, uint64_t now);
+// The latest leg_cl_cmd_us over the Leg bits of `legs` (0 if none): the start of
+// the confirmation window, and the clock of the pre-motion abort it ends in.
+uint64_t legs_last_cl_cmd_us(uint8_t legs);
+
 // One tick of a gated descent to Stow, for Legs that are Closed-loop POSITION/
 // TRAP_TRAJ and already commanded to STOW_OFF_POSE_REV: DEACTIVATE's MONITOR and
 // ACTIVATE's RETURN (the owner's return to Stow after a mid-rise abort). The

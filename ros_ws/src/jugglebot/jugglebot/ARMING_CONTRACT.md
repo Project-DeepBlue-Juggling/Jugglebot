@@ -270,9 +270,13 @@ work (2026-07-15) hit three distinct doors into that hole:
     returned to Stow (continuity of the setpoint, the apex of about 0.10 rev above
     the abort position), the first post-Closed-loop heartbeat timing the
     confirmation depends on, the bench-versus-robot inference on the real bus, and
-    the re-engage of a dropped Leg under load (the five descend until that Leg's
-    first Closed-loop heartbeat if it re-faults on engage: the firmware does not
-    wait for its Closed-loop confirmation before the descent starts).
+    the re-engage of a dropped Leg under load. Both ladders send no motion
+    target to any Leg until every target Leg has confirmed Closed-loop by a
+    heartbeat received at least 10 ms after its own Closed-loop command (at most
+    250 ms after the last one). So if the dropped Leg re-faults on engage,
+    nothing moves: the five hold, every Leg is HELD and the recovery ends FAILED.
+    Also unverified: that a drive reports Closed-loop within those 10 ms. A
+    slower drive fails a normal activate or deactivate before any motion.
 
 ## Enforcement points
 

@@ -6,6 +6,8 @@
 //              parity) → seed input_pos(actual current, NON-clipped) → traj
 //              vel/acc limits → POSITION/TRAP_TRAJ mode → CLOSED_LOOP
 //    settle  : let CLOSED_LOOP engage + mode/limits take effect
+//    confirm : (FW 53 U8) every target Leg's post-CL heartbeat reports
+//              CLOSED_LOOP, no error (legs_cl_confirm, bounded CL_CONFIRM_WAIT_US)
 //    COMMAND : set_input_pos(STOW_OFF_POSE_REV) → ODrive TRAP_TRAJ descends
 //    MONITOR : stay active until every target leg reaches STOW + settles
 //              (|pos−stow| ≤ tol AND |vel| ≤ tol) → IDLE the leg → mark OK.
@@ -23,7 +25,10 @@
 //      no frame; any other abort → ask the gate for IDLE per target Leg: sent
 //      only if the Platform is already at Stow, else refused (nothing on CAN,
 //      HELD bit set), so configured Legs hold their measured seed and the rest
-//      hold their stream pose. FW 53 U3: while the only refusals are Legs whose
+//      hold their stream pose. FW 53 U8: COMMAND sends no Stow target until
+//      every target Leg has confirmed CLOSED_LOOP; a Leg that reports IDLE or an
+//      error after its CL command, or no confirmation within CL_CONFIRM_WAIT_US,
+//      takes this abort, so no Leg descends with another free. FW 53 U3: while the only refusals are Legs whose
 //      CLOSED_LOOP no heartbeat has confirmed yet, the abort waits (ABORT_WAIT,
 //      at most CL_CONFIRM_WAIT_US, nothing sent) before asking, as ACTIVATE's does;
 //    * during the descent (MONITOR, the shared stow_descent_step in
@@ -176,8 +181,11 @@ static void abort_wait_step(uint64_t now) {
 }
 
 // Abort BEFORE the descent target is commanded (SETUP / COMMAND, not bus down).
-static void abort_before_descent(uint64_t now) {
-  s_t_abort_us = now;
+// `t_wait0` starts ABORT_WAIT's CL_CONFIRM_WAIT_US clock: `now` for every abort
+// but the failed CL confirmation (FW 53 U8), whose window started at the last
+// target Leg's CLOSED_LOOP command and is not restarted.
+static void abort_before_descent(uint64_t now, uint64_t t_wait0) {
+  s_t_abort_us = t_wait0;
   s_phase = DPhase::ABORT_WAIT;
   abort_wait_step(now);
 }
@@ -270,7 +278,7 @@ void deactivate_step() {
   // ── Aborts before the descent is commanded (checked before any drive). ──
   if (s_phase == DPhase::SETUP || s_phase == DPhase::COMMAND) {
     if (fault_can_bus_down())              { end_ladder(DEACTIVATE_FAILED); return; }   // nothing to a dead bus
-    if (!deactivate_allowed() || timed_out) { abort_before_descent(now); return; }
+    if (!deactivate_allowed() || timed_out) { abort_before_descent(now, now); return; }
   }
 
   switch (s_phase) {
@@ -291,7 +299,7 @@ void deactivate_step() {
       // CLOSED_LOOP if errors present"). ANY errored target fails the whole op —
       // a coupled platform must not lower a subset (that tilts it). The abort is
       // the pre-descent one: IDLE only from Stow, else hold (FW 53).
-      if (axes[i].active_errors != 0) { abort_before_descent(now); return; }
+      if (axes[i].active_errors != 0) { abort_before_descent(now, now); return; }
       // Seed the ACTUAL current position (NON-clipped) so CLOSED_LOOP holds in
       // place, then the whole descent is TRAP_TRAJ-profiled with no clip-snap.
       // leg_sign applies the ODrive convention (Jugglebot positive=extension).
@@ -311,14 +319,25 @@ void deactivate_step() {
                    i, ODriveControlMode::POSITION, ODriveInputMode::TRAP_TRAJ)) && ok;
       ok = (odrive_set_state_tx(i, ODriveState::CLOSED_LOOP, TxCls::OTHER, Who::LADDER)
                 == DeResult::SENT) && ok;
-      if (!ok) { abort_before_descent(now); return; }
+      if (!ok) { abort_before_descent(now, now); return; }
       axes[i].controller_mode = (uint8_t)ODriveControlMode::POSITION;   // commanded-mode record
       axes[i].input_mode      = (uint8_t)ODriveInputMode::TRAP_TRAJ;    // (axis_state.h)
       ++s_setup_idx;   // next target leg on the next tick
       break;
     }
     case DPhase::COMMAND: {
-      if (now - s_t_phase_us < CL_ENGAGE_SETTLE_US) break;  // let CLOSED_LOOP + mode/limits settle
+      // The fixed settle is kept as a lower bound; for the Legs it is subsumed by
+      // the confirmation below (a confirming heartbeat is >= CL_ENGAGE_SETTLE_US
+      // after each Leg's own CLOSED_LOOP command).
+      if (now - s_t_phase_us < CL_ENGAGE_SETTLE_US) break;
+      // FW 53 U8 (owner: no Leg is lowered while another is free): no Stow target
+      // to ANY Leg until every target Leg's post-CL heartbeat reports CLOSED_LOOP
+      // with no error. A Leg reporting anything else, or no confirmation within
+      // CL_CONFIRM_WAIT_US of the last CLOSED_LOOP command: the pre-descent abort
+      // (IDLE from Stow or on the bench, else hold, HELD), nothing moved.
+      const ClConfirm cc = legs_cl_confirm(s_targets, now);
+      if (cc == ClConfirm::WAIT) break;
+      if (cc != ClConfirm::CONFIRMED) { abort_before_descent(now, legs_last_cl_cmd_us(s_targets)); return; }
       for (uint8_t i = 0; i < NUM_LEGS; ++i) {
         if (!(s_targets & (uint8_t)(1u << i))) continue;
         // Position-only target (vel_ff = tor_ff = 0). encode_leg_setpoint clips to
@@ -355,7 +374,7 @@ void deactivate_step() {
       return;
     }
     default:
-      abort_before_descent(now);
+      abort_before_descent(now, now);
       break;
   }
 }

@@ -85,13 +85,43 @@ static void confirmed(uint8_t i, uint32_t state, float pos, float vel = 0.0f) {
   cs_stage_leg(i, (uint8_t)state, pos, vel, 0, 0);
 }
 
-// Request + step until the ladder is in MONITOR (one SETUP tick per target leg,
-// one to reach COMMAND, the settle, then COMMAND). Ticks are 10 ms (HOMING_RATE_HZ).
+// FW 53 U8: a CLOSED_LOOP heartbeat received NOW for every Leg in `mask`, keeping
+// its staged position and velocity: what lets COMMAND's confirmation pass once the
+// clock is CL_ENGAGE_SETTLE_US past each Leg's CLOSED_LOOP command.
+static void cl_confirm(uint8_t mask) {
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    if (mask & (uint8_t)(1u << i))
+      cs_stage_leg(i, (uint8_t)ST_CL, axes[i].pos_rev, axes[i].vel_rps, 0, 0);
+}
+
+// Request + step until the ladder is in COMMAND (one SETUP tick per target leg, one
+// to reach COMMAND), sending no confirmation. Returns the clock of the last SETUP
+// tick that configured a Leg (that Leg's CLOSED_LOOP command), read from the test's
+// own clock, never from the gate. Ticks are 10 ms (HOMING_RATE_HZ).
+static uint64_t run_to_command(uint8_t axis) {
+  REQUIRE(deactivate_request(axis) == JbUdp::RpcStatus::OK);
+  uint64_t t_last_cl = 0;
+  for (int k = 0; k < 20 && s_phase != DPhase::COMMAND; ++k) {
+    const uint64_t t = micros64();
+    deactivate_step();
+    // A SETUP tick that configured a Leg (s_setup_idx moved past it); not the
+    // cursor-end tick, which enters COMMAND.
+    if (s_phase == DPhase::SETUP && s_setup_idx >= 1 && s_setup_idx - 1 < NUM_LEGS) t_last_cl = t;
+    cs_advance(10000);
+  }
+  REQUIRE(s_phase == DPhase::COMMAND);
+  return t_last_cl;
+}
+
+// Request + step until the ladder is in MONITOR. FW 53 U8: once in COMMAND every
+// target Leg is confirmed (a CLOSED_LOOP heartbeat after its CL command + settle),
+// so the descent can be commanded.
 static void run_to_monitor(uint8_t axis) {
   REQUIRE(deactivate_request(axis) == JbUdp::RpcStatus::OK);
   for (int k = 0; k < 20 && s_phase != DPhase::MONITOR; ++k) {
     deactivate_step();
     cs_advance(10000);
+    if (s_phase == DPhase::COMMAND) cl_confirm(s_targets);
   }
   REQUIRE(s_phase == DPhase::MONITOR);
 }
@@ -192,6 +222,7 @@ TEST_CASE("deactivate COMMAND descends to STOW_OFF_POSE_REV (not the active pose
   deactivate_step();               // SETUP
   deactivate_step();               // SETUP cursor → COMMAND
   cs_advance(20000);               // > settle
+  cl_confirm(0x01);                // FW 53 U8: leg 0's post-CL heartbeat
   cs_clear_sent();
   deactivate_step();               // COMMAND
 
@@ -209,6 +240,7 @@ TEST_CASE("deactivate IDLEs the leg on arrival at STOW (de-energised end-state)"
   deactivate_step();               // SETUP
   deactivate_step();               // → COMMAND
   cs_advance(20000);
+  cl_confirm(0x01);                // FW 53 U8: leg 0's post-CL heartbeat
   deactivate_step();               // COMMAND → MONITOR
 
   // The leg reaches STOW and settles; its heartbeat (after the ladder's CL + 10 ms)
@@ -309,6 +341,7 @@ TEST_CASE("the hand never enters the descent ladder (no TRAP_TRAJ, no STOW targe
   deactivate_step();      // hand IDLE + SETUP leg 0
   deactivate_step();      // cursor off the end → COMMAND
   cs_advance(20000);
+  cl_confirm(0x01);       // FW 53 U8: leg 0's post-CL heartbeat
   deactivate_step();      // COMMAND fires the leg target
 
   // Exactly one hand frame in the whole op: the IDLE. No CLOSED_LOOP, no mode
@@ -718,14 +751,18 @@ TEST_CASE("R3 mixed case: one Leg IDLE at a sagged length, five posed; DEACTIVAT
   CHECK(memcmp(cs_sent_at(14).buf, cl2.buf, 8) == 0);
   CHECK(s_seed[2] == doctest::Approx(SAGGED));
   CHECK(s_seed[0] == doctest::Approx(POSED));
-  for (int k = 0; k < 20 && s_phase != DPhase::MONITOR; ++k) { deactivate_step(); cs_advance(10000); }
-  REQUIRE(s_phase == DPhase::MONITOR);
-  // Nothing but the six preambles and the six STOW targets: no IDLE, no other target.
-  CHECK(count_set_state() == 6);                   // six CLOSED_LOOP
-  CHECK(count_cmd(ODriveCmd::set_input_pos) == 12);
-  CHECK(leg_held_mask() == 0);
+  for (int k = 0; k < 20 && s_phase != DPhase::COMMAND; ++k) { deactivate_step(); cs_advance(10000); }
+  REQUIRE(s_phase == DPhase::COMMAND);
+  cs_advance(10000);
 
   SUBCASE("re-engages: the six descend together and IDLE only on arrival at Stow") {
+    cl_confirm(0x3F);                              // all six confirm Closed-loop (FW 53 U8)
+    for (int k = 0; k < 5 && s_phase != DPhase::MONITOR; ++k) { deactivate_step(); cs_advance(10000); }
+    REQUIRE(s_phase == DPhase::MONITOR);
+    // Nothing but the six preambles and the six STOW targets: no IDLE, no other target.
+    CHECK(count_set_state() == 6);                 // six CLOSED_LOOP
+    CHECK(count_cmd(ODriveCmd::set_input_pos) == 12);
+    CHECK(leg_held_mask() == 0);
     for (uint8_t i = 0; i < NUM_LEGS; ++i) confirmed(i, ST_CL, 1.0f, -2.5f);
     cs_clear_sent();
     deactivate_step();
@@ -740,20 +777,180 @@ TEST_CASE("R3 mixed case: one Leg IDLE at a sagged length, five posed; DEACTIVAT
     CHECK(leg_held_mask() == 0);
   }
 
-  SUBCASE("re-faults on engage: the others freeze, Leg 2 is not IDLE'd by the ladder") {
-    for (uint8_t i = 0; i < NUM_LEGS; ++i) if (i != 2) confirmed(i, ST_CL, 2.1f, -1.0f);
+  // FW 53 U8 (owner: no Leg is lowered while another is free). Before U8 the five
+  // started descending and froze only on Leg 2's first post-CL heartbeat; now
+  // COMMAND waits for every Leg's confirmation, Leg 2's reads IDLE, and the
+  // pre-descent abort holds: no Stow target and no freeze frame to any Leg.
+  SUBCASE("re-faults on engage: no Leg descends, all held, Leg 2 is not IDLE'd by the ladder") {
+    cl_confirm(0x3B);                              // the five confirm Closed-loop at the Active pose
     confirmed(2, ST_IDLE, SAGGED);                 // its post-CL heartbeat: still IDLE
-    cs_clear_sent();
     deactivate_step();
     CHECK_FALSE(deactivate_active());
-    CHECK(count_set_state() == 0);
-    CHECK(cs_sent_count() == 5);                   // five freeze targets
-    for (size_t k = 0; k < cs_sent_count(); ++k) {
-      CHECK(ODrive::cmd_of(cs_sent_at(k).id) == ODriveCmd::set_input_pos);
-      CHECK(ODrive::axis_of(cs_sent_at(k).id) != 2);
-    }
+    CHECK(count_set_state() == 6);                 // the six CLOSED_LOOP of SETUP, no IDLE
+    CHECK(count_cmd(ODriveCmd::set_input_pos) == 6);   // the six measured seeds only: no motion
     for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(deactivate_result(i) == DEACTIVATE_FAILED);
-    CHECK(leg_held_mask() == 0x3B);
+    CHECK(leg_held_mask() == 0x3F);                // the refused IDLEs (as "error not cleared")
   }
   }  // SUBCASE errors cleared
+}
+
+// ── FW 53 U8: no Stow target to any Leg until every target confirms Closed-loop ─
+// (owner: no Leg is lowered while another is free). COMMAND waits for a heartbeat
+// from each target Leg received >= its CLOSED_LOOP command + CL_ENGAGE_SETTLE_US
+// reporting CLOSED_LOOP with no error, bounded by CL_CONFIRM_WAIT_US from the last
+// CLOSED_LOOP command; a failure or the expiry is the pre-descent abort.
+static size_t count_stow_targets() {
+  size_t n = 0;
+  for (size_t k = 0; k < cs_sent_count(); ++k) {
+    const auto& f = cs_sent_at(k);
+    const uint8_t a = ODrive::axis_of(f.id);
+    if (a >= NUM_LEGS) continue;
+    const auto stow = ODrive::encode_leg_setpoint(a, STOW_OFF_POSE_REV, 0.0f, 0.0f);
+    if (f.id == stow.id && memcmp(f.buf, stow.buf, 8) == 0) ++n;
+  }
+  return n;
+}
+
+// Mutations caught: the confirmation removed (COMMAND after the settle alone); the
+// post-CL stamp comparison dropped (the cached pre-CL CLOSED_LOOP of a posed Leg
+// confirms it).
+TEST_CASE("U8: staggered confirmations; no Stow target to any Leg until the last target confirms") {
+  full_reset(0x3F, ST_CL, POSED);                  // posed: every cached heartbeat reads CLOSED_LOOP
+  (void)run_to_command(JbUdp::RpcArgs::AXIS_ALL);
+  cs_clear_sent();
+  deactivate_step();                               // settle met; only pre-CL heartbeats: wait
+  CHECK(s_phase == DPhase::COMMAND);
+  cs_advance(10000);
+  cl_confirm(0x07);                                // Legs 0, 1, 2
+  deactivate_step();
+  cs_advance(10000);
+  cl_confirm(0x18);                                // Legs 3, 4
+  deactivate_step();
+  CHECK(s_phase == DPhase::COMMAND);
+  CHECK(cs_sent_count() == 0);                     // nothing at all in three ticks
+  cs_advance(10000);
+  cl_confirm(0x20);                                // Leg 5, the last
+  deactivate_step();
+  CHECK(s_phase == DPhase::MONITOR);
+  CHECK(count_stow_targets() == 6);                // all six in the same tick
+  CHECK(cs_sent_count() == 6);
+  CHECK(leg_held_mask() == 0);
+}
+
+// From a stowed Platform (IDLE on the stop, e.g. DEACTIVATE after Homing) every
+// cached heartbeat reads IDLE. One received just before its Leg's CL command +
+// CL_ENGAGE_SETTLE_US is neither a confirmation nor a failed engage. Mutation
+// caught: the post-CL stamp comparison dropped (the cached IDLE fails the ladder).
+TEST_CASE("U8: a pre-CL cached IDLE heartbeat neither confirms nor fails") {
+  full_reset(0x03, ST_IDLE, -0.1f);
+  const uint64_t t_last_cl = run_to_command(JbUdp::RpcArgs::AXIS_ALL);   // Leg 1's SETUP tick
+  // Leg 1's heartbeat lands 1 ms before its CL command + settle (staged from the
+  // test's own clock of that SETUP tick, not from the gate's stamp).
+  cs_stage_leg(1, (uint8_t)ST_IDLE, -0.1f, 0.0f,
+               (int64_t)(micros64() - t_last_cl) - (int64_t)CL_ENGAGE_SETTLE_US + 1000, 0);
+  cl_confirm(0x01);
+  cs_clear_sent();
+  deactivate_step();
+  CHECK(deactivate_active());
+  CHECK(s_phase == DPhase::COMMAND);
+  CHECK(cs_sent_count() == 0);
+  cs_advance(10000);
+  cl_confirm(0x02);
+  deactivate_step();
+  CHECK(s_phase == DPhase::MONITOR);
+  CHECK(count_stow_targets() == 2);
+}
+
+// The re-fault of the mixed-case recovery, generalised: a confirming heartbeat that
+// reports IDLE, or an active error, ends the ladder FAILED with no motion frame to
+// any Leg; posed, the gate refuses every IDLE, so all hold (HELD). Mutations
+// caught: FAILED treated as WAIT (the ladder stays active); the error check removed.
+TEST_CASE("U8: a Leg reporting IDLE or an error after its settle: no motion frame to any Leg, all held") {
+  full_reset(0x3F, ST_CL, POSED);
+  (void)run_to_command(JbUdp::RpcArgs::AXIS_ALL);
+  cs_advance(10000);
+  SUBCASE("IDLE") {
+    cl_confirm(0x37);
+    confirmed(3, ST_IDLE, POSED);
+  }
+  SUBCASE("CLOSED_LOOP with an active error") {
+    cl_confirm(0x3F);
+    axes[3].active_errors = 0x1;
+  }
+  cs_clear_sent();
+  deactivate_step();
+  CHECK_FALSE(deactivate_active());
+  CHECK(cs_sent_count() == 0);                     // no Stow target, no freeze, no IDLE
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(deactivate_result(i) == DEACTIVATE_FAILED);
+  CHECK(leg_held_mask() == 0x3F);
+}
+
+// Mutations caught: no expiry (waits forever); the abort given a fresh 250 ms from
+// `now` instead of the confirmation window (the stowed variant would wait again).
+TEST_CASE("U8: the CL_CONFIRM_WAIT_US expiry ends the ladder with no motion frame") {
+  SUBCASE("posed: hold") {
+    full_reset(0x3F, ST_CL, POSED);
+  }
+  SUBCASE("stowed: the unconfirmed Leg blocks the IDLE; the window is not restarted") {
+    full_reset(0x3F, ST_IDLE, -0.1f);
+  }
+  const uint64_t t_last_cl = run_to_command(JbUdp::RpcArgs::AXIS_ALL);
+  cl_confirm(0x2F);                                // every Leg but Leg 4
+  cs_set_mono(t_last_cl + CL_CONFIRM_WAIT_US - 10000);
+  cs_clear_sent();
+  deactivate_step();
+  CHECK(deactivate_active());
+  CHECK(s_phase == DPhase::COMMAND);
+  cs_set_mono(t_last_cl + CL_CONFIRM_WAIT_US + 10000);
+  cl_confirm(0x2F);                                // the five stay live (fresh encoder, heartbeat)
+  deactivate_step();
+  CHECK_FALSE(deactivate_active());
+  CHECK(cs_sent_count() == 0);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(deactivate_result(i) == DEACTIVATE_FAILED);
+  CHECK(leg_held_mask() == 0x3F);
+}
+
+// One lost heartbeat costs one 100 ms period inside the 250 ms bound. Mutation
+// caught: the bound cut below one lost heartbeat (<= 210 ms).
+TEST_CASE("U8: one lost heartbeat still completes") {
+  full_reset(0x3F, ST_CL, POSED);
+  const uint64_t t_last_cl = run_to_command(JbUdp::RpcArgs::AXIS_ALL);
+  cl_confirm(0x1F);                                // Leg 5's first post-CL heartbeat is lost
+  cs_set_mono(t_last_cl + 110000);
+  deactivate_step();
+  CHECK(s_phase == DPhase::COMMAND);
+  cs_set_mono(t_last_cl + 200000);                 // still waiting, inside the bound
+  deactivate_step();
+  CHECK(s_phase == DPhase::COMMAND);
+  cs_set_mono(t_last_cl + 210000);                 // its next one, 100 ms later
+  cl_confirm(0x3F);
+  cs_clear_sent();
+  deactivate_step();
+  CHECK(s_phase == DPhase::MONITOR);
+  CHECK(count_stow_targets() == 6);
+}
+
+// The one-Leg bench: the same wait, for its one Leg; a failed engage IDLEs it where
+// it stands (the bench exemption), FAILED, not held. Mutation caught: the
+// confirmation removed (the Stow target goes before the heartbeat).
+TEST_CASE("U8: the one-Leg bench waits for its Leg; a failed engage IDLEs it (bench)") {
+  full_reset(0x01, ST_CL, 1.5f);
+  rig_note_axis_frame(0, micros64());
+  rig_note_bus(true, micros64());
+  cs_advance(RIG_BENCH_SETTLE_US);
+  confirmed(0, ST_CL, 1.5f);                       // a fresh heartbeat before the request
+  REQUIRE(rig_is_bench(micros64()));
+  (void)run_to_command(0);
+  cs_clear_sent();
+  deactivate_step();
+  CHECK(s_phase == DPhase::COMMAND);
+  CHECK(cs_sent_count() == 0);
+  cs_advance(10000);
+  confirmed(0, ST_IDLE, 1.5f);                     // re-faulted on engage
+  deactivate_step();
+  CHECK_FALSE(deactivate_active());
+  CHECK(count_stow_targets() == 0);
+  CHECK(count_set_state() == 1);                   // the gated IDLE (bench)
+  CHECK(deactivate_result(0) == DEACTIVATE_FAILED);
+  CHECK(leg_held_mask() == 0);
 }

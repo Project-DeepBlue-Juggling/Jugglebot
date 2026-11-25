@@ -97,6 +97,15 @@ static void full_reset(uint8_t present_mask) {
   activate_init();
 }
 
+// FW 53 U8: a CLOSED_LOOP heartbeat received NOW for every Leg in `mask`, keeping
+// its staged position and velocity: what lets COMMAND's confirmation pass once the
+// clock is CL_ENGAGE_SETTLE_US past each Leg's CLOSED_LOOP command.
+static void cl_confirm(uint8_t mask) {
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    if (mask & (uint8_t)(1u << i))
+      cs_stage_leg(i, (uint8_t)ST_CL, axes[i].pos_rev, axes[i].vel_rps, 0, 0);
+}
+
 // ── request validation ────────────────────────────────────────────────────────
 
 TEST_CASE("activate_request refuses a dead/WARN CAN3 (ERR_BUS_DOWN, nothing latched)") {
@@ -228,6 +237,7 @@ TEST_CASE("activate COMMAND emits the active-pose leg_setpoint after SETUP + set
   activate_step();                 // SETUP configures leg 0
   activate_step();                 // SETUP cursor runs off the end → COMMAND (settle clock starts)
   cs_advance(20000);               // > CL_ENGAGE_SETTLE_US (10 ms)
+  cl_confirm(0x01);                // FW 53 U8: leg 0's post-CL heartbeat
   cs_clear_sent();
   activate_step();                 // COMMAND fires the target
 
@@ -302,11 +312,14 @@ TEST_CASE("an overall timeout before the rise IDLEs the leg from Stow") {
 
 static constexpr uint8_t HAND_BIT = (uint8_t)(1u << HAND_AXIS);
 
-// Run the ladder to the point where the target(s) have been commanded.
+// Run the ladder to the point where the target(s) have been commanded. FW 53 U8:
+// every target Leg confirms CLOSED_LOOP (a heartbeat after its CL command + settle)
+// before COMMAND.
 static void run_to_monitor(uint8_t n_setup_ticks) {
   for (uint8_t k = 0; k < n_setup_ticks; ++k) activate_step();  // one axis per tick
   activate_step();            // cursor runs off the end → COMMAND (settle starts)
   cs_advance(20000);          // > CL_ENGAGE_SETTLE_US
+  cl_confirm(s_targets);
   activate_step();            // COMMAND fires the targets
 }
 
@@ -1365,7 +1378,11 @@ static void legs_confirmed(uint8_t mask, uint32_t state, float pos, float vel) {
 // Step in 10 ms ticks until the ladder is in MONITOR (one SETUP tick per target).
 static void to_monitor(uint8_t axis) {
   REQUIRE(activate_request(axis) == JbUdp::RpcStatus::OK);
-  for (int k = 0; k < 20 && s_phase != APhase::MONITOR; ++k) { activate_step(); cs_advance(10000); }
+  for (int k = 0; k < 20 && s_phase != APhase::MONITOR; ++k) {
+    activate_step();
+    cs_advance(10000);
+    if (s_phase == APhase::COMMAND) cl_confirm(s_targets);   // FW 53 U8
+  }
   REQUIRE(s_phase == APhase::MONITOR);
 }
 static size_t n_cmd(uint8_t cmd, int axis = -1) {
@@ -1699,4 +1716,206 @@ TEST_CASE("mid-rise abort on the one-Leg bench IDLEs at once (no return)") {
   CHECK(cs_sent_count() == 1);
   CHECK(sent_exact(ODrive::encode_set_state(0, ODriveState::IDLE)));
   CHECK(leg_held_mask() == 0);
+}
+
+// ── FW 53 U8: no target to any axis until every target Leg confirms Closed-loop ──
+// (owner: no Leg is raised while another is free). COMMAND waits for a heartbeat
+// from each target Leg received >= its CLOSED_LOOP command + CL_ENGAGE_SETTLE_US
+// reporting CLOSED_LOOP with no error, bounded by CL_CONFIRM_WAIT_US from the last
+// Leg's CLOSED_LOOP command; a failure or the expiry is the pre-rise abort. The
+// Hand is not in the wait; it keeps the fixed settle.
+// Request + step in 10 ms ticks until COMMAND, confirming nothing. Returns the
+// test's own clock at the last SETUP tick that configured a Leg (its CL command).
+static uint64_t run_to_command(uint8_t axis) {
+  REQUIRE(activate_request(axis) == JbUdp::RpcStatus::OK);
+  uint64_t t_last_cl = 0;
+  for (int k = 0; k < 20 && s_phase != APhase::COMMAND; ++k) {
+    const uint64_t t = micros64();
+    activate_step();
+    if (s_phase == APhase::SETUP && s_setup_idx >= 1 && s_setup_idx - 1 < NUM_LEGS) t_last_cl = t;
+    cs_advance(10000);
+  }
+  REQUIRE(s_phase == APhase::COMMAND);
+  return t_last_cl;
+}
+static size_t n_targets_sent() {
+  size_t n = 0;
+  for (size_t k = 0; k < cs_sent_count(); ++k) {
+    const uint8_t a = ODrive::axis_of(cs_sent_at(k).id);
+    if (a >= NUM_AXES) continue;
+    const auto f = ODrive::encode_leg_setpoint(a, activate_target_rev(a), 0.0f, 0.0f);
+    if (cs_sent_at(k).id == f.id && memcmp(cs_sent_at(k).buf, f.buf, 8) == 0) ++n;
+  }
+  return n;
+}
+
+// After Homing every cached heartbeat reads IDLE: it predates the CL command, so it
+// neither confirms nor fails. Mutations caught: the confirmation removed (targets
+// after the settle alone); the post-CL stamp comparison dropped (the cached IDLE
+// fails the ladder at the first COMMAND tick).
+TEST_CASE("U8: after Homing, staggered confirmations; no target to any axis until the last Leg confirms") {
+  homed((uint8_t)(0x3F | HAND_BIT));
+  axes[HAND_AXIS].pos_rev = Homing::HAND_ABS_POS_REV;
+  (void)run_to_command(JbUdp::RpcArgs::AXIS_ALL);
+  cs_advance(10000);                               // the Hand's settle met
+  cs_clear_sent();
+  activate_step();                                 // only cached pre-CL IDLE heartbeats: wait
+  CHECK(activate_active());
+  CHECK(s_phase == APhase::COMMAND);
+  cs_advance(10000);
+  cl_confirm(0x0F);                                // Legs 0-3
+  activate_step();
+  cs_advance(10000);
+  cl_confirm(0x10);                                // Leg 4
+  activate_step();
+  CHECK(s_phase == APhase::COMMAND);
+  CHECK(cs_sent_count() == 0);                     // nothing to any axis in three ticks
+  cs_advance(10000);
+  cl_confirm(0x20);                                // Leg 5, the last
+  activate_step();
+  CHECK(s_phase == APhase::MONITOR);
+  CHECK(n_targets_sent() == 7);                    // six Legs and the Hand, one tick
+  CHECK(cs_sent_count() == 7);
+}
+
+// Mutations caught: FAILED treated as WAIT (still active); the error check removed.
+TEST_CASE("U8: a Leg reporting IDLE or an error after its settle: no target to any axis; IDLE from Stow, or hold") {
+  SUBCASE("after Homing: the gated IDLE from Stow, Hand IDLE, FAILED, not held") {
+    homed((uint8_t)(0x3F | HAND_BIT));
+    (void)run_to_command(JbUdp::RpcArgs::AXIS_ALL);
+    cs_advance(10000);
+    cl_confirm(0x37);
+    confirmed(3, ST_IDLE, HOMED);                  // re-faulted on engage
+    cs_clear_sent();
+    activate_step();
+    CHECK_FALSE(activate_active());
+    CHECK(n_targets_sent() == 0);
+    CHECK(n_cmd(ODriveCmd::set_input_pos) == 0);
+    CHECK(sent_exact(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(sent_exact(ODrive::encode_set_state(i, ODriveState::IDLE)));
+    for (uint8_t i = 0; i < NUM_AXES; ++i) CHECK(activate_result(i) == ACTIVATE_FAILED);
+    CHECK(leg_held_mask() == 0);
+  }
+  SUBCASE("posed (ACTIVATE_TO, the Level flow), an active error: hold, no frame, HELD") {
+    full_reset(0x3F);
+    for (uint8_t i = 0; i < NUM_LEGS; ++i)
+      cs_stage_leg(i, (uint8_t)ST_CL, JBOp::ACTIVATE_POSITION_REVS[i], 0.0f, FRESH_HB, FRESH_ENC);
+    REQUIRE(activate_to_request(JBOp::ACTIVATE_POSITION_REVS) == JbUdp::RpcStatus::OK);
+    for (int k = 0; k < 20 && s_phase != APhase::COMMAND; ++k) { activate_step(); cs_advance(10000); }
+    REQUIRE(s_phase == APhase::COMMAND);
+    cs_advance(10000);
+    cl_confirm(0x3F);
+    axes[1].active_errors = 0x1;
+    cs_clear_sent();
+    activate_step();
+    CHECK_FALSE(activate_active());
+    CHECK(cs_sent_count() == 0);
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(activate_result(i) == ACTIVATE_FAILED);
+    CHECK(leg_held_mask() == 0x3F);
+  }
+}
+
+// Mutations caught: no expiry; the abort given a fresh 250 ms from `now` (after
+// Homing the unconfirmed Leg blocks the IDLE, so it would wait again).
+TEST_CASE("U8: the CL_CONFIRM_WAIT_US expiry: no target, Hand IDLE, the unconfirmed Leg holds the rest (HELD)") {
+  homed((uint8_t)(0x3F | HAND_BIT));
+  const uint64_t t_last_cl = run_to_command(JbUdp::RpcArgs::AXIS_ALL);
+  cl_confirm(0x2F);                                // every Leg but Leg 4
+  cs_set_mono(t_last_cl + CL_CONFIRM_WAIT_US - 10000);
+  cs_clear_sent();
+  activate_step();
+  CHECK(s_phase == APhase::COMMAND);
+  CHECK(cs_sent_count() == 0);
+  cs_set_mono(t_last_cl + CL_CONFIRM_WAIT_US + 10000);
+  cl_confirm(0x2F);                                // the five stay live (fresh encoder, heartbeat)
+  activate_step();
+  CHECK_FALSE(activate_active());
+  CHECK(n_targets_sent() == 0);
+  CHECK(cs_sent_count() == 1);                     // the Hand IDLE (exempt), nothing to a Leg
+  CHECK(sent_exact(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+  for (uint8_t i = 0; i < NUM_AXES; ++i) CHECK(activate_result(i) == ACTIVATE_FAILED);
+  CHECK(leg_held_mask() == 0x3F);
+}
+
+// Mutation caught: the bound cut below one lost heartbeat (<= 210 ms).
+TEST_CASE("U8: one lost heartbeat still completes the rise") {
+  homed(0x3F);
+  const uint64_t t_last_cl = run_to_command(JbUdp::RpcArgs::AXIS_ALL);
+  cl_confirm(0x1F);                                // Leg 5's first post-CL heartbeat is lost
+  cs_set_mono(t_last_cl + 110000);
+  activate_step();
+  cs_set_mono(t_last_cl + 200000);
+  activate_step();
+  CHECK(s_phase == APhase::COMMAND);
+  cs_set_mono(t_last_cl + 210000);                 // its next one, 100 ms later
+  cl_confirm(0x3F);
+  cs_clear_sent();
+  activate_step();
+  CHECK(s_phase == APhase::MONITOR);
+  CHECK(n_targets_sent() == 6);
+}
+
+// The Hand is configured last and is not in the confirmation: the fixed settle is
+// still what separates its CLOSED_LOOP from its target. Mutation caught: the
+// settle removed (the Legs' fast confirmation would send the Hand's target 5 ms
+// after the COMMAND entry).
+TEST_CASE("U8: the Hand keeps the fixed settle; HAND_MOVE_TO has no Legs to wait for") {
+  homed((uint8_t)(0x3F | HAND_BIT));
+  REQUIRE(activate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+  for (int k = 0; k < 20 && s_phase != APhase::COMMAND; ++k) {
+    activate_step();
+    if (s_phase != APhase::COMMAND) cs_advance(10000);
+  }
+  REQUIRE(s_phase == APhase::COMMAND);             // entered this tick: the Hand's CL was 10 ms ago
+  cs_set_mono(s_t_phase_us + CL_ENGAGE_SETTLE_US / 2);
+  cl_confirm(0x3F);
+  cs_clear_sent();
+  activate_step();
+  CHECK(s_phase == APhase::COMMAND);
+  CHECK(cs_sent_count() == 0);
+  cs_set_mono(s_t_phase_us + CL_ENGAGE_SETTLE_US);
+  activate_step();
+  CHECK(s_phase == APhase::MONITOR);
+  CHECK(n_targets_sent() == 7);
+  CHECK(legs_cl_confirm(0x00, micros64()) == ClConfirm::CONFIRMED);   // the Hand alone: nothing to wait for
+}
+
+// The one-Leg bench: the same wait for its one Leg; a failed engage IDLEs it where
+// it stands (bench exemption), FAILED, not held. Mutation caught: the confirmation
+// removed.
+TEST_CASE("U8: the one-Leg bench waits for its Leg; a failed engage IDLEs it (bench)") {
+  full_reset(0x01);
+  rig_note_axis_frame(0, micros64());
+  rig_note_bus(true, micros64());
+  cs_advance(RIG_BENCH_SETTLE_US);
+  confirmed(0, ST_IDLE, 0.4f);                     // a fresh heartbeat before the request
+  REQUIRE(rig_is_bench(micros64()));
+  (void)run_to_command(0);
+  cs_clear_sent();
+  activate_step();
+  CHECK(s_phase == APhase::COMMAND);
+  CHECK(cs_sent_count() == 0);
+  cs_advance(10000);
+  confirmed(0, ST_IDLE, 0.4f);                     // re-faulted on engage
+  activate_step();
+  CHECK_FALSE(activate_active());
+  CHECK(n_targets_sent() == 0);
+  CHECK(sent_exact(ODrive::encode_set_state(0, ODriveState::IDLE)));
+  CHECK(activate_result(0) == ACTIVATE_FAILED);
+  CHECK(leg_held_mask() == 0);
+}
+
+// Defence in depth: a post-CL heartbeat older than CAN_HEARTBEAT_STALE_US is no
+// evidence (unreachable while the ladder ticks at 100 Hz, since the 250 ms window
+// ends first). Mutation caught: the freshness term removed.
+TEST_CASE("U8: legs_cl_confirm, a stale post-CL heartbeat is not a confirmation") {
+  homed(0x01);
+  REQUIRE(odrive_set_state_tx(0, ODriveState::CLOSED_LOOP, TxCls::OTHER, Who::LADDER) == DeResult::SENT);
+  const uint64_t t_cl = micros64();
+  cs_advance(CL_ENGAGE_SETTLE_US);
+  cl_confirm(0x01);
+  CHECK(legs_cl_confirm(0x01, micros64()) == ClConfirm::CONFIRMED);
+  CHECK(legs_last_cl_cmd_us(0x01) == t_cl);
+  cs_set_mono(t_cl + CL_ENGAGE_SETTLE_US + CAN_HEARTBEAT_STALE_US + 10000);
+  CHECK(legs_cl_confirm(0x01, micros64()) == ClConfirm::EXPIRED);
 }
