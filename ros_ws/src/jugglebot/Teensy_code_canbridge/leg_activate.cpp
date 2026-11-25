@@ -22,6 +22,32 @@
 //  HAND STALL GUARD (FW 36, BUG-56): every active tick, hand_stall_guard() drops a
 //  hand that has sat at high current without moving for HAND_STALL_HOLD_US to IDLE
 //  (leg_activate.h; thresholds + physics in canbridge_config.h).
+//
+//  FW 53 (I-FW-19, owner rule 2026-11-25: no Leg is made IDLE unless the Platform
+//  is already at Stow; the Hand is exempt). Every Set_Axis_State goes through the
+//  Stow gate (leg_stow_gate.h). The Hand is IDLEd on every abort, as before. The
+//  Legs, by where the abort lands:
+//    * bus down (any phase): nothing to the Legs, FAILED; the ODrives finish the
+//      move they hold and the fault machine's deferred stow lowers the Platform
+//      at reconnect (it starts only while !activate_active(), and the ladder has
+//      ended);
+//    * before the rise is commanded (SETUP, COMMAND): ABORT_WAIT. The gated IDLE
+//      goes out once the Platform is at Stow (the usual case after Homing: FW 52's
+//      outcome), waiting at most CL_CONFIRM_WAIT_US while the only refusals are
+//      unconfirmed CLOSED_LOOP sends; otherwise it is refused and the Legs hold
+//      (configured ones at their measured seed), HELD;
+//    * mid-rise (MONITOR): a target Leg that disarmed itself → freeze the others
+//      on [seed, target], FAILED/HELD. A Soft E-stop (Hand ODrive error, the
+//      HAND_STALL latch, overspeed), commands-not-allowed or the timeout → if
+//      Idle is already permitted (the bench, or the Legs still at rest at Stow)
+//      the gated IDLE; otherwise RETURN TO STOW (owner, 2026-11-25: "STOW is the
+//      safe state"): every Leg is re-targeted to STOW_OFF_POSE_REV under the same
+//      gentle TRAP_TRAJ profile, and the descent monitor shared with DEACTIVATE
+//      (stow_descent_step) IDLEs it through the gate on encoder-confirmed
+//      arrival. A Soft E-stop during the return does not interrupt it. The
+//      ACTIVATE ends FAILED either way; HELD only if the return itself fails;
+//    * the Hand's PASSTHROUGH hand-off refused after arrival: only the Hand is
+//      IDLEd; the Legs hold the Active pose in TRAP_TRAJ, OK.
 // =============================================================================
 #include "leg_activate.h"
 
@@ -38,6 +64,7 @@
 #include "fault_machine.h"    // fault_can_bus_down / fault_guard_mode
 #include "leg_homing.h"       // homing_active (no concurrent cold-start moves)
 #include "leg_deactivate.h"   // deactivate_active (no concurrent cold-start moves)
+#include "leg_stow_gate.h"    // odrive_set_state_tx, leg_idle_permitted, stow_descent_step (I-FW-19)
 #include "time_base.h"        // micros64
 
 namespace CanBridge {
@@ -48,14 +75,16 @@ enum class APhase : uint8_t {
   SETUP,     // error gate + seed + traj limits + TRAP_TRAJ mode + CLOSED_LOOP issued
   COMMAND,   // settle elapsed → command the active-pose target
   MONITOR,   // target commanded → wait for the leg(s) to reach + settle
+  ABORT_WAIT,// pre-rise abort: wait (bounded) for CL confirmation, then the gated IDLE
+  RETURN,    // mid-rise abort: the Legs descend to STOW, IDLE'd there through the gate
 };
 
-// Settle window: let CLOSED_LOOP engage and the mode/limit writes take effect
-// before commanding the trajectory target (mirrors leg_homing's DRIVE settle).
-static constexpr uint64_t SETTLE_SETUP_US = 10000ull;   // 10 ms
+// The settle before COMMAND is CL_ENGAGE_SETTLE_US (canbridge_config.h, was this
+// file's SETTLE_SETUP_US, same 10 ms): the Stow gate's CL-confirmation constant.
 // Hard timeout on the WHOLE op (SETUP → COMMAND → physical move → settle). The
 // ODrive runs the trajectory autonomously; MONITOR keeps the op "active" until it
 // completes, so HOME is rejected for the whole move (not just the ~10 ms fire).
+// The return to Stow (RETURN) gets its own clock of the same length.
 static const uint64_t A_TIMEOUT_US = (uint64_t)(JBOp::GENTLE_MOVE_TIMEOUT_S * 1.0e6f);
 
 // ── State (owned by the activate task; start-request handed off from net task) ─
@@ -76,6 +105,12 @@ static uint8_t  s_setup_idx = 0;      // SETUP cursor — configure ONE leg per 
 static uint64_t s_t_start_us = 0;     // ladder start (overall timeout clock)
 static uint64_t s_t_phase_us = 0;     // current sub-phase entry (settle clock)
 static uint8_t  s_result[NUM_AXES] = { ACTIVATE_NONE };
+// FW 53 U3 (the abort paths).
+static constexpr uint8_t LEG_BITS = (uint8_t)((1u << NUM_LEGS) - 1u);
+static float    s_seed[NUM_LEGS] = { 0.0f };  // measured pos at configure: one end of the freeze segment
+static uint8_t  s_done = 0;           // RETURN: Legs IDLE'd at Stow (the gate SENT)
+static uint8_t  s_ret_unsent = 0;     // RETURN: Legs whose Stow target has not reached the wire yet
+static uint64_t s_t_abort_us = 0;     // ABORT_WAIT / RETURN entry (their own clocks)
 
 // ── Hand stall guard (FW 36, BUG-56) — activate-task owned, s_stalled read by
 //    the telemetry task (single-byte stores are atomic on Cortex-M7). ──────────
@@ -221,21 +256,124 @@ static uint8_t resolve_targets(uint8_t axis) {
   return mask;
 }
 
-// Stop every targeted leg and record the outcome. Called on every abort path —
-// the legs are ALWAYS left in IDLE, never driving.
-// A HAND_MOVE_TO in flight is answered here with `hm_status` / `hm_outcome`
-// (after the IDLE is queued, so the reply reports the action already taken).
-static void abort_all(uint8_t result,
-                      uint16_t hm_status = JbUdp::RpcStatus::ERR_REJECTED,
-                      uint8_t hm_outcome = HAND_MOVE_ABORTED) {
-  for (uint8_t i = 0; i < NUM_AXES; ++i) {
-    if (!(s_targets & (uint8_t)(1u << i))) continue;
-    can_jugglebot_send(ODrive::encode_set_state(i, ODriveState::IDLE));
-    s_result[i] = result;
-  }
+// ── The abort paths (FW 53 U3; see the header comment) ──────────────────────
+// End the ladder, sending NOTHING: every axis still in s_targets gets `result`,
+// and a HAND_MOVE_TO in flight is answered with `hm_status` / `hm_outcome`.
+static void end_ladder(uint8_t result,
+                       uint16_t hm_status = JbUdp::RpcStatus::ERR_REJECTED,
+                       uint8_t hm_outcome = HAND_MOVE_ABORTED) {
+  for (uint8_t i = 0; i < NUM_AXES; ++i)
+    if (s_targets & (uint8_t)(1u << i)) s_result[i] = result;
   hm_finish(hm_status, hm_outcome);
   s_phase = APhase::IDLE;
   s_targets = 0;
+  s_done = 0;
+  s_ret_unsent = 0;
+}
+
+// The Hand is IDLEd on every abort (exempt from I-FW-19: the gate passes it
+// through) and leaves the ladder FAILED. A refused frame is not retried, as in FW 52.
+static void idle_hand_if_targeted() {
+  constexpr uint8_t HB = (uint8_t)(1u << HAND_AXIS);
+  if (!(s_targets & HB)) return;
+  (void)odrive_set_state_tx(HAND_AXIS, ODriveState::IDLE, TxCls::OTHER, Who::LADDER);
+  s_result[HAND_AXIS] = ACTIVATE_FAILED;
+  s_targets = (uint8_t)(s_targets & (uint8_t)~HB);
+}
+
+// Ask the gate to IDLE every target Leg: sent only where Idle is permitted (the
+// Platform at Stow, or the bench); a refusal sends nothing and sets HELD.
+static void gated_idle_legs() {
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    if (s_targets & (uint8_t)(1u << i))
+      (void)odrive_set_state_tx(i, ODriveState::IDLE, TxCls::OTHER, Who::LADDER);
+}
+
+// ABORT_WAIT, one tick: nothing has been commanded to move. Wait (bounded) while
+// the only refusals are unconfirmed CLOSED_LOOP sends, then ask for the IDLEs.
+static void abort_wait_step(uint64_t now) {
+  if (fault_can_bus_down()) { end_ladder(ACTIVATE_FAILED); return; }   // nothing to a dead bus
+  if (leg_abort_idle_verdict(now, s_t_abort_us) == AbortIdle::WAIT) return;
+  gated_idle_legs();
+  end_ladder(ACTIVATE_FAILED);
+}
+
+// RETURN: (re-)send the Stow target to every Leg whose frame has not reached the
+// wire. The DEACTIVATE COMMAND frame byte for byte (position-only; vel_ff =
+// tor_ff = 0; encode_leg_setpoint clips to [0, max] and applies leg_sign). The
+// ODrive TRAP_TRAJ planner re-plans from its own setpoint (position AND velocity,
+// so no step): a Leg rising at 2.5 rev/s decelerates through zero at
+// TRAP_ACC_LIMIT_RPS2 (0.104 rev higher, 0.083 s later), then descends at the
+// gentle cruise and decelerates into Stow. Because TRAP_ACC_LIMIT_RPS2 >=
+// TRAP_DEC_LIMIT_RPS2, the reversal apex never passes the Active target the rise
+// was already planned to stop at (logbook 2026-11-25-fw53-u3-activate-returns-to-stow).
+static void send_return_targets() {
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    const uint8_t bit = (uint8_t)(1u << i);
+    if (!(s_ret_unsent & bit)) continue;
+    if (can_jugglebot_send(ODrive::encode_leg_setpoint(i, STOW_OFF_POSE_REV, 0.0f, 0.0f)))
+      s_ret_unsent = (uint8_t)(s_ret_unsent & (uint8_t)~bit);
+  }
+}
+
+// RETURN, one tick: the descent monitor shared with DEACTIVATE (leg_stow_gate.h).
+// The freeze segment (a timeout or a disarmed Leg during the return) is the hull of
+// the Leg's seed, its Active target and Stow: every point the rise and the reversal
+// can reach. The ACTIVATE is FAILED in every outcome; the IDLEs at Stow clear HELD.
+static void return_step(uint64_t now) {
+  const bool timed_out = now - s_t_abort_us > A_TIMEOUT_US;
+  const DescentStep r = stow_descent_step((uint8_t)(s_targets & LEG_BITS), s_done,
+                                          s_seed, s_leg_target, timed_out, now);
+  if (r != DescentStep::RUNNING) { end_ladder(ACTIVATE_FAILED); return; }
+  send_return_targets();
+}
+
+// A Soft E-stop, commands-not-allowed, a timeout, an errored target, a refused
+// SETUP frame (anything but bus down and a disarmed Leg). Phase-dependent: see the
+// header comment.
+static void abort_ladder(uint64_t now,
+                         uint16_t hm_status = JbUdp::RpcStatus::ERR_REJECTED,
+                         uint8_t hm_outcome = HAND_MOVE_ABORTED) {
+  idle_hand_if_targeted();
+  if ((s_targets & LEG_BITS) == 0) { end_ladder(ACTIVATE_FAILED, hm_status, hm_outcome); return; }
+  if (s_phase == APhase::MONITOR) {
+    if (leg_idle_permitted(now)) { gated_idle_legs(); end_ladder(ACTIVATE_FAILED); return; }
+    s_done = 0;
+    s_ret_unsent = (uint8_t)(s_targets & LEG_BITS);
+    s_t_abort_us = now;
+    s_phase = APhase::RETURN;
+    send_return_targets();
+    return;
+  }
+  s_t_abort_us = now;
+  s_phase = APhase::ABORT_WAIT;
+  abort_wait_step(now);
+}
+
+// Bus down: the Hand IDLE is still asked (exempt; a confirmed-dead bus refuses it
+// anyway), the Legs get nothing.
+static void abort_bus_down(uint16_t hm_status, uint8_t hm_outcome) {
+  idle_hand_if_targeted();
+  end_ladder(ACTIVATE_FAILED, hm_status, hm_outcome);
+}
+
+// Target Legs that disarmed themselves mid-rise (CL-confirmed heartbeat, not CL).
+static uint8_t dropped_legs(uint64_t now) {
+  uint8_t m = 0;
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    if ((s_targets & (uint8_t)(1u << i)) && leg_dropped_out(i, now)) m |= (uint8_t)(1u << i);
+  return m;
+}
+
+// A Leg dropped out mid-rise: never move the Platform with one Leg free. Freeze
+// every other target Leg at its stopping point on its own commanded segment
+// [seed, target] (HELD); the dropped Leg is left alone.
+static void abort_dropped(uint8_t dropped) {
+  idle_hand_if_targeted();
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    if ((s_targets & (uint8_t)(1u << i)) && !(dropped & (uint8_t)(1u << i)))
+      (void)leg_freeze_tx(i, s_seed[i], s_leg_target[i]);
+  end_ladder(ACTIVATE_FAILED);
 }
 
 void activate_init() {
@@ -254,6 +392,10 @@ void activate_init() {
   s_hm_box_drops = 0;
   s_phase = APhase::IDLE;
   s_targets = 0;
+  s_done = 0;
+  s_ret_unsent = 0;
+  s_t_abort_us = 0;
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) s_seed[i] = 0.0f;
   for (uint8_t i = 0; i < NUM_AXES; ++i) s_result[i] = ACTIVATE_NONE;
   for (uint8_t i = 0; i < HAND_AXIS; ++i) {
     s_start_leg_target[i] = JBOp::ACTIVATE_POSITION_REVS[i];
@@ -285,7 +427,12 @@ static uint16_t activate_gate_and_latch(uint8_t axis, const float* leg_targets) 
     s_start_req = true;
   }
   __set_PRIMASK(pm);
-  return busy ? RpcStatus::ERR_REJECTED : RpcStatus::OK;
+  if (busy) return RpcStatus::ERR_REJECTED;
+  // Accepted: the targets' HELD bits restart from this request (fw53_design.md 3).
+  const uint8_t targets = resolve_targets(axis);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    if (targets & (uint8_t)(1u << i)) leg_held_clear(i);
+  return RpcStatus::OK;
 }
 
 uint16_t activate_request(uint8_t axis) {
@@ -416,7 +563,7 @@ static void hm_consume() {
   const bool configured = !(s_phase == APhase::SETUP && s_setup_idx <= HAND_AXIS);
   if (configured &&
       !can_jugglebot_send(ODrive::encode_set_traj_vel_limit(HAND_AXIS, s_hm_vel))) {
-    abort_all(ACTIVATE_FAILED, JbUdp::RpcStatus::ERR_TIMEOUT, HAND_MOVE_ABORTED);
+    abort_ladder(micros64(), JbUdp::RpcStatus::ERR_TIMEOUT, HAND_MOVE_ABORTED);   // the Hand alone
     return;
   }
   if (s_phase == APhase::MONITOR) command_targets();   // s_targets == the hand alone
@@ -447,7 +594,7 @@ static bool hand_stall_guard(uint64_t now) {
   // Window expired: stop pushing. A refused TX keeps the hand targeted and the
   // window expired, so the IDLE is re-sent next tick (the bus-down and timeout
   // aborts above still bound the ladder).
-  if (!can_jugglebot_send(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)))
+  if (odrive_set_state_tx(HAND_AXIS, ODriveState::IDLE, TxCls::OTHER, Who::LADDER) != DeResult::SENT)
     return false;
   s_result[HAND_AXIS]  = ACTIVATE_FAILED;
   s_stalled[HAND_AXIS] = true;
@@ -470,7 +617,7 @@ bool hand_lane_stalled(uint8_t axis) { return axis == HAND_AXIS && s_lane_stalle
 static void hand_lane_stall_guard() {
   // A trip whose IDLE frame the TX path refused: re-send every tick until queued.
   if (s_lane_idle_pending &&
-      can_jugglebot_send(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)))
+      odrive_set_state_tx(HAND_AXIS, ODriveState::IDLE, TxCls::OTHER, Who::LADDER) == DeResult::SENT)
     s_lane_idle_pending = false;
   constexpr uint8_t HB = (uint8_t)(1u << HAND_AXIS);
   if (s_phase != APhase::IDLE && (s_targets & HB)) { s_lane_timing = false; return; }
@@ -514,7 +661,7 @@ static void hand_lane_stall_guard() {
   s_lane_timing  = false;
   s_lane_stalled = true;
   fault_notify_hand_stall();
-  if (!can_jugglebot_send(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)))
+  if (odrive_set_state_tx(HAND_AXIS, ODriveState::IDLE, TxCls::OTHER, Who::LADDER) != DeResult::SENT)
     s_lane_idle_pending = true;
 }
 
@@ -550,12 +697,23 @@ void activate_step() {
 
   const uint64_t now = micros64();
 
-  // ── Aborts that apply in every active phase (checked before any drive). ──
+  // ── FW 53 U3: after an abort, its own phase owns the tick. ──
+  if (s_phase == APhase::ABORT_WAIT) { abort_wait_step(now); return; }
+  if (s_phase == APhase::RETURN)     { return_step(now); return; }
+
+  // ── Aborts that apply in SETUP / COMMAND / MONITOR (checked before any drive). ──
+  if (fault_can_bus_down()) {
+    abort_bus_down(JbUdp::RpcStatus::ERR_BUS_DOWN, HAND_MOVE_ABORTED); return;
+  }
+  if (s_phase == APhase::MONITOR) {
+    const uint8_t dropped = dropped_legs(now);
+    if (dropped) { abort_dropped(dropped); return; }
+  }
   if (!activate_allowed()) {
-    abort_all(ACTIVATE_FAILED, JbUdp::RpcStatus::ERR_BUS_DOWN, HAND_MOVE_ABORTED); return;
+    abort_ladder(now, JbUdp::RpcStatus::ERR_BUS_DOWN, HAND_MOVE_ABORTED); return;
   }
   if (now - s_t_start_us > A_TIMEOUT_US) {
-    abort_all(ACTIVATE_FAILED, JbUdp::RpcStatus::ERR_TIMEOUT, HAND_MOVE_TIMEOUT); return;
+    abort_ladder(now, JbUdp::RpcStatus::ERR_TIMEOUT, HAND_MOVE_TIMEOUT); return;
   }
   if (hand_stall_guard(now)) return;   // FW 36: a stalled hand is IDLEd and dropped
 
@@ -580,12 +738,13 @@ void activate_step() {
       // Synchronous per-leg error gate (legacy can_node._gentle_move_steps parity:
       // "refuse to enter CLOSED_LOOP if errors present"). ANY errored target fails
       // the whole op (a coupled platform must not activate a subset — that tilts it).
-      if (axes[i].active_errors != 0) { abort_all(ACTIVATE_FAILED); return; }
+      if (axes[i].active_errors != 0) { abort_ladder(now); return; }
       // Seed the ACTUAL current position (NON-clipped) so CLOSED_LOOP holds in
       // place even at the sub-zero hardstop — the whole move is then TRAP_TRAJ-
       // profiled with no clip-snap off the hardstop. leg_sign applies the ODrive
       // convention (Jugglebot positive=extension → ODrive negative).
       const float cur = axes[i].pos_rev;  // single-word atomic read, Jugglebot conv
+      if (i < NUM_LEGS) s_seed[i] = cur;  // one end of this leg's freeze segment
       bool ok = true;
       ok = can_jugglebot_send(
                ODrive::encode_set_input_pos(i, ODrive::leg_sign(i, cur), 0, 0)) && ok;
@@ -606,16 +765,18 @@ void activate_step() {
       ok = can_jugglebot_send(
                ODrive::encode_set_controller_mode(
                    i, ODriveControlMode::POSITION, ODriveInputMode::TRAP_TRAJ)) && ok;
-      ok = can_jugglebot_send(
-               ODrive::encode_set_state(i, ODriveState::CLOSED_LOOP)) && ok;
-      if (!ok) { abort_all(ACTIVATE_FAILED, JbUdp::RpcStatus::ERR_TIMEOUT, HAND_MOVE_ABORTED); return; }
+      // Through the gate (not gated: CLOSED_LOOP is no de-energise), which stamps
+      // the Leg's CL-command time for the Stow predicate and leg_dropped_out.
+      ok = (odrive_set_state_tx(i, ODriveState::CLOSED_LOOP, TxCls::OTHER, Who::LADDER)
+                == DeResult::SENT) && ok;
+      if (!ok) { abort_ladder(now, JbUdp::RpcStatus::ERR_TIMEOUT, HAND_MOVE_ABORTED); return; }
       axes[i].controller_mode = (uint8_t)ODriveControlMode::POSITION;   // commanded-mode record
       axes[i].input_mode      = (uint8_t)ODriveInputMode::TRAP_TRAJ;    // (axis_state.h)
       ++s_setup_idx;   // next target leg on the next tick
       break;
     }
     case APhase::COMMAND: {
-      if (now - s_t_phase_us < SETTLE_SETUP_US) break;  // let CLOSED_LOOP + mode/limits settle
+      if (now - s_t_phase_us < CL_ENGAGE_SETTLE_US) break;  // let CLOSED_LOOP + mode/limits settle
       command_targets();
       s_phase = APhase::MONITOR;  // stay active through the physical move
       break;
@@ -652,9 +813,17 @@ void activate_step() {
           if (!can_jugglebot_send(ODrive::encode_set_controller_mode(
                   HAND_AXIS, ODriveControlMode::POSITION,
                   ODriveInputMode::PASSTHROUGH))) {
-            abort_all(ACTIVATE_FAILED, JbUdp::RpcStatus::ERR_TIMEOUT, HAND_MOVE_ABORTED);
-            return;                               // a hand left in TRAP_TRAJ is a
-          }                                       // silently-inert lane — fail loudly
+            // A hand left in TRAP_TRAJ is a silently-inert lane: fail it loudly.
+            // FW 53: ONLY the Hand is IDLEd. The Legs are at their target in
+            // TRAP_TRAJ holding the Active pose and get nothing; they are OK.
+            idle_hand_if_targeted();
+            for (uint8_t i = 0; i < NUM_LEGS; ++i)
+              if (s_targets & (uint8_t)(1u << i)) s_result[i] = ACTIVATE_OK;
+            hm_finish(JbUdp::RpcStatus::ERR_TIMEOUT, HAND_MOVE_ABORTED);
+            s_phase = APhase::IDLE;
+            s_targets = 0;
+            return;
+          }
           axes[HAND_AXIS].input_mode = (uint8_t)ODriveInputMode::PASSTHROUGH;
         }
         for (uint8_t i = 0; i < NUM_AXES; ++i)
@@ -666,7 +835,7 @@ void activate_step() {
       break;
     }
     default:
-      abort_all(ACTIVATE_FAILED);
+      abort_ladder(now);
       break;
   }
 }

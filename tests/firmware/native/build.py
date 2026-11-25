@@ -169,9 +169,10 @@ _BINARIES = {
     # module .cpp (defining its own *_active) + supplies the two sibling predicates
     # inline, and links coldstart_hal (NOT fake_hal — that would ODR-clash on the
     # module's own *_active and lacks the can_buses_stats/fault gate these use).
+    # FW 53 U3: the abort paths go through the Stow gate and its shared descent monitor.
     "test_leg_activate": (
         NATIVE_DIR / "test_leg_activate.cpp",
-        ["axis_state", "ball_butler_state", "coldstart_hal"],
+        ["axis_state", "ball_butler_state", "coldstart_hal", "leg_stow_gate"],
     ),
     # FW 53 U2: the ladder's leg state changes go through the Stow gate (I-FW-19).
     "test_leg_deactivate": (

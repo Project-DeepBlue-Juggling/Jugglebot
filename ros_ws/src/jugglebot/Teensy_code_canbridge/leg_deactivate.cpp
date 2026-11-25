@@ -23,8 +23,12 @@
 //      no frame; any other abort → ask the gate for IDLE per target Leg: sent
 //      only if the Platform is already at Stow, else refused (nothing on CAN,
 //      HELD bit set), so configured Legs hold their measured seed and the rest
-//      hold their stream pose;
-//    * during the descent (MONITOR), in precedence order: bus down → end FAILED,
+//      hold their stream pose. FW 53 U3: while the only refusals are Legs whose
+//      CLOSED_LOOP no heartbeat has confirmed yet, the abort waits (ABORT_WAIT,
+//      at most CL_CONFIRM_WAIT_US, nothing sent) before asking, as ACTIVATE's does;
+//    * during the descent (MONITOR, the shared stow_descent_step in
+//      leg_stow_gate.cpp, which ACTIVATE's return to Stow also runs), in
+//      precedence order: bus down → end FAILED,
 //      no frame (the deferred stow takes over at reconnect); a target Leg whose
 //      CL-confirmed heartbeat reports anything but CLOSED_LOOP → freeze the
 //      other live targets, FAILED/HELD; arrival → gated IDLE (retried next tick
@@ -57,6 +61,7 @@ enum class DPhase : uint8_t {
   SETUP,     // error gate + seed + traj limits + TRAP_TRAJ mode + CLOSED_LOOP issued
   COMMAND,   // settle elapsed → command the STOW target
   MONITOR,   // target commanded → wait for the leg(s) to reach + settle, then IDLE
+  ABORT_WAIT,// pre-descent abort waiting (bounded) for CL confirmation before the gated IDLE
 };
 
 // The settle before COMMAND is CL_ENGAGE_SETTLE_US (canbridge_config.h, was this
@@ -85,6 +90,7 @@ static uint8_t  s_done    = 0;        // target legs IDLE'd at arrival (the gate
 static uint8_t  s_setup_idx = 0;      // SETUP cursor — configure ONE leg per tick
 static uint64_t s_t_start_us = 0;     // ladder start (overall timeout clock)
 static uint64_t s_t_phase_us = 0;     // current sub-phase entry (settle clock)
+static uint64_t s_t_abort_us = 0;     // ABORT_WAIT entry (CL_CONFIRM_WAIT_US clock)
 static float    s_seed[NUM_LEGS] = { 0.0f };   // measured pos at configure: freeze segment [seed, STOW]
 static uint8_t  s_result[NUM_AXES] = { DEACTIVATE_NONE };
 
@@ -156,35 +162,32 @@ static void gated_idle_live() {
     if (is_live(i)) (void)odrive_set_state_tx(i, ODriveState::IDLE, TxCls::OTHER, Who::LADDER);
 }
 
-// Abort BEFORE the descent target is commanded (SETUP / COMMAND, not bus down).
-// At Stow (e.g. DEACTIVATE of an already-stowed Platform) the legs IDLE as in
-// FW 52; otherwise nothing is sent: configured legs hold their measured seed in
-// TRAP_TRAJ, the others hold their stream pose (fw53_design.md 3.1).
-static void abort_before_descent() {
+// One tick of the pre-descent abort (ABORT_WAIT). At Stow (e.g. DEACTIVATE of an
+// already-stowed Platform) the legs IDLE as in FW 52; while the only refusals are
+// Legs whose CLOSED_LOOP is not yet confirmed by a heartbeat, wait (bounded by
+// CL_CONFIRM_WAIT_US, nothing sent); otherwise the gate refuses: nothing is sent,
+// configured legs hold their measured seed in TRAP_TRAJ, the others hold their
+// stream pose, HELD (fw53_design.md 3.1). Bus down ends at once with no frame.
+static void abort_wait_step(uint64_t now) {
+  if (fault_can_bus_down()) { end_ladder(DEACTIVATE_FAILED); return; }
+  if (leg_abort_idle_verdict(now, s_t_abort_us) == AbortIdle::WAIT) return;
   gated_idle_live();
   end_ladder(DEACTIVATE_FAILED);
 }
 
-// The hold DURING the descent: re-target every live leg except `skip` to its
-// stopping point on its own commanded segment [seed, STOW] (leg_freeze_tx), then
-// end FAILED. Legs in `skip` (disarmed themselves) are left alone and not HELD.
-static void freeze_live_and_end(uint8_t skip) {
-  for (uint8_t i = 0; i < NUM_LEGS; ++i)
-    if (is_live(i) && !(skip & (uint8_t)(1u << i)))
-      (void)leg_freeze_tx(i, s_seed[i], STOW_OFF_POSE_REV);
-  end_ladder(DEACTIVATE_FAILED);
+// Abort BEFORE the descent target is commanded (SETUP / COMMAND, not bus down).
+static void abort_before_descent(uint64_t now) {
+  s_t_abort_us = now;
+  s_phase = DPhase::ABORT_WAIT;
+  abort_wait_step(now);
 }
 
-// A target leg has left CLOSED_LOOP on its own: its heartbeat is fresh, was
-// received at least CL_ENGAGE_SETTLE_US after the ladder's CLOSED_LOOP command
-// (a heartbeat cached before that command still says IDLE for a leg that is now
-// holding), and reports a state other than CLOSED_LOOP. Stamp read before state
-// (the receive decode writes the state first; see leg_stow_gate.cpp).
-static bool leg_dropped_out(uint8_t i, uint64_t now) {
-  const uint64_t hb = atomic_read_u64(&axes[i].last_heartbeat_us);
-  if (hb == 0 || rx_older_than(now, hb, CAN_HEARTBEAT_STALE_US)) return false;   // no evidence
-  if (hb < leg_cl_cmd_us(i) + CL_ENGAGE_SETTLE_US) return false;                 // pre-CL heartbeat
-  return axes[i].axis_state != ODriveState::CLOSED_LOOP;
+// The hold DURING the descent, for the owner-decision-1 switch below: freeze every
+// live leg on [seed, STOW] (leg_freeze_tx), then end FAILED.
+static void freeze_live_and_end() {
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    if (is_live(i)) (void)leg_freeze_tx(i, s_seed[i], STOW_OFF_POSE_REV);
+  end_ladder(DEACTIVATE_FAILED);
 }
 
 void deactivate_init() {
@@ -261,12 +264,13 @@ void deactivate_step() {
   }
 
   const uint64_t now = micros64();
+  if (s_phase == DPhase::ABORT_WAIT) { abort_wait_step(now); return; }
   const bool timed_out = now - s_t_start_us > D_TIMEOUT_US;
 
   // ── Aborts before the descent is commanded (checked before any drive). ──
   if (s_phase == DPhase::SETUP || s_phase == DPhase::COMMAND) {
     if (fault_can_bus_down())              { end_ladder(DEACTIVATE_FAILED); return; }   // nothing to a dead bus
-    if (!deactivate_allowed() || timed_out) { abort_before_descent(); return; }
+    if (!deactivate_allowed() || timed_out) { abort_before_descent(now); return; }
   }
 
   switch (s_phase) {
@@ -287,7 +291,7 @@ void deactivate_step() {
       // CLOSED_LOOP if errors present"). ANY errored target fails the whole op —
       // a coupled platform must not lower a subset (that tilts it). The abort is
       // the pre-descent one: IDLE only from Stow, else hold (FW 53).
-      if (axes[i].active_errors != 0) { abort_before_descent(); return; }
+      if (axes[i].active_errors != 0) { abort_before_descent(now); return; }
       // Seed the ACTUAL current position (NON-clipped) so CLOSED_LOOP holds in
       // place, then the whole descent is TRAP_TRAJ-profiled with no clip-snap.
       // leg_sign applies the ODrive convention (Jugglebot positive=extension).
@@ -307,7 +311,7 @@ void deactivate_step() {
                    i, ODriveControlMode::POSITION, ODriveInputMode::TRAP_TRAJ)) && ok;
       ok = (odrive_set_state_tx(i, ODriveState::CLOSED_LOOP, TxCls::OTHER, Who::LADDER)
                 == DeResult::SENT) && ok;
-      if (!ok) { abort_before_descent(); return; }
+      if (!ok) { abort_before_descent(now); return; }
       axes[i].controller_mode = (uint8_t)ODriveControlMode::POSITION;   // commanded-mode record
       axes[i].input_mode      = (uint8_t)ODriveInputMode::TRAP_TRAJ;    // (axis_state.h)
       ++s_setup_idx;   // next target leg on the next tick
@@ -327,68 +331,31 @@ void deactivate_step() {
       break;
     }
     case DPhase::MONITOR: {
-      // The ODrives are executing TRAP_TRAJ to STOW. Precedence (fw53_design.md 3.1):
-      // (1) Bus down: nothing can be sent. End FAILED, no frame; the ODrives finish
-      //     the descent they hold and the fault machine's deferred stow (armed at
-      //     the trip) takes over at reconnect.
-      if (fault_can_bus_down()) { end_ladder(DEACTIVATE_FAILED); return; }
-      // (2) A target leg left CLOSED_LOOP on its own (disarmed): do not lower the
-      //     Platform with one leg free; freeze the others where they would stop.
-      uint8_t dropped = 0;
-      for (uint8_t i = 0; i < NUM_LEGS; ++i)
-        if (is_live(i) && leg_dropped_out(i, now)) dropped |= (uint8_t)(1u << i);
-      if (dropped) { freeze_live_and_end(dropped); return; }
-      // Owner decision 1: by default a guard E-STOP / commands-not-allowed is not
-      // consulted after COMMAND (see DESCENT_CONTINUES_THROUGH_ESTOP).
+      // The ODrives are executing TRAP_TRAJ to STOW. Owner decision 1: by default a
+      // Soft E-stop / commands-not-allowed is not consulted after COMMAND (see
+      // DESCENT_CONTINUES_THROUGH_ESTOP).
       if (!DESCENT_CONTINUES_THROUGH_ESTOP && !deactivate_allowed()) {
-        freeze_live_and_end(0);
+        freeze_live_and_end();
         return;
       }
-      // (3) Arrival: every live target reaches STOW AND settles, judged while still
-      //     in CLOSED_LOOP (position reliable). The start position (active ≈ 2.19
-      //     rev) is far from STOW (0.0), so the position check prevents a false
-      //     "done" from the leg merely sitting still at the start.
-      bool all_arrived = true;
-      for (uint8_t i = 0; i < NUM_LEGS; ++i) {
-        if (!is_live(i)) continue;
-        const float pos = axes[i].pos_rev;  // Jugglebot conv (== STOW_OFF_POSE_REV conv)
-        const float vel = axes[i].vel_rps;
-        if (fabsf(pos - STOW_OFF_POSE_REV) > JBOp::TARGET_REACHED_POS_TOL_REV ||
-            fabsf(vel) > JBOp::TARGET_REACHED_VEL_TOL_RPS) {
-          all_arrived = false;
-        }
-      }
-      // The Stow predicate once per tick BEFORE the IDLE loop: a refusal here (e.g.
-      // a heartbeat older than 0.5 s) is retried next tick, so it must not reach
-      // the gate's census / sticky HELD bit. The done mask then absorbs a refusal
-      // inside the loop (the gate re-evaluates per call): an IDLE'd leg leaves the
-      // arrival test, whose post-IDLE position relaxes into the foam.
-      if (all_arrived && leg_idle_permitted(now)) {
-        for (uint8_t i = 0; i < NUM_LEGS; ++i) {
-          if (!is_live(i)) continue;
-          if (odrive_set_state_tx(i, ODriveState::IDLE, TxCls::OTHER, Who::LADDER) == DeResult::SENT) {
-            s_done |= (uint8_t)(1u << i);
-            s_result[i] = DEACTIVATE_OK;
-            leg_held_clear(i);   // a race refusal earlier this tick must not outlive the IDLE
-          }
-        }
-        if ((s_targets & (uint8_t)~s_done) == 0) {   // every target de-energised at Stow
-          s_phase = DPhase::IDLE;
-          s_targets = 0;
-          s_done = 0;
-          return;
-        }
-      }
-      // (4) Timeout (10 s, the whole op): IDLE only from Stow (or on the bench), else freeze.
-      if (timed_out) {
-        if (leg_idle_permitted(now)) { gated_idle_live(); end_ladder(DEACTIVATE_FAILED); }
-        else                          { freeze_live_and_end(0); }
-        return;
-      }
-      break;
+      // The gated descent monitor shared with ACTIVATE's return to Stow
+      // (leg_stow_gate.h stow_descent_step): bus down → end, no frame; a target leg
+      // that disarmed itself → freeze the others; arrival → gated IDLE per leg
+      // (retried next tick if refused); timeout → gated IDLE at Stow, else freeze.
+      const uint8_t done_before = s_done;
+      const DescentStep r = stow_descent_step(s_targets, s_done, s_seed, s_seed, timed_out, now);
+      // A leg IDLE'd this tick: OK at arrival, FAILED when the timeout IDLE'd it.
+      const uint8_t newly = (uint8_t)(s_done & ~done_before);
+      for (uint8_t i = 0; i < NUM_LEGS; ++i)
+        if (newly & (uint8_t)(1u << i))
+          s_result[i] = (r == DescentStep::TIMED_OUT) ? DEACTIVATE_FAILED : DEACTIVATE_OK;
+      if (r == DescentStep::RUNNING) break;
+      if (r == DescentStep::ARRIVED) { s_phase = DPhase::IDLE; s_targets = 0; s_done = 0; return; }
+      end_ladder(DEACTIVATE_FAILED);   // BUS_DOWN, DROPPED, TIMED_OUT: the live legs FAILED
+      return;
     }
     default:
-      abort_before_descent();
+      abort_before_descent(now);
       break;
   }
 }

@@ -229,13 +229,20 @@ TEST_CASE("deactivate IDLEs the leg on arrival at STOW (de-energised end-state)"
 // ── FW 53 safety crux: no abort IDLEs a Leg above Stow (fw53_design.md 3.1) ────
 
 TEST_CASE("CAN loss: FAILED with no frame, before the descent (BUS_OFF / bus down) and mid-descent") {
-  // SETUP, commands-not-allowed (BUS_OFF), posed: the gate refuses the IDLE.
+  // SETUP, commands-not-allowed (BUS_OFF), posed: the gate refuses the IDLE. FW 53
+  // U3: leg 0 (the only present leg) is configured but unconfirmed, so the abort
+  // first waits (bounded, nothing sent); its confirming heartbeat then reads it
+  // posed, and the refusal ends the ladder with no frame.
   full_reset(0x01, ST_CL, POSED);
   REQUIRE(deactivate_request(0) == JbUdp::RpcStatus::OK);
   deactivate_step();
   REQUIRE(deactivate_active());
   cs_set_jugglebot_health(JbUdp::BusHealth::BUS_OFF);
   cs_clear_sent();
+  deactivate_step();
+  CHECK(deactivate_active());
+  cs_advance(20000);
+  confirmed(0, ST_CL, POSED);
   deactivate_step();
   CHECK_FALSE(deactivate_active());
   CHECK(deactivate_result(0) == DEACTIVATE_FAILED);
@@ -349,11 +356,51 @@ TEST_CASE("a leg abort after the hand has IDLE'd leaves the hand safe (already O
   REQUIRE(deactivate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
   deactivate_step();                           // hand IDLE + SETUP leg 0
   cs_set_guard_estop(true);
-  deactivate_step();                           // abort path
+  deactivate_step();                           // abort path (FW 53 U3: waits for leg 0's CL confirmation)
+  cs_advance(20000);
+  confirmed(0, ST_CL, 0.0f);                   // confirmed at Stow → the gated IDLE
+  deactivate_step();
 
   CHECK_FALSE(deactivate_active());
   CHECK(deactivate_result(0) == DEACTIVATE_FAILED);
   CHECK(deactivate_result(HAND_AXIS) == DEACTIVATE_OK);   // de-energised before the abort
+}
+
+// FW 53 U3: the pre-descent abort waits (bounded by CL_CONFIRM_WAIT_US) while the
+// only refusals are unconfirmed CLOSED_LOOP sends, the same rule as ACTIVATE's
+// pre-rise abort. Mutations caught: no wait (holds at once, HELD, no IDLE); an
+// unbounded wait (never ends).
+TEST_CASE("pre-descent abort inside the CL-confirmation window: IDLE once confirmed; bounded") {
+  full_reset(0x3F, ST_IDLE, -0.1f);                // after Homing: six IDLE on the stop
+  REQUIRE(deactivate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+  deactivate_step(); cs_advance(10000);            // leg 0 configured
+  cs_set_guard_estop(true);
+  cs_clear_sent();
+  deactivate_step();
+  CHECK(deactivate_active());
+  CHECK(cs_sent_count() == 0);
+  cs_advance(20000);
+  confirmed(0, ST_CL, -0.1f);
+  deactivate_step();
+  CHECK_FALSE(deactivate_active());
+  CHECK(count_set_state() == 6);
+  CHECK(leg_held_mask() == 0);
+
+  full_reset(0x3F, ST_IDLE, -0.1f);
+  REQUIRE(deactivate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+  deactivate_step(); cs_advance(10000);
+  cs_set_guard_estop(true);
+  deactivate_step();
+  const uint64_t t_abort = micros64();
+  cs_set_mono(t_abort + CL_CONFIRM_WAIT_US - 10000);
+  cs_clear_sent();
+  deactivate_step();
+  CHECK(deactivate_active());
+  cs_set_mono(t_abort + CL_CONFIRM_WAIT_US + 10000);
+  deactivate_step();
+  CHECK_FALSE(deactivate_active());
+  CHECK(cs_sent_count() == 0);
+  CHECK(leg_held_mask() == 0x3F);
 }
 
 // ── FW 53 (I-FW-19): the abort table of fw53_design.md 3.1 ────────────────────

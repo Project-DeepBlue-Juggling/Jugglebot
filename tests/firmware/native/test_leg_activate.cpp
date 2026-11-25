@@ -12,8 +12,15 @@
 //      the NON-clipped current pos, traj vel/acc limits, POSITION/TRAP_TRAJ mode,
 //      CLOSED_LOOP) — byte-identical to the ODrive encoders, ONE leg per tick;
 //    * COMMAND emits encode_leg_setpoint(ACTIVATE_POSITION_REVS) after the settle;
-//    * the safety crux: ANY abort (bus down / E-STOP / timeout) leaves every target
-//      leg in IDLE — the move is NEVER left driving.
+//    * FW 53 (I-FW-19, owner rule 2026-11-25): no Leg is IDLE'd above Stow. Every
+//      leg state change goes through the Stow gate (leg_stow_gate.cpp, linked), so
+//      the fixture stages each present Leg with a FRESH IDLE heartbeat + encoder
+//      (cs_stage_leg; the Hand stays raw-present, as the lane-guard cases need). A
+//      pre-rise abort IDLEs from Stow after a bounded wait for CL confirmation; a
+//      mid-rise abort RETURNS the Platform to Stow and IDLEs the Legs on arrival
+//      (the owner's choice, replacing the design's freeze); a disarmed Leg freezes
+//      the others; bus down sends nothing to a Leg (fw53_design.md 3.2 + the
+//      2026-11-25 decision; logbook 2026-11-25-fw53-u3-activate-returns-to-stow).
 //
 //  The two sibling cold-start predicates (homing_active / deactivate_active) are
 //  supplied inline here (controllable) — the real activate_active() comes from the
@@ -34,6 +41,7 @@
 #include "hardware_config.h"
 #include "axis_state.h"
 #include "can_buses.h"
+#include "leg_stow_gate.h"
 #include "coldstart_hal.h"
 
 // ── Sibling cold-start predicates (the two ACTIVATE excludes) ─────────────────
@@ -45,11 +53,18 @@ static bool g_sib_homing = false;
 static bool g_sib_deactivate = false;
 bool homing_active()     { return g_sib_homing; }
 bool deactivate_active() { return g_sib_deactivate; }
+uint8_t homing_axis_in_flight() { return 0xFF; }   // leg_stow_gate.o needs it; no HOME here
 }
 
 #include "leg_activate.cpp"   // the unit under test
 
 using namespace CanBridge;
+
+static constexpr uint64_t T0 = 100000000ull;   // 100 s: every staged age fits below it
+static constexpr int64_t  FRESH_HB  = 50000;   // 50 ms
+static constexpr int64_t  FRESH_ENC = 2000;    // 2 ms
+static constexpr uint32_t ST_IDLE = ODriveState::IDLE;
+static constexpr uint32_t ST_CL   = ODriveState::CLOSED_LOOP;
 
 // Mark axes present (leg_present() == heartbeat_seen) and reset per-axis state.
 // The mask spans all NUM_AXES now — bit HAND_AXIS (0x40) marks the hand present,
@@ -66,10 +81,16 @@ static void present_only(uint8_t mask) {
     axes[i].axis_state = 0;         // FW 49: no heartbeat state known (unknown counts)
     axes[i].last_heartbeat_us = 0;
   }
+  // FW 53: a present LEG carries a fresh IDLE heartbeat + encoder at 0 rev (homed,
+  // at Stow), so the Stow gate can judge it. Needs the clock set first.
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    if (mask & (uint8_t)(1u << i)) cs_stage_leg(i, (uint8_t)ST_IDLE, 0.0f, 0.0f, FRESH_HB, FRESH_ENC);
 }
 
 static void full_reset(uint8_t present_mask) {
   cs_reset();
+  cs_set_mono(T0);
+  leg_stow_gate_init();
   g_sib_homing = false;
   g_sib_deactivate = false;
   present_only(present_mask);
@@ -206,7 +227,7 @@ TEST_CASE("activate COMMAND emits the active-pose leg_setpoint after SETUP + set
   REQUIRE(activate_request(0) == JbUdp::RpcStatus::OK);
   activate_step();                 // SETUP configures leg 0
   activate_step();                 // SETUP cursor runs off the end → COMMAND (settle clock starts)
-  cs_advance(20000);               // > SETTLE_SETUP_US (10 ms)
+  cs_advance(20000);               // > CL_ENGAGE_SETTLE_US (10 ms)
   cs_clear_sent();
   activate_step();                 // COMMAND fires the target
 
@@ -218,31 +239,44 @@ TEST_CASE("activate COMMAND emits the active-pose leg_setpoint after SETUP + set
 
 // ── Safety crux: any abort leaves the targeted legs in IDLE ────────────────────
 
-TEST_CASE("a mid-ladder CAN3 loss aborts activate and leaves the leg in IDLE") {
+// FW 53 U3: commands-not-allowed (BUS_OFF) in SETUP is not bus down: the pre-rise
+// abort waits for leg 0's CLOSED_LOOP to be confirmed, then IDLEs it from Stow (FW
+// 52's end state, through the gate). Was: one IDLE frame in the abort tick.
+TEST_CASE("commands-not-allowed in SETUP after Homing: wait for CL confirmation, then the gated IDLE") {
   full_reset(0x01);
   REQUIRE(activate_request(0) == JbUdp::RpcStatus::OK);
-  activate_step();                 // enter SETUP / configure leg 0
+  activate_step();                 // enter SETUP / configure leg 0 (CL sent through the gate)
   REQUIRE(activate_active());
 
-  cs_set_jugglebot_health(JbUdp::BusHealth::BUS_OFF);  // bus dies mid-move
+  cs_set_jugglebot_health(JbUdp::BusHealth::BUS_OFF);
+  cs_advance(10000);
   cs_clear_sent();
-  activate_step();                 // abort path
+  activate_step();                 // the abort: leg 0 CL_UNCONFIRMED only → wait
+  CHECK(activate_active());
+  CHECK(cs_sent_count() == 0);
 
+  cs_advance(10000);
+  cs_stage_leg(0, (uint8_t)ST_CL, 0.0f, 0.0f, 0, 0);   // the confirming heartbeat: CL, still, at Stow
+  activate_step();
   CHECK_FALSE(activate_active());
   CHECK(activate_result(0) == ACTIVATE_FAILED);
   REQUIRE(cs_sent_count() == 1);
   const auto idle = ODrive::encode_set_state(0, ODriveState::IDLE);
   CHECK(cs_sent_at(0).id == idle.id);
   CHECK(memcmp(cs_sent_at(0).buf, idle.buf, 8) == 0);
+  CHECK(leg_held_mask() == 0);
 }
 
-TEST_CASE("an overall timeout aborts activate and leaves the leg in IDLE") {
+// FW 53 U3: the timeout before the rise (SETUP) is a pre-rise abort: the Leg is
+// IDLE'd only because it is at Stow (re-staged fresh after the 11 s jump).
+TEST_CASE("an overall timeout before the rise IDLEs the leg from Stow") {
   full_reset(0x01);
   REQUIRE(activate_request(0) == JbUdp::RpcStatus::OK);
   activate_step();                 // enter SETUP
   REQUIRE(activate_active());
 
   cs_advance((uint64_t)(JBOp::GENTLE_MOVE_TIMEOUT_S * 1.0e6f) + 1000000ull);
+  cs_stage_leg(0, (uint8_t)ST_CL, -0.1f, 0.0f, 0, 0);
   cs_clear_sent();
   activate_step();                 // timeout abort
 
@@ -272,7 +306,7 @@ static constexpr uint8_t HAND_BIT = (uint8_t)(1u << HAND_AXIS);
 static void run_to_monitor(uint8_t n_setup_ticks) {
   for (uint8_t k = 0; k < n_setup_ticks; ++k) activate_step();  // one axis per tick
   activate_step();            // cursor runs off the end → COMMAND (settle starts)
-  cs_advance(20000);          // > SETTLE_SETUP_US
+  cs_advance(20000);          // > CL_ENGAGE_SETTLE_US
   activate_step();            // COMMAND fires the targets
 }
 
@@ -399,7 +433,8 @@ TEST_CASE("an abort with the hand targeted leaves the HAND in IDLE too") {
   cs_clear_sent();
   activate_step();
 
-  CHECK_FALSE(activate_active());
+  // FW 53: the Hand is IDLE'd in the abort tick; leg 0 waits for its CL confirmation.
+  CHECK(activate_active());
   CHECK(activate_result(HAND_AXIS) == ACTIVATE_FAILED);
   const auto idle = ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE);
   bool saw_hand_idle = false;
@@ -1307,4 +1342,361 @@ TEST_CASE("ACTIVATE after an ACTIVATE_TO is bit-identical to ACTIVATE: the const
     const auto f = ODrive::encode_leg_setpoint(i, JBOp::ACTIVATE_POSITION_REVS[i], 0.0f, 0.0f);
     CHECK(memcmp(cs_sent_at(30 + i).buf, f.buf, 8) == 0);
   }
+}
+
+// ── FW 53 U3 (I-FW-19): the ACTIVATE abort table, with the owner's return to Stow ──
+//  Robot case unless stated: Legs homed (IDLE on the stop, -0.10 rev), so every
+//  pre-CL heartbeat the fixture staged reads IDLE. Ticks are 10 ms.
+static constexpr float HOMED = -0.10f;
+
+static void homed(uint8_t mask) {
+  full_reset(mask);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    if (mask & (uint8_t)(1u << i)) cs_stage_leg(i, (uint8_t)ST_IDLE, HOMED, 0.0f, FRESH_HB, FRESH_ENC);
+}
+// A heartbeat + encoder received NOW (after the ladder's CL command + 10 ms once the
+// clock has moved past it).
+static void confirmed(uint8_t i, uint32_t state, float pos, float vel = 0.0f) {
+  cs_stage_leg(i, (uint8_t)state, pos, vel, 0, 0);
+}
+static void legs_confirmed(uint8_t mask, uint32_t state, float pos, float vel) {
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) if (mask & (uint8_t)(1u << i)) confirmed(i, state, pos, vel);
+}
+// Step in 10 ms ticks until the ladder is in MONITOR (one SETUP tick per target).
+static void to_monitor(uint8_t axis) {
+  REQUIRE(activate_request(axis) == JbUdp::RpcStatus::OK);
+  for (int k = 0; k < 20 && s_phase != APhase::MONITOR; ++k) { activate_step(); cs_advance(10000); }
+  REQUIRE(s_phase == APhase::MONITOR);
+}
+static size_t n_cmd(uint8_t cmd, int axis = -1) {
+  size_t n = 0;
+  for (size_t k = 0; k < cs_sent_count(); ++k)
+    if (ODrive::cmd_of(cs_sent_at(k).id) == cmd &&
+        (axis < 0 || ODrive::axis_of(cs_sent_at(k).id) == (uint8_t)axis)) ++n;
+  return n;
+}
+static size_t n_leg_frames() {
+  size_t n = 0;
+  for (size_t k = 0; k < cs_sent_count(); ++k) if (ODrive::axis_of(cs_sent_at(k).id) < NUM_LEGS) ++n;
+  return n;
+}
+static bool sent_exact(const ODrive::CanFrame& f) {
+  for (size_t k = 0; k < cs_sent_count(); ++k)
+    if (cs_sent_at(k).id == f.id && memcmp(cs_sent_at(k).buf, f.buf, 8) == 0) return true;
+  return false;
+}
+// Enter RETURN from a mid-rise Soft E-stop (Legs in `mask` rising at 1.0 rev, 2.5 rev/s).
+static void abort_mid_rise(uint8_t mask) {
+  legs_confirmed(mask, ST_CL, 1.0f, 2.5f);
+  cs_set_guard_estop(true);
+  cs_clear_sent();
+  activate_step();
+  REQUIRE(s_phase == APhase::RETURN);
+}
+
+// Mutation caught: the wait removed (the verdict never WAITs): the abort tick holds,
+// ends at once with no IDLE and leaves six HELD bits.
+TEST_CASE("abort before any Leg left the window IDLEs the Legs as FW 52 (after CL confirmation)") {
+  homed(0x3F);
+  REQUIRE(activate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+  for (int k = 0; k < 3; ++k) { activate_step(); cs_advance(10000); }   // legs 0-2 configured
+  for (uint8_t i = 0; i < 3; ++i) REQUIRE(leg_cl_cmd_us(i) != 0u);
+  cs_set_guard_estop(true);
+  cs_clear_sent();
+  activate_step();                                 // abort: only CL_UNCONFIRMED refusals → wait
+  CHECK(activate_active());
+  CHECK(cs_sent_count() == 0);
+  cs_advance(10000);
+  activate_step();
+  CHECK(cs_sent_count() == 0);                     // still waiting, nothing sent
+  cs_advance(10000);
+  legs_confirmed(0x07, ST_CL, HOMED, 0.0f);        // the three confirming heartbeats
+  activate_step();
+  CHECK_FALSE(activate_active());
+  CHECK(n_cmd(ODriveCmd::set_requested_state) == 6);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    CHECK(sent_exact(ODrive::encode_set_state(i, ODriveState::IDLE)));
+    CHECK(activate_result(i) == ACTIVATE_FAILED);
+  }
+  CHECK(leg_held_mask() == 0);
+  CHECK(leg_deenergise_refusals() == 0u);
+}
+
+// Mutations caught: an unbounded wait (the ladder never ends); the per-Leg walk
+// replaced by the first refusal's reason is caught by the posed case below.
+TEST_CASE("the CL-confirmation wait is bounded: no confirming heartbeat → hold at CL_CONFIRM_WAIT_US, HELD, no IDLE") {
+  homed(0x3F);
+  REQUIRE(activate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+  activate_step(); cs_advance(10000);              // leg 0 configured
+  cs_set_guard_estop(true);
+  cs_clear_sent();
+  activate_step();                                 // the abort: t_abort = now
+  const uint64_t t_abort = micros64();
+  REQUIRE(activate_active());
+  cs_set_mono(t_abort + CL_CONFIRM_WAIT_US - 10000);
+  activate_step();
+  CHECK(activate_active());                        // 240 ms: still waiting
+  CHECK(cs_sent_count() == 0);
+  cs_set_mono(t_abort + CL_CONFIRM_WAIT_US + 10000);
+  activate_step();                                 // 260 ms: hold
+  CHECK_FALSE(activate_active());
+  CHECK(cs_sent_count() == 0);
+  CHECK(leg_held_mask() == 0x3F);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(activate_result(i) == ACTIVATE_FAILED);
+}
+
+// The unconfigured-Leg decision: an abort BEFORE the rise never starts a descent.
+// ACTIVATE_TO from a posed Platform (the Level flow), Soft E-stop at SETUP tick 3:
+// Legs 0-1 hold their seed, Legs 2-5 their stream pose; no frame, HELD. Mutations
+// caught: the return entered from SETUP (Stow targets sent); the wait keyed on the
+// first refusing Leg's reason (Leg 0 is CL_UNCONFIRMED, so the ladder would wait).
+TEST_CASE("pre-rise abort from a posed Platform holds: no return, no frame, HELD") {
+  full_reset(0x3F);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    cs_stage_leg(i, (uint8_t)ST_CL, JBOp::ACTIVATE_POSITION_REVS[i], 0.0f, FRESH_HB, FRESH_ENC);
+  REQUIRE(activate_to_request(JBOp::ACTIVATE_POSITION_REVS) == JbUdp::RpcStatus::OK);
+  activate_step(); cs_advance(10000);
+  activate_step(); cs_advance(10000);              // legs 0, 1 configured
+  cs_set_guard_estop(true);
+  cs_clear_sent();
+  activate_step();
+  CHECK_FALSE(activate_active());
+  CHECK(cs_sent_count() == 0);
+  CHECK(leg_held_mask() == 0x3F);
+  CHECK(s_seed[0] == doctest::Approx(JBOp::ACTIVATE_POSITION_REVS[0]));
+}
+
+// Mutations caught: FW 52's IDLE-everything abort mid-rise; the return interrupted
+// by the Soft E-stop (freeze); the arrival IDLE sent raw (bypassing the gate).
+TEST_CASE("Soft E-stop mid-rise (Hand fault): Hand IDLE, Legs returned to Stow, IDLE'd on arrival; FAILED, not HELD") {
+  homed((uint8_t)(0x3F | HAND_BIT));
+  to_monitor(JbUdp::RpcArgs::AXIS_ALL);
+  abort_mid_rise(0x3F);
+  CHECK(sent_exact(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+  CHECK(n_cmd(ODriveCmd::set_requested_state) == 1);            // the Hand only
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    CHECK(sent_exact(ODrive::encode_leg_setpoint(i, STOW_OFF_POSE_REV, 0.0f, 0.0f)));
+  CHECK(cs_sent_count() == 7);
+  CHECK(activate_result(HAND_AXIS) == ACTIVATE_FAILED);
+  CHECK(activate_result(0) == ACTIVATE_RUNNING);                // the ladder owns the return
+  CHECK(activate_request(JbUdp::RpcArgs::AXIS_ALL) != JbUdp::RpcStatus::OK);
+  cs_set_commands_allowed(false);                               // and a transient commands-not-allowed
+  for (int k = 0; k < 40; ++k) {                                // 400 ms of descent under the Soft E-stop
+    cs_advance(10000);
+    legs_confirmed(0x3F, ST_CL, 1.1f - 0.025f * k, -2.5f);
+    cs_clear_sent();
+    activate_step();
+    REQUIRE(activate_active());
+    REQUIRE(cs_sent_count() == 0);
+  }
+  cs_advance(10000);
+  legs_confirmed(0x3F, ST_CL, 0.0f, 0.0f);                      // encoder-confirmed arrival at Stow
+  cs_clear_sent();
+  activate_step();
+  CHECK_FALSE(activate_active());
+  CHECK(n_cmd(ODriveCmd::set_requested_state) == 6);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    CHECK(sent_exact(ODrive::encode_set_state(i, ODriveState::IDLE)));
+    CHECK(activate_result(i) == ACTIVATE_FAILED);
+  }
+  CHECK(leg_held_mask() == 0);
+}
+
+// The HAND_STALL latch on the streamed lane during a Legs-only rise: the lane guard
+// IDLEs the Hand (through the gate, exempt) and the latch raises the Soft E-stop
+// (modelled here: the fault machine is the HAL), and the rising Leg returns to Stow.
+TEST_CASE("HAND_STALL latch mid-rise: Hand IDLE, the rising Leg returns to Stow") {
+  homed((uint8_t)(0x01 | HAND_BIT));
+  to_monitor(0);                                               // Leg 0 alone; the Hand is not a target
+  legs_confirmed(0x01, ST_CL, 1.0f, 2.5f);
+  cs_clear_sent();
+  lane_samples(17, -70.0f, 0.2f);                              // 160 ms of 70 A without motion
+  REQUIRE(hand_lane_stalled(HAND_AXIS));
+  CHECK(sent_exact(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+  cs_set_guard_estop(true);                                    // the latch's Soft E-stop
+  legs_confirmed(0x01, ST_CL, 1.3f, 2.5f);
+  cs_clear_sent();
+  activate_step();
+  CHECK(s_phase == APhase::RETURN);
+  CHECK(sent_exact(ODrive::encode_leg_setpoint(0, STOW_OFF_POSE_REV, 0.0f, 0.0f)));
+  CHECK(n_cmd(ODriveCmd::set_requested_state, 0) == 0);
+}
+
+// Mutation caught: the timeout mid-rise IDLEs (FW 52). Also: a Stow frame the TX
+// path refuses is re-sent on the next RETURN tick.
+TEST_CASE("timeout mid-rise returns to Stow; a refused Stow frame is re-sent") {
+  homed(0x03);
+  to_monitor(JbUdp::RpcArgs::AXIS_ALL);
+  cs_set_mono(s_t_start_us + A_TIMEOUT_US + 1);
+  legs_confirmed(0x03, ST_CL, 1.6f, 0.0f);                     // blocked at 1.6 rev
+  cs_set_send_fail_index(0);                                   // leg 0's Stow frame refused
+  cs_clear_sent();
+  activate_step();
+  cs_set_send_fail_index(-1);
+  REQUIRE(s_phase == APhase::RETURN);
+  CHECK(n_cmd(ODriveCmd::set_requested_state) == 0);
+  CHECK(cs_sent_count() == 1);                                 // leg 1's Stow target
+  cs_advance(10000);
+  cs_clear_sent();
+  activate_step();
+  CHECK(cs_sent_count() == 1);
+  CHECK(sent_exact(ODrive::encode_leg_setpoint(0, STOW_OFF_POSE_REV, 0.0f, 0.0f)));
+  cs_advance(10000);
+  cs_clear_sent();
+  activate_step();
+  CHECK(cs_sent_count() == 0);                                 // nothing left unsent
+}
+
+// Mutations caught: no return timeout (the ladder never ends); the return timeout
+// IDLEs above Stow. The freeze target is the stopping point clamped to the hull of
+// [seed, target] and Stow. The next accepted ACTIVATE clears the HELD bits.
+TEST_CASE("the return's own timeout: freeze within [seed, target], HELD, no IDLE") {
+  homed(0x03);
+  to_monitor(JbUdp::RpcArgs::AXIS_ALL);
+  abort_mid_rise(0x03);
+  const uint64_t t_ret = micros64();
+  cs_set_mono(t_ret + A_TIMEOUT_US - 10000);
+  legs_confirmed(0x03, ST_CL, 0.8f, 0.0f);                     // blocked at 0.8 rev on the way down
+  cs_clear_sent();
+  activate_step();
+  CHECK(activate_active());
+  CHECK(cs_sent_count() == 0);
+  cs_set_mono(t_ret + A_TIMEOUT_US + 10000);
+  legs_confirmed(0x03, ST_CL, 0.8f, -0.5f);
+  cs_clear_sent();
+  activate_step();
+  CHECK_FALSE(activate_active());
+  CHECK(n_cmd(ODriveCmd::set_requested_state) == 0);
+  REQUIRE(cs_sent_count() == 2);
+  for (uint8_t i = 0; i < 2; ++i) {
+    const float t = leg_freeze_target(0.8f, -0.5f, HOMED, JBOp::ACTIVATE_POSITION_REVS[i]);
+    CHECK(t == doctest::Approx(0.8f - 0.25f / 60.0f));
+    CHECK(sent_exact(ODrive::encode_set_input_pos(i, ODrive::leg_sign(i, t), 0, 0)));
+    CHECK(activate_result(i) == ACTIVATE_FAILED);
+  }
+  CHECK(leg_held_mask() == 0x03);
+  cs_set_guard_estop(false);
+  REQUIRE(activate_request(JbUdp::RpcArgs::AXIS_ALL) == JbUdp::RpcStatus::OK);
+  CHECK(leg_held_mask() == 0);
+}
+
+// Owner decision 1 applied to the return: entered on a timeout (no Soft E-stop), a
+// Soft E-stop raised DURING the return changes nothing until arrival.
+TEST_CASE("a Soft E-stop during the return does not interrupt it") {
+  homed(0x03);
+  to_monitor(JbUdp::RpcArgs::AXIS_ALL);
+  cs_set_mono(s_t_start_us + A_TIMEOUT_US + 1);
+  legs_confirmed(0x03, ST_CL, 1.6f, 0.0f);
+  activate_step();
+  REQUIRE(s_phase == APhase::RETURN);
+  cs_set_guard_estop(true);
+  for (int k = 0; k < 10; ++k) {
+    cs_advance(10000);
+    legs_confirmed(0x03, ST_CL, 1.5f - 0.1f * k, -2.5f);
+    cs_clear_sent();
+    activate_step();
+    REQUIRE(activate_active());
+    REQUIRE(cs_sent_count() == 0);
+  }
+  cs_advance(10000);
+  legs_confirmed(0x03, ST_CL, 0.0f, 0.0f);
+  cs_clear_sent();
+  activate_step();
+  CHECK_FALSE(activate_active());
+  CHECK(n_cmd(ODriveCmd::set_requested_state) == 2);
+}
+
+// Mutations caught: the dropped-Leg check removed (the rise carries on); the CL-
+// confirmation stamp check removed (the homed Legs' cached IDLE heartbeats, received
+// before the CL command, would freeze the rise on its first MONITOR tick).
+TEST_CASE("a target Leg that disarms itself mid-rise freezes the others on [seed, target]; FAILED/HELD") {
+  homed(0x3F);
+  to_monitor(JbUdp::RpcArgs::AXIS_ALL);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) REQUIRE(leg_cl_cmd_us(i) != 0u);
+  // The fixture's homed heartbeats (IDLE, staged before the request) are still fresh.
+  cs_clear_sent();
+  activate_step();
+  REQUIRE(activate_active());
+  CHECK(cs_sent_count() == 0);
+
+  cs_advance(10000);
+  legs_confirmed(0x3F, ST_CL, 1.0f, 2.5f);
+  confirmed(2, ST_IDLE, 1.0f, 0.0f);                           // leg 2 disarmed itself
+  cs_set_guard_estop(true);                                    // and the Soft E-stop it raised
+  cs_clear_sent();
+  activate_step();
+  CHECK_FALSE(activate_active());
+  CHECK(n_cmd(ODriveCmd::set_requested_state) == 0);
+  CHECK(n_cmd(ODriveCmd::set_input_pos) == 5);
+  CHECK(n_cmd(ODriveCmd::set_input_pos, 2) == 0);
+  const float t0 = leg_freeze_target(1.0f, 2.5f, HOMED, JBOp::ACTIVATE_POSITION_REVS[0]);
+  CHECK(t0 == doctest::Approx(1.0f + 6.25f / 60.0f));
+  CHECK(sent_exact(ODrive::encode_set_input_pos(0, ODrive::leg_sign(0, t0), 0, 0)));
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(activate_result(i) == ACTIVATE_FAILED);
+  CHECK(leg_held_mask() == 0x3B);
+}
+
+// Mutations caught: bus down treated as a Soft E-stop (Stow targets sent) or as FW
+// 52 (Leg IDLEs). The ladder ends, so the fault machine's reconnect branch (which
+// starts the deferred stow only while !activate_active()) can run.
+TEST_CASE("bus down mid-rise and mid-return: nothing reaches a Leg, the ladder ends") {
+  homed((uint8_t)(0x3F | HAND_BIT));
+  to_monitor(JbUdp::RpcArgs::AXIS_ALL);
+  legs_confirmed(0x3F, ST_CL, 1.0f, 2.5f);
+  cs_set_can_bus_down(true);
+  cs_clear_sent();
+  activate_step();
+  CHECK_FALSE(activate_active());
+  CHECK(n_leg_frames() == 0);
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(activate_result(i) == ACTIVATE_FAILED);
+
+  homed(0x03);
+  to_monitor(JbUdp::RpcArgs::AXIS_ALL);
+  abort_mid_rise(0x03);
+  cs_set_can_bus_down(true);
+  cs_advance(10000);
+  cs_clear_sent();
+  activate_step();
+  CHECK_FALSE(activate_active());
+  CHECK(cs_sent_count() == 0);
+}
+
+// Mutation caught: the hand-off failure IDLEs every target (FW 52).
+TEST_CASE("post-arrival Hand PASSTHROUGH failure: only the Hand is IDLE'd, the Legs are OK") {
+  homed((uint8_t)(0x01 | HAND_BIT));
+  axes[HAND_AXIS].pos_rev = Homing::HAND_ABS_POS_REV;
+  to_monitor(JbUdp::RpcArgs::AXIS_ALL);
+  confirmed(0, ST_CL, JBOp::ACTIVATE_POSITION_REVS[0], 0.0f);
+  axes[HAND_AXIS].pos_rev = JBOp::HAND_ACTIVATE_POSITION_REV;
+  axes[HAND_AXIS].vel_rps = 0.0f;
+  cs_set_send_fail_index(0);                                   // the hand-off mode frame
+  cs_clear_sent();
+  activate_step();
+  cs_set_send_fail_index(-1);
+  CHECK_FALSE(activate_active());
+  CHECK(cs_sent_count() == 1);
+  CHECK(sent_exact(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+  CHECK(activate_result(0) == ACTIVATE_OK);
+  CHECK(activate_result(HAND_AXIS) == ACTIVATE_FAILED);
+}
+
+// The bench exemption (rig_is_bench, U1b): a mid-rise abort on the one-Leg bench
+// IDLEs at once, as FW 52 did. Mutation caught: the MONITOR permitted-branch removed.
+TEST_CASE("mid-rise abort on the one-Leg bench IDLEs at once (no return)") {
+  homed(0x01);
+  rig_note_axis_frame(0, micros64());
+  rig_note_bus(true, micros64());
+  cs_advance(RIG_BENCH_SETTLE_US);
+  confirmed(0, ST_IDLE, HOMED, 0.0f);
+  to_monitor(0);
+  REQUIRE(rig_is_bench(micros64()));
+
+  confirmed(0, ST_CL, 1.0f, 2.5f);
+  cs_set_guard_estop(true);
+  cs_clear_sent();
+  activate_step();
+  CHECK_FALSE(activate_active());
+  CHECK(cs_sent_count() == 1);
+  CHECK(sent_exact(ODrive::encode_set_state(0, ODriveState::IDLE)));
+  CHECK(leg_held_mask() == 0);
 }

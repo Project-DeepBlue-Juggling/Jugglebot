@@ -142,6 +142,56 @@ bool  leg_freeze_tx(uint8_t leg, float seg_lo, float seg_hi);
 // The pure target arithmetic behind leg_freeze_tx (exposed for the native test).
 float leg_freeze_target(float pos, float vel, float seg_lo, float seg_hi);
 
+// ── Shared by the ACTIVATE and DEACTIVATE ladders (FW 53 U3) ─────────────────
+// True iff at least one present Leg refuses the Stow predicate and EVERY refusing
+// Leg refuses only CL_UNCONFIRMED (its last heartbeat predates this gate's
+// CLOSED_LOOP send + CL_ENGAGE_SETTLE_US). platform_at_stow() names only the first
+// refusing Leg, so a posed Leg behind a configured one would otherwise read as
+// "just unconfirmed".
+bool platform_blocked_only_by_cl_unconfirmed(uint64_t now);
+
+// How long a pre-motion ladder abort (ACTIVATE before its rise, DEACTIVATE before
+// its descent) waits for Closed-loop confirmation before it asks for the IDLEs
+// anyway. A Leg's first confirming heartbeat is due within CL_ENGAGE_SETTLE_US +
+// one 100 ms heartbeat period; 250 ms also covers one lost heartbeat (<= 210 ms).
+constexpr uint64_t CL_CONFIRM_WAIT_US = 250000ull;
+
+// The pre-motion abort's per-tick verdict. SEND: leg_idle_permitted(now), ask the
+// gate for the IDLEs now. WAIT: refused only for CL_UNCONFIRMED and fewer than
+// CL_CONFIRM_WAIT_US since `t_abort_us`; send nothing, ask again next tick.
+// HOLD: anything else; ask for the IDLEs (the gate refuses them, sets HELD).
+enum class AbortIdle : uint8_t { SEND, WAIT, HOLD };
+AbortIdle leg_abort_idle_verdict(uint64_t now, uint64_t t_abort_us);
+
+// A target Leg has left CLOSED_LOOP on its own: its heartbeat is fresh, was
+// received at least CL_ENGAGE_SETTLE_US after this gate's last CLOSED_LOOP send to
+// it (a heartbeat cached before that command still reads IDLE for a Leg that is
+// now holding: ACTIVATE starts from IDLE Legs), and reports another state.
+bool leg_dropped_out(uint8_t leg, uint64_t now);
+
+// One tick of a gated descent to Stow, for Legs that are Closed-loop POSITION/
+// TRAP_TRAJ and already commanded to STOW_OFF_POSE_REV: DEACTIVATE's MONITOR and
+// ACTIVATE's RETURN (the owner's return to Stow after a mid-rise abort). The
+// caller owns the state: `targets` (Leg bits), `done` (Legs IDLE'd at arrival,
+// updated here), the two freeze-segment ends per Leg (the freeze segment is the
+// hull of seg_a[i], seg_b[i] and STOW_OFF_POSE_REV) and `timed_out`. Precedence:
+//   BUS_DOWN  fault_can_bus_down(): nothing sent;
+//   DROPPED   a live target leg_dropped_out(): every OTHER live target frozen
+//             (leg_freeze_tx, HELD); the dropped Leg is left alone;
+//   ARRIVED   every live target in the arrival band and leg_idle_permitted(now):
+//             a gated IDLE per live Leg; SENT sets its done bit and clears its
+//             HELD bit. ARRIVED only once every target is done; a refusal inside
+//             the loop keeps RUNNING and is retried next tick;
+//   TIMED_OUT `timed_out`: gated IDLE of the live Legs if leg_idle_permitted(now)
+//             (SENT -> done bit), else every live Leg frozen (HELD);
+//   RUNNING   otherwise.
+// A Soft E-stop is deliberately not an input: once the Stow target is commanded,
+// the descent is the safe motion (owner decision 1).
+enum class DescentStep : uint8_t { RUNNING, ARRIVED, BUS_DOWN, DROPPED, TIMED_OUT };
+DescentStep stow_descent_step(uint8_t targets, uint8_t& done,
+                              const float seg_a[], const float seg_b[],
+                              bool timed_out, uint64_t now);
+
 // Per-Leg HELD bits (bit i = Leg i), sticky until cleared by the next accepted
 // ACTIVATE/DEACTIVATE/HOME targeting that Leg or CLEAR_ERRORS(AXIS_ALL) (wired in
 // U2..U5; the Diagnostic's DIAG_FLAG_LEG_HELD lands in U5).

@@ -31,6 +31,7 @@
 #include "can_buses.h"          // can_jugglebot_tx, tx_reached_the_wire, TxCls
 #include "time_base.h"          // micros64, atomic_*_u64, rx_older_than
 #include "leg_homing.h"         // homing_axis_in_flight
+#include "fault_machine.h"      // fault_can_bus_down (the shared descent monitor)
 
 namespace CanBridge {
 
@@ -134,19 +135,45 @@ static uint8_t closed_loop_at_stow(uint8_t j, uint64_t now) {
   return StowReason::OK;
 }
 
+// One present Leg's verdict: OK (clause (a) or (b)) or its refusal reason.
+static uint8_t leg_stow_reason(uint8_t j, uint64_t now) {
+  uint8_t st = 0;
+  const uint8_t r = fresh_state(j, now, &st);
+  if (r != StowReason::OK) return r;
+  if (st == ODriveState::IDLE || st == ODriveState::ENCODER_INDEX_SEARCH) return StowReason::OK;  // (a)
+  return (st == ODriveState::CLOSED_LOOP) ? closed_loop_at_stow(j, now)                        // (b)
+                                          : StowReason::UNKNOWN_STATE;
+}
+
 StowVerdict platform_at_stow(uint64_t now, uint8_t except_leg) {
   for (uint8_t j = 0; j < NUM_LEGS; ++j) {
     if (j == except_leg || !leg_present(j)) continue;
-    uint8_t st = 0;
-    uint8_t r = fresh_state(j, now, &st);
-    if (r == StowReason::OK) {
-      if (st == ODriveState::IDLE || st == ODriveState::ENCODER_INDEX_SEARCH) continue;   // (a)
-      r = (st == ODriveState::CLOSED_LOOP) ? closed_loop_at_stow(j, now)               // (b)
-                                           : StowReason::UNKNOWN_STATE;
-    }
+    const uint8_t r = leg_stow_reason(j, now);
     if (r != StowReason::OK) return StowVerdict{ false, j, r };
   }
   return StowVerdict{ true, 0xFF, StowReason::OK };
+}
+
+bool platform_blocked_only_by_cl_unconfirmed(uint64_t now) {
+  bool any = false;
+  for (uint8_t j = 0; j < NUM_LEGS; ++j) {
+    if (!leg_present(j)) continue;
+    const uint8_t r = leg_stow_reason(j, now);
+    if (r == StowReason::OK) continue;
+    if (r != StowReason::CL_UNCONFIRMED) return false;
+    any = true;
+  }
+  return any;
+}
+
+AbortIdle leg_abort_idle_verdict(uint64_t now, uint64_t t_abort_us) {
+  if (leg_idle_permitted(now)) return AbortIdle::SEND;
+  // now >= t_abort_us first: an unsigned difference across a stamp newer than now
+  // (BUG-93) would read as a huge age and end the wait, which is only the
+  // conservative side, but the order keeps the arithmetic honest.
+  if (now >= t_abort_us && now - t_abort_us < CL_CONFIRM_WAIT_US &&
+      platform_blocked_only_by_cl_unconfirmed(now)) return AbortIdle::WAIT;
+  return AbortIdle::HOLD;
 }
 
 bool all_present_legs_idle(uint64_t now) {
@@ -246,6 +273,77 @@ bool leg_freeze_tx(uint8_t leg, float seg_lo, float seg_hi) {
   const float target = leg_freeze_target(pos, vel, seg_lo, seg_hi);
   return tx_reached_the_wire(can_jugglebot_tx(
       ODrive::encode_set_input_pos(leg, ODrive::leg_sign(leg, target), 0, 0), TxCls::SAFETY));
+}
+
+// ── The gated descent to Stow (DEACTIVATE MONITOR, ACTIVATE RETURN) ──────────
+bool leg_dropped_out(uint8_t leg, uint64_t now) {
+  if (leg >= NUM_LEGS) return false;
+  // Stamp read before state (the receive decode writes the state first).
+  const uint64_t hb = atomic_read_u64(&axes[leg].last_heartbeat_us);
+  if (hb == 0 || rx_older_than(now, hb, CAN_HEARTBEAT_STALE_US)) return false;   // no evidence
+  if (hb < leg_cl_cmd_us(leg) + CL_ENGAGE_SETTLE_US) return false;               // pre-CL heartbeat
+  return axes[leg].axis_state != ODriveState::CLOSED_LOOP;
+}
+
+static constexpr uint8_t LEG_BITS = (uint8_t)((1u << NUM_LEGS) - 1u);
+static inline float min3(float a, float b, float c) { const float m = a < b ? a : b; return m < c ? m : c; }
+static inline float max3(float a, float b, float c) { const float m = a > b ? a : b; return m > c ? m : c; }
+
+// Freeze every live target except `skip` on the hull of its two ends and Stow.
+static void freeze_live(uint8_t live, uint8_t skip, const float seg_a[], const float seg_b[]) {
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    if ((live & (uint8_t)(1u << i)) && !(skip & (uint8_t)(1u << i)))
+      (void)leg_freeze_tx(i, min3(seg_a[i], seg_b[i], STOW_OFF_POSE_REV),
+                             max3(seg_a[i], seg_b[i], STOW_OFF_POSE_REV));
+}
+
+// Gated IDLE of every live target; a SENT Leg joins `done` and loses its HELD bit
+// (a race refusal earlier in the same tick must not outlive the IDLE).
+static void gated_idle_into_done(uint8_t live, uint8_t& done) {
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    if (!(live & (uint8_t)(1u << i))) continue;
+    if (odrive_set_state_tx(i, ODriveState::IDLE, TxCls::OTHER, Who::LADDER) == DeResult::SENT) {
+      done |= (uint8_t)(1u << i);
+      leg_held_clear(i);
+    }
+  }
+}
+
+DescentStep stow_descent_step(uint8_t targets, uint8_t& done,
+                              const float seg_a[], const float seg_b[],
+                              bool timed_out, uint64_t now) {
+  const uint8_t live = (uint8_t)(targets & ~done & LEG_BITS);
+  // (1) Bus down: nothing can be sent. The ODrives finish the descent they hold;
+  //     the fault machine's deferred stow (armed at the trip) takes over.
+  if (fault_can_bus_down()) return DescentStep::BUS_DOWN;
+  // (2) A target Leg disarmed itself: never lower the Platform with one Leg free.
+  uint8_t dropped = 0;
+  for (uint8_t i = 0; i < NUM_LEGS; ++i)
+    if ((live & (uint8_t)(1u << i)) && leg_dropped_out(i, now)) dropped |= (uint8_t)(1u << i);
+  if (dropped) { freeze_live(live, dropped, seg_a, seg_b); return DescentStep::DROPPED; }
+  // (3) Arrival: every live target at Stow AND settled, judged while still CL. The
+  //     predicate runs once BEFORE the IDLE loop, so a refusal here (e.g. a stale
+  //     heartbeat) is retried next tick without touching the census or HELD.
+  bool all_arrived = true;
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    if (!(live & (uint8_t)(1u << i))) continue;
+    const float pos = axes[i].pos_rev;   // Jugglebot conv (== STOW_OFF_POSE_REV conv)
+    const float vel = axes[i].vel_rps;
+    if (fabsf(pos - STOW_OFF_POSE_REV) > JBOp::TARGET_REACHED_POS_TOL_REV ||
+        fabsf(vel) > JBOp::TARGET_REACHED_VEL_TOL_RPS) all_arrived = false;
+  }
+  if (all_arrived && leg_idle_permitted(now)) {
+    gated_idle_into_done(live, done);
+    if ((uint8_t)(targets & ~done & LEG_BITS) == 0) return DescentStep::ARRIVED;
+  }
+  // (4) Timeout: IDLE only where permitted (Stow, or the bench), else hold.
+  if (timed_out) {
+    const uint8_t still = (uint8_t)(targets & ~done & LEG_BITS);
+    if (leg_idle_permitted(now)) gated_idle_into_done(still, done);
+    else                         freeze_live(still, 0, seg_a, seg_b);
+    return DescentStep::TIMED_OUT;
+  }
+  return DescentStep::RUNNING;
 }
 
 }  // namespace CanBridge
