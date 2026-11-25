@@ -40,9 +40,13 @@ The blocks are flown in two halves in mirrored order, so a warming Hand motor do
 
 The figure is the sd per axis of the lateral launch velocity about its block mean, raw and with the measured Platform motion removed (one regression over the whole Sitting). On the E0 bags it was about 17 mm/s.
 
-- **Seating (owner's account):** S at 6 mm/s or less AND D27 at twice S's variance or more, falling as the Dwell grows.
-- **Separation (E0's reading):** S at 12 mm/s or more, with D27, D50 and D100 all within 1.5 times S's variance.
+- **Seating (owner's account):** S at 6 mm/s or less on both axes AND D27 at twice S's variance or more, falling as the Dwell grows.
+- **Separation (E0's reading):** S at 12 mm/s or more on both axes, with D27, D50 and D100 all within 1.5 times S's variance.
 - **Mixed:** anything between, reported with both shares. A variance ratio known from 30 against 66 Throws carries about 30 % uncertainty; fly block S again if it lands between 1.5 and 2.
+
+## Reading the result
+
+After the Sitting: `python tools/probes/release_settle_bag_probe.py run <bag>` for each bag, then `python tools/probes/release_settle_bag_probe.py blocks temp/probes/release_settle/<bag>.csv --skip-attempts 1` (the warm-up Attempt is the first one). The verdict line reads UNDECIDED when a deciding ratio's interval straddles its threshold; more Throws in block S tighten it.
 
 ## Rehearsed offline
 
@@ -52,7 +56,7 @@ The figure is the sd per axis of the lateral launch velocity about its block mea
 
 - The robot Hand motor has slid roughly since the 2026-11-20 overheat. This row measures that Hand. A Cup change judged after a motor repair is not like for like: re-fly this row first.
 - The rows go to a scratch plant so the live Memory is untouched. A fresh plant starts with no correction and its first Apex runs about 8 % high; the first Attempt is a warm-up and is not counted.
-- With Dwell 1.00 the probe's own "from rest" flag (seated 1 s or more) fires on running Throws. Blocks are told apart by the goal (Throw index in the Attempt and Memory's `dwell_s`), never by that flag. FEAT-67 builds the per-block report.
+- With Dwell 1.00 the probe's own "from rest" flag (seated 1 s or more) fires on running Throws. Blocks are told apart by the goal (Throw index in the Attempt and Memory's `dwell_s`), never by that flag. FEAT-67's `blocks` report does this.
 
 ## Sitting
 

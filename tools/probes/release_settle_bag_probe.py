@@ -37,14 +37,61 @@ minus 13 ms; `/hand_telemetry` via its bridge stamp or pairing with
 `/leg_cmd_executed`). The per-body stamps of `/rigid_body_poses` are never read.
 
 Motivation: `logbook/2026-11-25-learner-efficacy-e0-unsettled-ball-test.md`
-(plan `plans/active/learner-efficacy.md`, Phase E0). Consuming test: none (a
-run-on-demand harness; the analysis that consumed it is named in that entry).
+(plan `plans/active/learner-efficacy.md`, Phases E0 and E1). Consuming test:
+`tests/sim/test_release_settle_blocks.py` (the `blocks` mode's pure functions on synthetic
+rows); `extract` and `features` have none (run on demand).
 
 USAGE
 -----
     python tools/probes/release_settle_bag_probe.py extract  BAGDIR  [--out NPZ]
     python tools/probes/release_settle_bag_probe.py features NPZ     [--out CSV] [--traces NPZ]
     python tools/probes/release_settle_bag_probe.py run      BAGDIR          # both
+    python tools/probes/release_settle_bag_probe.py blocks   CSV [CSV ...] [--attempt-gap-s 3.0]
+                                                             [--skip-attempts N] [--out JSON]
+
+BLOCKS (FEAT-67: the report FEAT-68's verdict is read from)
+------
+`blocks` reads the per-Throw CSVs of ONE Sitting and prints the launch scatter per block.
+- Attempts: a new Attempt at a new bag or when consecutive `trel` are more than
+  `--attempt-gap-s` apart (3.0 s). Within an Attempt Throws are at most about 2 s apart at
+  Dwell 1.00; a hand-placed single Throw of block S follows the previous landing by the
+  operator's 3 s count plus the goal's round trip, which can be under 6 s, so E0's 6 s rule
+  (the 2026-11-23 review's, made for long running Attempts) could merge two S Attempts into
+  one `first` + `D27` pair. On the E0 bag 2026-11-06 15:53 the two rules give the same 19
+  Attempts (within-Attempt gaps 0.5 to 1.5 s, between Attempts 12 s or more).
+- Blocks, by the goal and never by `from_rest` (which fires on running Throws at Dwell 1.00):
+  `S` the only Throw of a one-Throw Attempt seated >= 1 s (`t_seat` or `sens_t_held`);
+  `other` a one-Throw Attempt that was not; `first` Throw 1 of a longer Attempt (its count
+  seated 1 s is printed: on the E0 bags a long Attempt can open on a Fed ball, not from
+  rest); `D<nn>` Throw 2 or later by Memory's `dwell_s` rounded to 0.01 s.
+  `--skip-attempts N` drops the first N Attempts (FEAT-68's uncounted warm-up).
+- The figure: the sd per axis of the lateral launch velocity `v0x`, `v0y` about the mean of
+  its cell (block, Site, release kind; one Site in FEAT-68, so the block mean), raw and
+  Platform-corrected. The correction is ONE least-squares fit pooled over every Throw of
+  the Sitting, both sides centred per cell, of `v0` on the commanded Cup velocity
+  (`vcupx_a`, `vcupy_a`) and the Platform's measured Mocap centroid velocity, normal and
+  normal rate (`mvcx`, `mvcy`, `mnx`, `mny`, `mwnx`, `mwny`): 8 slopes per axis. E0's
+  two-stage ten-regressor fit (commanded Platform terms regressed out of the measured ones
+  first) is not carried by 30 Throws per block; one pooled fit is, and the residual it
+  leaves is what is left after the measured Platform motion and the command. Degrees of
+  freedom are corrected exactly, not neglected: each Throw carries w = 1 - 1/n_cell - h
+  (h the hat value of the cell-centred regressors), and a block's variance is
+  sum(e^2) / sum(w), unbiased under equal noise. With FEAT-68's ~240 Throws and 8 slopes the
+  loss is about 3 % of the variance; a cell of a few Throws (`first` on the E0 bags, 19 Throws in
+  7 Sites) loses far more, which the plain rms would hide. A Throw missing a regressor
+  enters the raw figure only and is counted.
+- Uncertainty: a cluster bootstrap by Attempt (2000 resamples, seed 0), stratified by the
+  set of blocks an Attempt holds, over the fitted residuals (see `blocks_report`), giving
+  a 95 % interval on each block's pooled-axis sd and on its variance ratio (both axes
+  pooled) against block S, or against `first` when there is no S.
+- Verdict, on the corrected figure (FEAT-68, pre-registered 2026-11-25): Seating (S <= 6
+  mm/s on both axes AND D27 >= 2x S's variance AND the ratios falling as Dwell grows),
+  Separation (S >= 12 mm/s on both axes AND every Dwell block within 1.5x), else Mixed with
+  the separation share (1 / ratio) and seating share per Dwell block. A deciding ratio
+  whose interval straddles its threshold makes the clause UNDECIDED. No S: no verdict.
+- D27 split in thirds of the Catch entry offset `entry_r`, corrected sd per third. The
+  entry offset was NOT validated in E0: a lead, not a measure.
+Same input, same output (fixed seed). `--out` writes the numbers as JSON; print only otherwise.
 
 Outputs go to `temp/probes/release_settle/` (series `<bag>.npz`, per-Throw records
 `<bag>.csv`, residual traces `<bag>_traces.npz`). The directory is fixed and a rerun
@@ -574,14 +621,323 @@ def ht_at(th, ht, t):
     return np.interp(t, th, ht[:, 4])
 
 
+# ---------------------------------------------------------------- blocks (FEAT-67, learner-efficacy E1)
+# Pure functions: rows in (dicts as csv.DictReader gives them), numbers out; no file I/O below this line
+# until read_records / main.
+ATTEMPT_GAP_S = 3.0              # a gap longer than this between consecutive Throws starts a new Attempt
+SEATED_S = 1.0                   # block S needs the ball seated this long (Mocap t_seat or the Hand ball sensor)
+BLOCK_REGRESSORS = ['vcupx_a', 'vcupy_a', 'mvcx', 'mvcy', 'mnx', 'mny', 'mwnx', 'mwny']
+N_BOOT, BOOT_SEED = 2000, 0
+SEATING_SD, SEATING_RATIO = 6.0, 2.0          # FEAT-68 criterion, pre-registered 2026-11-25
+SEPARATION_SD, SEPARATION_RATIO = 12.0, 1.5
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return np.nan
+
+
+def _seated(r):
+    return bool(_num(r.get('t_seat')) >= SEATED_S or _num(r.get('sens_t_held')) >= SEATED_S)
+
+
+def segment_attempts(rows, gap_s=ATTEMPT_GAP_S):
+    """Rows sorted by (bag, trel), the Attempt id of each (from 0) and its Throw index in the Attempt (from 1).
+
+    A new Attempt starts at a new bag or when `trel` moves on by more than `gap_s` since the previous Throw."""
+    rows = sorted(rows, key=lambda r: (str(r.get('bag', '')), _num(r.get('trel'))))
+    att, idx = np.zeros(len(rows), int), np.zeros(len(rows), int)
+    a, i, prev = -1, 0, None
+    for j, r in enumerate(rows):
+        t = _num(r.get('trel'))
+        if prev is None or r.get('bag') != prev[0] or not (t - prev[1] <= gap_s):
+            a, i = a + 1, 0
+        i += 1
+        att[j], idx[j], prev = a, i, (r.get('bag'), t)
+    return rows, att, idx
+
+
+def dwell_block(dwell_s):
+    """`D<nn>` from Memory's dwell_s rounded to 0.01 s (0.27 -> D27, 1.0 -> D100)."""
+    d = _num(dwell_s)
+    return 'D%d' % int(round(d * 100)) if np.isfinite(d) else 'other'
+
+
+def label_blocks(rows, gap_s=ATTEMPT_GAP_S, skip_attempts=0):
+    """(rows sorted, Attempt id, Throw index, block label) by the goal, never by the probe's `from_rest` flag.
+
+    S: the only Throw of a one-Throw Attempt, seated >= 1 s. other: a one-Throw Attempt that was not.
+    first: Throw 1 of a longer Attempt. D<nn>: Throw 2 or later, by Memory's dwell_s. The first
+    `skip_attempts` Attempts (a warm-up) are labelled `skipped`."""
+    rows, att, idx = segment_attempts(rows, gap_s)
+    size = np.bincount(att)[att] if len(att) else np.zeros(0, int)
+    lab = []
+    for r, a, i, n in zip(rows, att, idx, size):
+        if a < skip_attempts:
+            lab.append('skipped')
+        elif n == 1:
+            lab.append('S' if _seated(r) else 'other')
+        elif i == 1:
+            lab.append('first')
+        else:
+            lab.append(dwell_block(r.get('dwell_s')))
+    return rows, att, idx, np.array(lab, dtype=object)
+
+
+def centred_residuals(Y, X, cell):
+    """Residuals of a fixed-effect fit: a mean per cell plus ONE set of slopes on X pooled over every row.
+
+    Returns (e, w, rank): e the residual per row (n, Y columns); w the degrees of freedom each row carries,
+    w_i = 1 - 1/n_cell(i) - h_ii (h the hat matrix of the cell-centred X), so that E[e_i^2] = sigma^2 w_i and
+    sum(e^2) / sum(w) over any subset is the unbiased variance of that subset. X None or 0 columns: raw."""
+    Y = np.asarray(Y, float)
+    _, inv, cnt = np.unique(np.asarray(cell), return_inverse=True, return_counts=True)
+
+    def centre(A):
+        s = np.stack([np.bincount(inv, A[:, j], len(cnt)) for j in range(A.shape[1])], 1)
+        return A - (s / cnt[:, None])[inv]
+    e = centre(Y)
+    w = 1.0 - 1.0 / cnt[inv]
+    rank = 0
+    if X is not None and np.asarray(X).shape[1]:
+        Xc = centre(np.asarray(X, float))
+        sc = Xc.std(0)
+        Xc = Xc[:, sc > 0] / sc[sc > 0]                      # unit scale: Platform tilt is ~1e-3, Cup velocity ~1e2
+        if Xc.shape[1]:
+            U, s, _ = np.linalg.svd(Xc, full_matrices=False)
+            rank = int((s > s[0] * 1e-8).sum()) if s[0] > 0 else 0
+            U = U[:, :rank]
+            e = e - U @ (U.T @ e)
+            w = w - (U ** 2).sum(1)
+    return e, w, rank
+
+
+def block_variances(e, w, lab, blocks):
+    """Per block, the unbiased variance per axis: sum(e^2) / sum(w); NaN below 2 degrees of freedom."""
+    out = {}
+    for b in blocks:
+        m = lab == b
+        dof = float(w[m].sum())
+        out[b] = (e[m] ** 2).sum(0) / dof if dof >= 2 else np.full(e.shape[1], np.nan)
+    return out
+
+
+def _ratio_ref(blocks):
+    return 'S' if 'S' in blocks else ('first' if 'first' in blocks else None)
+
+
+def _dwell_blocks(blocks):
+    return sorted([b for b in blocks if b.startswith('D') and b[1:].isdigit()], key=lambda b: int(b[1:]))
+
+
+def verdict(s_sd, dwell):
+    """FEAT-68's criterion on the Platform-corrected figure. s_sd: block S's sd per axis (mm/s) or None;
+    dwell: [(label, variance ratio against S, bootstrap lo, hi)] sorted by Dwell.
+    Returns (word, the clause that fired); word in Seating / Separation / Mixed / UNDECIDED / n/a."""
+    if s_sd is None or not np.all(np.isfinite(s_sd)):
+        return 'n/a', 'no settled block: verdict not available'
+    sx, sy = s_sd
+    shares = ', '.join('%s separation %.2f / seating %.2f' % (b, min(1.0, 1 / r), max(0.0, 1 - 1 / r))
+                       for b, r, _, _ in dwell if np.isfinite(r) and r > 0)
+    if max(sx, sy) <= SEATING_SD:
+        d27 = [x for x in dwell if x[0] == 'D27']
+        if not d27:
+            return 'UNDECIDED', 'Seating clause: S <= %g mm/s per axis but there is no D27 block' % SEATING_SD
+        _, r, lo, hi = d27[0]
+        rs = [x[1] for x in dwell]
+        falling = all(a >= b for a, b in zip(rs, rs[1:]))
+        if lo < SEATING_RATIO < hi:
+            return 'UNDECIDED', ('Seating clause: S %.1f/%.1f mm/s <= %g, but the D27/S variance ratio %.2f (95 %% %.2f..%.2f) '
+                                 'straddles %g' % (sx, sy, SEATING_SD, r, lo, hi, SEATING_RATIO))
+        if r >= SEATING_RATIO and falling:
+            return 'Seating', ('S %.1f/%.1f mm/s <= %g AND D27/S %.2f (95 %% %.2f..%.2f) >= %g AND falling with Dwell (%s)'
+                               % (sx, sy, SEATING_SD, r, lo, hi, SEATING_RATIO, ' >= '.join('%.2f' % x for x in rs)))
+        why = 'D27/S %.2f < %g' % (r, SEATING_RATIO) if r < SEATING_RATIO else 'ratios not falling with Dwell (%s)' % ', '.join('%.2f' % x for x in rs)
+        return 'Mixed', 'S %.1f/%.1f mm/s <= %g but %s; shares: %s' % (sx, sy, SEATING_SD, why, shares)
+    if min(sx, sy) >= SEPARATION_SD:
+        if not dwell:
+            return 'UNDECIDED', 'Separation clause: S >= %g mm/s per axis but there is no Dwell block' % SEPARATION_SD
+        txt = ', '.join('%s %.2f (95 %% %.2f..%.2f)' % x for x in dwell)
+        if all(r <= SEPARATION_RATIO and not (lo < SEPARATION_RATIO < hi) for _, r, lo, hi in dwell):
+            return 'Separation', 'S %.1f/%.1f mm/s >= %g AND every Dwell block within %gx S: %s' % (sx, sy, SEPARATION_SD, SEPARATION_RATIO, txt)
+        if any(lo > SEPARATION_RATIO for _, _, lo, _ in dwell):
+            return 'Mixed', 'S %.1f/%.1f mm/s >= %g but a Dwell block exceeds %gx S: %s; shares: %s' % (sx, sy, SEPARATION_SD, SEPARATION_RATIO, txt, shares)
+        return 'UNDECIDED', 'Separation clause: S %.1f/%.1f mm/s >= %g, but a ratio straddles %g: %s' % (sx, sy, SEPARATION_SD, SEPARATION_RATIO, txt)
+    return 'Mixed', 'S %.1f/%.1f mm/s is between %g and %g; shares: %s' % (sx, sy, SEATING_SD, SEPARATION_SD, shares or 'no Dwell block')
+
+
+def blocks_report(rows, gap_s=ATTEMPT_GAP_S, skip_attempts=0, regressors=BLOCK_REGRESSORS, n_boot=N_BOOT, seed=BOOT_SEED):
+    """The per-block launch-scatter report of one Sitting as a plain dict (see the module docstring, BLOCKS)."""
+    rows, att, idx, lab = label_blocks(rows, gap_s, skip_attempts)
+    keep = lab != 'skipped'
+    n_skipped = int((~keep).sum())
+    rows = [r for r, k in zip(rows, keep) if k]
+    att, idx, lab = att[keep], idx[keep], lab[keep]
+    order = ['S', 'first'] + _dwell_blocks(set(lab)) + ['other']
+    blocks = [b for b in order if b in set(lab)]
+    v = np.array([[_num(r.get('v0x')), _num(r.get('v0y'))] for r in rows], float).reshape(-1, 2)
+    X = np.array([[_num(r.get(c)) for c in regressors] for r in rows], float).reshape(-1, len(regressors))
+    cell = np.array(['%s|%.4f|%.4f|%s' % (b, _num(r.get('site_x')), _num(r.get('site_y')), r.get('release_kind', ''))
+                     for b, r in zip(lab, rows)], dtype=object)
+    fit = np.isfinite(v).all(1)
+    cor = fit & np.isfinite(X).all(1)
+    e_raw, w_raw, _ = centred_residuals(v[fit], None, cell[fit])
+    e_c, w_c, rank = centred_residuals(v[cor], X[cor], cell[cor])
+    var_raw = block_variances(e_raw, w_raw, lab[fit], blocks)
+    var_c = block_variances(e_c, w_c, lab[cor], blocks)
+    ref = _ratio_ref([b for b in blocks if b != 'other'])
+    pooled = lambda vv: float(np.sqrt(np.mean(vv)))  # noqa: E731
+
+    # Cluster bootstrap by Attempt, stratified by the set of blocks an Attempt holds (one-Throw S Attempts are
+    # resampled among themselves, each Dwell's Attempts among themselves), so every block keeps its size. The
+    # residuals and their degrees of freedom are fitted ONCE and the resample is over (e^2, w) per Throw, a
+    # ratio estimator sum(e^2) / sum(w): refitting the cell means on a resample treats an Attempt's copies as
+    # independent Throws, which drives a small block's variance low (on the E0 bag 2026-11-06 15:53 `first`,
+    # 19 Throws in 7 cells, it put the point estimate at the top of its own interval).
+    a_c = att[cor]
+    lab_c = lab[cor]
+    e2 = (e_c ** 2).mean(1)                          # both axes pooled
+    strata = {}
+    for a in np.unique(att):
+        strata.setdefault(tuple(sorted(set(lab[att == a]))), []).append(a)
+    bi = {b: i for i, b in enumerate(blocks)}
+    li = np.array([bi[x] for x in lab_c], int)
+    att_list = np.unique(att)
+    # per Attempt and block: summed e^2 and summed w, so a resample is a weighted sum over Attempts
+    se = np.zeros((len(att_list), len(blocks)))
+    sw = np.zeros((len(att_list), len(blocks)))
+    ai = np.searchsorted(att_list, a_c)
+    np.add.at(se, (ai, li), e2)
+    np.add.at(sw, (ai, li), w_c)
+    rs = np.random.RandomState(seed)
+    cnt = np.zeros((n_boot, len(att_list)))
+    for key in sorted(strata):
+        m = np.searchsorted(att_list, strata[key])
+        for k in range(n_boot):
+            cnt[k] += np.bincount(m[rs.randint(0, len(m), len(m))], minlength=len(att_list))
+    with np.errstate(all='ignore'):
+        dof_b = cnt @ sw
+        vb = np.where(dof_b >= 2, (cnt @ se) / dof_b, np.nan)
+    # a block without a point estimate (under 2 degrees of freedom) gets no interval either
+    boot = {b: vb[:, bi[b]] if np.isfinite(np.mean(var_c[b])) else np.full(n_boot, np.nan) for b in blocks}
+
+    def ci(x):
+        x = x[np.isfinite(x)]
+        return [float(q) for q in np.percentile(x, [2.5, 97.5])] if len(x) >= 20 else [np.nan, np.nan]
+
+    out = dict(attempt_gap_s=gap_s, skip_attempts=skip_attempts, skipped_throws=n_skipped, n_throws=len(rows),
+               n_attempts=int(len(np.unique(att))), regressors=list(regressors), regression_rank=rank,
+               n_fit=int(fit.sum()), n_corrected=int(cor.sum()), n_raw_only=int((fit & ~cor).sum()),
+               n_boot=n_boot, seed=seed, ratio_ref=ref, blocks={})
+    for b in blocks:
+        m = lab == b
+        mc = lab_c == b
+        rec = dict(n=int(m.sum()), n_fit=int((fit & m).sum()), n_corrected=int((cor & m).sum()),
+                   attempts=int(len(np.unique(att[m]))), cells=int(len(set(cell[m]))),
+                   sd_raw=[float(x) for x in np.sqrt(var_raw[b])], sd_corr=[float(x) for x in np.sqrt(var_c[b])],
+                   sd_corr_pooled=pooled(var_c[b]), sd_corr_pooled_ci=[float(np.sqrt(x)) for x in ci(boot[b])],
+                   max_abs_resid=float(np.abs(e_c[mc]).max()) if mc.any() else np.nan)
+        if b == 'first':
+            rec['n_seated'] = int(sum(_seated(r) for r, k in zip(rows, m) if k))
+        if ref is not None and b != ref:
+            rec['ratio_raw'] = float(np.mean(var_raw[b]) / np.mean(var_raw[ref]))
+            rec['ratio_corr'] = float(np.mean(var_c[b]) / np.mean(var_c[ref]))
+            rec['ratio_corr_ci'] = ci(boot[b] / boot[ref])
+        out['blocks'][b] = rec
+    s = out['blocks'].get('S')
+    dw = [(b, out['blocks'][b]['ratio_corr'], *out['blocks'][b]['ratio_corr_ci']) for b in _dwell_blocks(blocks) if ref == 'S']
+    out['verdict'], out['verdict_clause'] = verdict(s['sd_corr'] if s else None, dw)
+
+    # D27 by where the ball came in at the Catch (entry_r: NOT validated in E0)
+    out['d27_by_entry'] = []
+    er = np.array([_num(r.get('entry_r')) for r in rows])[cor]
+    m = np.where((lab_c == 'D27') & np.isfinite(er))[0]
+    if len(m) >= 6:
+        m = m[np.argsort(er[m], kind='stable')]
+        for part in np.array_split(m, 3):
+            dof = float(w_c[part].sum())
+            vv = (e_c[part] ** 2).sum(0) / dof if dof >= 2 else np.full(2, np.nan)
+            out['d27_by_entry'].append(dict(n=int(len(part)), entry_r_mm=[float(er[part].min()), float(er[part].max())],
+                                            sd_corr=[float(x) for x in np.sqrt(vv)], sd_corr_pooled=pooled(vv)))
+    return out
+
+
+def format_blocks(rep):
+    """The report as text."""
+    f = lambda x: '%.1f' % x if x is not None and np.isfinite(x) else '-'  # noqa: E731
+    f2 = lambda x: '%.2f' % x if x is not None and np.isfinite(x) else '-'  # noqa: E731
+    L = ['blocks: %d Throws in %d Attempts (gap > %.1f s; %d Throws of the first %d Attempts skipped); launch fit %d, '
+         'Platform-corrected %d, raw only %d (a regressor missing)'
+         % (rep['n_throws'], rep['n_attempts'], rep['attempt_gap_s'], rep['skipped_throws'], rep['skip_attempts'],
+            rep['n_fit'], rep['n_corrected'], rep['n_raw_only']),
+         'correction: one pooled fit over the Sitting of v0 on %s (rank %d), both sides centred per (block, Site, release kind); '
+         'sd in mm/s about the block mean, degrees of freedom corrected' % (', '.join(rep['regressors']), rep['regression_rank']),
+         'ratios: variance (both axes pooled) against block %s; 95 %% interval from %d cluster-bootstrap resamples by Attempt (seed %d)'
+         % (rep['ratio_ref'], rep['n_boot'], rep['seed']),
+         '%-6s %4s %4s %4s %4s %5s  %-11s %-11s %-18s %-6s %-20s %s' % ('block', 'n', 'fit', 'corr', 'att', 'cells', 'raw sd x/y',
+                                                                      'corr sd x/y', 'corr sd pooled', 'raw r', 'corr ratio (95 %)', 'max|e|')]
+    for b, r in rep['blocks'].items():
+        L.append('%-6s %4d %4d %4d %4d %5d  %-11s %-11s %-18s %-6s %-20s %s' % (
+            b, r['n'], r['n_fit'], r['n_corrected'], r['attempts'], r['cells'], '%s/%s' % tuple(f(x) for x in r['sd_raw']),
+            '%s/%s' % tuple(f(x) for x in r['sd_corr']), '%s (%s..%s)' % (f(r['sd_corr_pooled']), *map(f, r['sd_corr_pooled_ci'])),
+            f2(r.get('ratio_raw')), '%s (%s..%s)' % (f2(r.get('ratio_corr')), *map(f2, r.get('ratio_corr_ci', [None, None])))
+            if 'ratio_corr' in r else '-', f(r['max_abs_resid'])) + (' (seated 1 s: %d)' % r['n_seated'] if 'n_seated' in r else ''))
+    L.append('VERDICT: %s -- %s' % (rep['verdict'], rep['verdict_clause']))
+    if rep['d27_by_entry']:
+        L.append('D27 by Catch entry offset, thirds of entry_r (NOT validated in E0; read as a lead, not a measure):')
+        for p in rep['d27_by_entry']:
+            L.append('  entry_r %s..%s mm  n %d  corr sd %s/%s  pooled %s' % (f(p['entry_r_mm'][0]), f(p['entry_r_mm'][1]), p['n'],
+                                                                           f(p['sd_corr'][0]), f(p['sd_corr'][1]), f(p['sd_corr_pooled'])))
+    else:
+        L.append('D27 by Catch entry offset: fewer than 6 D27 Throws with an entry offset')
+    return '\n'.join(L)
+
+
+def _jsonable(x):
+    if isinstance(x, dict):
+        return {k: _jsonable(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_jsonable(v) for v in x]
+    if isinstance(x, (float, np.floating)):
+        return None if not np.isfinite(x) else float(x)
+    if isinstance(x, np.integer):
+        return int(x)
+    return x
+
+
+def read_records(paths):
+    rows = []
+    for p in paths:
+        with open(p) as fh:
+            rows.extend(csv.DictReader(fh))
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('mode', choices=['extract', 'features', 'run'])
-    ap.add_argument('src')
+    ap.add_argument('mode', choices=['extract', 'features', 'run', 'blocks'])
+    ap.add_argument('src', nargs='+')
     ap.add_argument('--out')
     ap.add_argument('--traces')
     ap.add_argument('--memory', default=MEM_GLOB)
+    ap.add_argument('--attempt-gap-s', type=float, default=ATTEMPT_GAP_S)
+    ap.add_argument('--skip-attempts', type=int, default=0)
     a = ap.parse_args()
+    if a.mode == 'blocks':
+        rep = blocks_report(read_records(a.src), a.attempt_gap_s, a.skip_attempts)
+        rep['sources'] = [os.path.basename(p) for p in a.src]
+        print(format_blocks(rep))
+        if a.out:
+            import json
+            os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
+            with open(a.out, 'w') as fo:
+                json.dump(_jsonable(rep), fo, indent=1, sort_keys=True)
+        return
+    if len(a.src) != 1:
+        ap.error('%s takes one source' % a.mode)
+    a.src = a.src[0]
     name = os.path.basename(os.path.normpath(a.src)).replace('.npz', '')
     if a.mode in ('extract', 'run'):
         npz = (a.out if a.mode == 'extract' and a.out else os.path.join(OUT_DIR, name + '.npz'))

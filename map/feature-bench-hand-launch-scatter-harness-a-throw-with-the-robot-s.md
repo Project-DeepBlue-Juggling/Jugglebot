@@ -2,13 +2,14 @@
 id: FEAT-67
 kind: feature
 title: 'E1 block report: per-block launch scatter from the release probe''s records, checked on the E0 bags'
-status: inbox
+status: complete
 created: '2026-11-25'
-updated: '2026-11-25T09:28:32Z'
+updated: '2026-11-25T12:12:08Z'
 owners: []
 priority: high
 effort: s
 hardware: none
+owner: none
 radius: local
 area: hand
 blocked_by: []
@@ -16,6 +17,7 @@ links:
 - plans/active/learner-efficacy.md
 - logbook/2026-11-25-learner-efficacy-e0-unsettled-ball-test.md
 - tools/probes/release_settle_bag_probe.py
+- logbook/2026-11-25-release-probe-blocks-report.md
 parent: learner-generalisation
 filed_by: claude-e0
 ---
@@ -32,3 +34,7 @@ E1 of `plans/active/learner-efficacy.md` moved from the bench Hand to the robot'
 
 - The report is checked on an E0 bag: 2026-11-06 15:53 must give the from-rest and running figures of `logbook/2026-11-25-learner-efficacy-e0-unsettled-ball-test.md` finding 3 (ratio 1.20, 12 against 254 Throws) to within the difference the simpler regression makes, and that difference is stated.
 - FEAT-68's `pass:` can be read straight off its output.
+
+## Progress
+
+- 2026-11-25: blocks report built and checked on the E0 bags (logbook 2026-11-25-release-probe-blocks-report)
