@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (14 Items, 484 min)
+## Robot  (15 Items, 544 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -17,6 +17,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | BUG-89 teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall | 40 | level, armed, bb-fed | - | - |
 | FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0) | 45 | armed, bb-fed, bridge-cycled | - | - |
 | FEAT-39 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30 | 50 | level, armed, bb-fed, bridge-cycled | - | - |
+| FEAT-68 Launch baseline on the robot's Hand: launch scatter of a settled ball and of running Throws at Dwell 0.27, 0.50 and 1.00 (learner-efficacy E1) | 60 | level, armed | - | - |
 | BUG-132 Platform IMU capture timestamps run 23 to 55 ms early against Mocap and the encoders | 10 | level, armed, bb-fed | - | - |
 | BUG-95 A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads | 35 | level, bb-fed | - | - |
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
@@ -31,11 +32,10 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | --- | ---: | --- | --- | --- |
 | BUG-19 Hand ODrive state can silently diverge from what the can-bridge commanded | 30 | bridge-cycled | - | - |
 
-## Bench hand  (2 Items, 105 min)
+## Bench hand  (1 Item, 30 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
-| FEAT-68 Bench Hand launch baseline: launch scatter of a settled, a dropped-in and an off-axis ball (learner-efficacy E1) | 75 | bridge-cycled | - | - |
 | BUG-41 Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled | 30 | bridge-cycled | - | - |
 
 ## Needs a Sitting section

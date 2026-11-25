@@ -1,19 +1,18 @@
 ---
 id: FEAT-68
 kind: feature
-title: 'Bench Hand launch baseline: launch scatter of a settled, a dropped-in and an off-axis ball (learner-efficacy E1)'
+title: 'Launch baseline on the robot''s Hand: launch scatter of a settled ball and of running Throws at Dwell 0.27, 0.50 and 1.00 (learner-efficacy E1)'
 status: inbox
 created: '2026-11-25'
 updated: '2026-11-25T09:28:57Z'
 owners: []
 priority: high
 effort: s
-hardware: bench-hand
+hardware: robot
 owner: hands
 radius: local
 area: hand
-blocked_by:
-- feature-bench-hand-launch-scatter-harness-a-throw-with-the-robot-s
+blocked_by: []
 links:
 - plans/active/learner-efficacy.md
 - logbook/2026-11-25-learner-efficacy-e0-unsettled-ball-test.md
@@ -22,45 +21,54 @@ parent: learner-generalisation
 filed_by: claude-e0
 ---
 
-Step E1 of `plans/active/learner-efficacy.md`. It gives the launch scatter of the current Cup as one number, and it tells the owner's account (the scatter comes from the ball not seating properly during the Dwell) from E0's reading (the scatter arises at separation, settled or not). Each Hand or Cup change in E4 is then kept or dropped on the same number.
+Step E1 of `plans/active/learner-efficacy.md`. It gives the launch scatter of the current Cup as one number per block, and it tells the owner's account (the scatter comes from the ball not seating properly during the Dwell) from E0's reading (the scatter arises at separation, settled or not). Each Hand or Cup change in E4 is then kept or dropped by re-flying this same row.
 
-**No markers on the bench Hand are needed.** The bench Hand does not move sideways, so the ball's lateral launch velocity from Mocap is the launch term directly. The bench Hand only has to stand where the cameras see the ball from the Cup to about 0.3 m above it.
+## Why the robot and not the bench (owner, 2026-11-25)
 
-## The three arms
+The bench Hand has no ball sensor, so it cannot throw a fixed time after the ball lands. On the robot the Throw is the real one, the launch records Mocap, the Hand ball sensor, the announcements and the Memory rows, and `tools/probes/release_settle_bag_probe.py` runs on the bag unchanged. No markers go on the Hand: the Platform's own markers give its motion, and the probe removes it.
 
-About 30 Throws each at one Apex, the ball's lateral launch velocity sd per axis:
+## The four blocks
 
-- (a) hand-placed and settled, thrown after at least 2 s;
-- (b) dropped in from about Catch height, thrown about 0.27 s after it lands;
-- (c) dropped in or placed a few mm off-axis, thrown about 0.27 s after it lands.
+Self-throw at one Site and one Apex (1.00 m), Platform at the Active pose and Level.
 
-## Criterion (pre-registered 2026-11-25, before any bench Throw)
+- **S, settled:** the ball placed by hand, at least 3 s of rest, then a goal of one Throw. 30 Throws.
+- **D27, D50, D100:** goals of 12 Throws at Dwell 0.27, 0.50 and 1.00 s. Every Throw after the first follows a real Catch. 6 Attempts each, about 66 running Throws per Dwell.
 
-On the robot the launch term is about 17 mm/s per axis.
+The blocks are flown in two halves in mirrored order, so a warming Hand motor does not line up with one block. The off-axis arm is not flown: it comes from D27, binned by where the ball came in at the Catch (the probe's entry offset, not validated in E0).
 
-- **Seating (owner's account):** arm (a) at 6 mm/s or less AND arm (b) or (c) at twice arm (a)'s variance or more.
-- **Separation (E0's reading):** arm (a) at 12 mm/s or more, with (b) and (c) within 1.5 times its variance.
-- **Neither:** arm (a) at 6 mm/s or less and (b), (c) no worse: the term needs the robot's motion, and a bench Cup change alone is the wrong bet.
-- Anything between the thresholds is reported as mixed, with both shares. A variance ratio near 2 at 30 Throws is marginal: fly 60 per arm if it lands there.
+## Criterion (pre-registered 2026-11-25, before any Throw)
 
-## Not ready to fly
+The figure is the sd per axis of the lateral launch velocity about its block mean, raw and with the measured Platform motion removed (one regression over the whole Sitting). On the E0 bags it was about 17 mm/s.
 
-FEAT-67 builds the bench Throw with the robot's release, the Mocap recording and the probe's bench mode. Until it lands the steps below name what to do and not the commands; FEAT-67 rewrites them with the exact commands and a rehearsal.
+- **Seating (owner's account):** S at 6 mm/s or less AND D27 at twice S's variance or more, falling as the Dwell grows.
+- **Separation (E0's reading):** S at 12 mm/s or more, with D27, D50 and D100 all within 1.5 times S's variance.
+- **Mixed:** anything between, reported with both shares. A variance ratio known from 30 against 66 Throws carries about 30 % uncertainty; fly block S again if it lands between 1.5 and 2.
+
+## Rehearsed offline
+
+2026-11-25, `nominate.nominate(NominationConfig(pattern='self_toss', apex_m=1.0, separation_mm=0.0, dwell_s=D, n_throws=N))` at the default limits for D in 0.27, 0.50, 0.75, 1.00 and N in 1 and the short Pattern: all eight read `nomination OK`, worst margin 1.000. The live limits are checked by the row's own nominate calls.
+
+## Caveats
+
+- The robot Hand motor has slid roughly since the 2026-11-20 overheat. This row measures that Hand. A Cup change judged after a motor repair is not like for like: re-fly this row first.
+- The rows go to a scratch plant so the live Memory is untouched. A fresh plant starts with no correction and its first Apex runs about 8 % high; the first Attempt is a warm-up and is not counted.
+- With Dwell 1.00 the probe's own "from rest" flag (seated 1 s or more) fires on running Throws. Blocks are told apart by the goal (Throw index in the Attempt and Memory's `dwell_s`), never by that flag. FEAT-67 builds the per-block report.
 
 ## Sitting
 
-- setup: bridge-cycled
-- why: one number for the current Cup's launch scatter, and a test of seating against separation, before any Hand change is made
+- setup: level, armed
+- why: one launch-scatter number per block for the current Cup, and a test of seating against separation, before any Hand change is made
 - do:
-  - Stand the bench Hand where the Mocap cameras see the ball from the Cup to about 0.3 m above it. No markers go on the Hand. Check in QTM that the ball in the Cup shows as one unlabelled marker.
-  - Launch down. Bench Hand on the bridge (CAN2, drive node 6), 45 V supply on, E-stop in hand. From the repo root in the venv: `python tests/hardware/bench_hand_frame_bench.py status`. It must read node 6, IDLE, no errors.
-  - `python tests/hardware/bench_hand_frame_bench.py home`: it drives DOWN at 3 rev/s and ends IDLE on the bottom stop at -0.10 rev. E-stop if it moves up.
-  - Top stop: 10.4 rev unless the Hand has changed since 2026-11-22; if it has, lift the IDLE Hand onto the top stop, run `status` and use that reading.
-  - Start the Mocap recording and fly one Throw with the Cup empty, using FEAT-67's harness. Stop if the stage's plan needs more stroke than the top stop.
-  - Arm (a): place the ball in the Cup by hand, wait at least 2 s, Throw. 30 Throws.
-  - Arm (b): drop the ball in from about Catch height; the harness throws about 0.27 s after it lands. 30 Throws.
-  - Arm (c): the same with the ball coming in a few mm off the Cup axis. 30 Throws.
-  - Run the probe's bench mode on the recording before leaving the rig; fly 30 more of any arm whose variance ratio lands between 1.5 and 2.
-- pass: the probe's bench mode gives a launch velocity sd for all three arms from at least 25 Throws each
-- record: per arm the number of Throws and anything odd about how the ball sat or left; whether the ball was caught or fell; the recording's name
-- minutes: 75
+  - Before power, with the launch up and the bag recording: `ros2 param set /skill_node plant_id e1-<date>` (a name no Memory file has) and read it back with `ros2 param get /skill_node plant_id`.
+  - Rehearse the three Dwells; nothing moves and each reply must read viable: `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'self_toss,apex_m=1.00,dwell_s=0.27'}"`, then the same with `dwell_s=0.50` and with `dwell_s=1.00`. Drop a Dwell that is refused and note it.
+  - Boot, Home, Level, Activate. Check Level with the inclinometer reading on the GUI and write it down.
+  - Warm-up, not counted: ball in the Cup, `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss, apex_m: 1.00, dwell_s: 0.27, num_cycles: 12}" --feedback`.
+  - Block S, first half, 15 Attempts of one Throw: place the ball in the Cup by hand, take the hand away, count 3 s, then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss, apex_m: 1.00, dwell_s: 0.27, num_cycles: 1}" --feedback`. After a drop, place the ball back and carry on; a dropped Throw still counts.
+  - Block D27, 3 Attempts: `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss, apex_m: 1.00, dwell_s: 0.27, num_cycles: 12}" --feedback`.
+  - Block D50, 3 Attempts: `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss, apex_m: 1.00, dwell_s: 0.50, num_cycles: 12}" --feedback`.
+  - Block D100, 3 Attempts: `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss, apex_m: 1.00, dwell_s: 1.00, num_cycles: 12}" --feedback`.
+  - Second half in mirrored order: 3 more Attempts of D100, 3 of D50, 3 of D27, then the last 15 single Throws of block S, each with the same command as in the first half.
+  - Afterwards `ros2 param set /skill_node plant_id jugglebot` and read it back.
+- pass: at least 25 Throws with a launch fit in block S and at least 50 in each Dwell block that was not refused, so the per-block scatter can be read against the criterion
+- record: the plant_id used, the Level reading, the local time each block started, Throws and Catches per Attempt, and anything odd about how the ball sat or left the Cup
+- minutes: 60

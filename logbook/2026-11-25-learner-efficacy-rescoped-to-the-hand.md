@@ -9,6 +9,9 @@ related_entries:
   - 2026-11-25-learner-efficacy-e0-unsettled-ball-test.md
 files_changed:
   - plans/active/learner-efficacy.md
+  - map/feature-bench-hand-launch-baseline-launch-scatter-of-a-settled-a.md
+  - map/feature-bench-hand-launch-scatter-harness-a-throw-with-the-robot-s.md
+  - docs/runbook.md
   - plans/active/INDEX.md
   - docs/project-map.md
   - logbook/2026-11-25-learner-efficacy-rescoped-to-the-hand.md
@@ -27,6 +30,8 @@ tags:
 
 **The disagreement E1 is built to settle.** The owner expects little scatter from a hand-placed, settled ball: in his account the scatter comes from the ball not seating properly during the Dwell. E0's reading predicts g-sized scatter even then (the term appears at separation; Throws from rest on the robot carry about the same g, though that comparison was thin). E1 therefore has three arms (hand-placed and settled; dropped in and thrown after about 0.27 s; off-axis) and thresholds fixed before any bench Throw: 6 mm/s or less settled with twice the variance unsettled supports seating, 12 mm/s or more settled supports separation, against 17 mm/s on the robot. No Cup markers are needed, because the bench Hand does not move sideways.
 
-**Left open.** The Pathway's Destination still names bias for carried Throws, new configurations and yaw; with E3 retired this plan no longer completes it (plan § 7, owner decision). No Item was filed for E1; it needs one with a `## Sitting` section before it is flown.
+**Later the same day: E1 moved to the robot's Hand.** The bench Hand has no ball sensor (owner), so it cannot throw a fixed time after the ball lands. E1 is now a Self-throw Sitting on the robot (FEAT-68): 30 one-Throw Attempts with a hand-placed, rested ball, and about 66 running Throws each at Dwell 0.27, 0.50 and 1.00 s, at one Site and Apex on a scratch plant. The thresholds are unchanged (6 and 12 mm/s for the settled block), and the Dwell ladder adds a dose-response the E0 bags could not give, where Dwell was tied to the Pattern. The real Throw, the recording and the E0 probe are all already there, so the bench harness is not built; FEAT-67 shrinks to the per-block report. All eight goals nominate OK offline at the default limits (2026-11-25, `nominate.nominate` with `self_toss`, Apex 1.0, Dwell 0.27 / 0.50 / 0.75 / 1.00, one Throw and the short Pattern). The paragraph above describes the bench form as first written.
+
+**Left open.** The Pathway's Destination still names bias for carried Throws, new configurations and yaw; with E3 retired this plan no longer completes it (plan § 7, owner decision). E1's Item is FEAT-68, with its `## Sitting` section.
 
 **Verification.** Plan and logbook only. 2026-11-25, `flock /tmp/jugglebot-tests.lock python -m pytest tests/sim/test_plans_index.py tests/sim/test_mapkit*.py tests/sim/test_logbook_front_matter.py tests/sim/test_logbook_index.py tests/sim/test_docs_links.py tests/sim/test_no_legacy_item_ids.py -q`: result in the commit message.

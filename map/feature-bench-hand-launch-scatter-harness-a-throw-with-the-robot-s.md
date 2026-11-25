@@ -1,13 +1,13 @@
 ---
 id: FEAT-67
 kind: feature
-title: 'Bench Hand launch-scatter harness: a Throw with the robot''s release, Mocap recorded beside it, a bench mode for the release probe'
+title: 'E1 block report: per-block launch scatter from the release probe''s records, checked on the E0 bags'
 status: inbox
 created: '2026-11-25'
 updated: '2026-11-25T09:28:32Z'
 owners: []
 priority: high
-effort: m
+effort: s
 hardware: none
 radius: local
 area: hand
@@ -20,17 +20,15 @@ parent: learner-generalisation
 filed_by: claude-e0
 ---
 
-E1 of `plans/active/learner-efficacy.md` needs three things that do not exist yet. None needs hardware to build, and none needs markers on the bench Hand: the bench Hand does not move sideways, so the ball's lateral launch velocity from Mocap is the launch term directly. Only the ball has to be in the cameras' view.
+E1 of `plans/active/learner-efficacy.md` moved from the bench Hand to the robot's Hand on 2026-11-25 (owner: the bench Hand has no ball sensor). That removed most of this Item: the Throw is the robot's own, the launch already records Mocap, and `tools/probes/release_settle_bag_probe.py` runs on the bag unchanged. What is left is the report that turns the probe's per-Throw records into FEAT-68's verdict.
 
 ## What to build
 
-- **A bench Throw with the robot's release.** `hand_stream_bench.py --stage stroke_cut` ends in the C1 brake at 4500 rev/s^2. E0 placed the launch term at separation, so the bench release must be the robot's Throw deceleration or the result does not transfer. Add a stage that streams the Hand profile of a real Throw Segment at one Apex; check first which Apex the bench stroke (top stop 10.4 rev) allows.
-- **Mocap recorded beside the bench driver.** The bench driver owns the UDP link with the launch down, so nothing records `/mocap_data` today. Decide and rehearse one way: the Mocap node on its own with a bag of `/mocap_data`, or the bench Hand run under the launch. The record must carry the envelope stamp (`tools/probes/_bag_time.py`).
-- **A bench mode for `tools/probes/release_settle_bag_probe.py`.** No Memory rows and no announcements exist on the bench. Take the release from the ball's own peak upward velocity (the probe's `t_vpk`), fit the launch velocity over 0.035 to 0.2 s after it, and print per arm: n, lateral launch velocity sd per axis with a bootstrap interval, and the variance ratio between arms, against the thresholds in the plan's E1 Criterion.
-- **Arms (b) and (c) need the Throw to follow the ball's arrival by about 0.27 s.** Open question for the owner: does the bench Hand carry the ball sensor? If so, the stage fires a fixed delay after the sensor reads the ball. If not, the options are a trigger from live Mocap or a timed drop, and the delay is then read from the recording, not assumed.
+- **A `blocks` report on the probe's CSV.** Label every Throw by its goal: block S (the only Throw of a one-Throw Attempt, seated 1 s or more), and D27 / D50 / D100 (Throw index 2 or later in its Attempt, by Memory's `dwell_s`). The first Throw of a long Attempt is from rest and is reported apart. Never use the probe's `from_rest` flag alone: at Dwell 1.00 it fires on running Throws.
+- **Per block:** n, the sd per axis of the lateral launch velocity about the block mean, raw and with the measured Platform motion removed by one regression over the whole Sitting (30 Throws cannot carry the ten-regressor fit E0 used), a bootstrap interval by Attempt, and the variance ratios against block S.
+- **The verdict line** against FEAT-68's criterion, plus D27 binned by the Catch entry offset.
 
 ## Done when
 
-- The stage is dry-run against the bench stroke limits and flown once on the bench with an empty Cup.
-- The probe's bench mode is checked on existing robot bags: from-rest Throws of 2026-11-13 treated as bench Throws must give the launch velocity the bag analysis gave.
-- FEAT-68 (E1) has its `## Sitting` steps rewritten with the exact commands.
+- The report is checked on an E0 bag: 2026-11-06 15:53 must give the from-rest and running figures of `logbook/2026-11-25-learner-efficacy-e0-unsettled-ball-test.md` finding 3 (ratio 1.20, 12 against 254 Throws) to within the difference the simpler regression makes, and that difference is stated.
+- FEAT-68's `pass:` can be read straight off its output.

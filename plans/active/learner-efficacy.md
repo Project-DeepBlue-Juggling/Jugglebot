@@ -8,15 +8,15 @@ pathway: learner-generalisation
 branch: main
 scope: >-
   Fewer Attempts lost to Throw accuracy. Re-scoped 2026-11-25 after E0 (owner): the launch term is a
-  property of the ball leaving the Cup, so the plan measures it on the bench Hand and fixes it in the Hand
-  itself, judged against that bench number. The Learner keeps only its two correctness fixes; the transit
+  property of the ball leaving the Cup, so the plan measures it on the robot's Hand (a Self-throw baseline) and
+  fixes it in the Hand itself, judged against that baseline. The Learner keeps only its two correctness fixes; the transit
   term, yaw, the shrinkage estimator and the IMU study are retired from this plan and stay as Items.
 steps:
   - {id: PE0, title: Unsettled-ball test from existing bags, kind: phase, status: complete, completed: 2026-11-25, effort: m, hardware: none}
-  - {id: PE1, title: Bench Hand launch baseline, kind: phase, status: not_started, effort: s, hardware: bench-hand}
+  - {id: PE1, title: Launch baseline on the robot's Hand, kind: phase, status: not_started, effort: s, hardware: robot}
   - {id: PE2, title: Learner correctness fixes, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: PE3, title: The transit term and yaw, kind: phase, status: retired, date: 2026-11-25, effort: l, hardware: robot}
-  - {id: PE4, title: Hand change against the bench baseline, kind: phase, status: not_started, effort: m, hardware: bench-hand}
+  - {id: PE4, title: Hand change against the baseline, kind: phase, status: not_started, effort: m, hardware: robot}
   - {id: PE5, title: Catch-side robustness, kind: phase, status: not_started, effort: m, hardware: robot}
   - {id: PE6, title: The Platform IMU's part, kind: phase, status: retired, date: 2026-11-25, effort: m, hardware: robot}
   - {id: PE7, title: Close-out, kind: phase, status: not_started, effort: s, hardware: none}
@@ -104,8 +104,8 @@ What the review found:
 - Re-scope: keep the same Pathway (PWAY-2), written up as a new plan. Write-up and commit approved.
 
 **2026-11-25, after E0.** "It might not be worth going too deep down this rabbit hole ... the true solution
-here would be a fix to the hand itself." The plan is cut to what can move repeatability: a bench baseline
-(E1), a Hand change judged against it (E4), the Catch (E5), and the Learner's two correctness bugs (E2).
+here would be a fix to the hand itself." The plan is cut to what can move repeatability: a launch baseline
+(E1, moved from the bench Hand to the robot's Hand the same day), a Hand change judged against it (E4), the Catch (E5), and the Learner's two correctness bugs (E2).
 The owner's account stands as his prediction for E1: the scatter comes mostly from the ball not seating
 properly during the Dwell, so a hand-placed, settled ball should show little of it. E0's reading predicts the
 opposite (the term arises at separation, and Throws from rest on the robot carry about the same g). E1 is
@@ -130,10 +130,10 @@ Step ids: the frontmatter ids are `PE0` to `PE7` (a constraint of the plan tooli
 | Phase | Scope | Hardware | Status | Decides |
 |---|---|---|---|---|
 | E0 | Unsettled-ball test from existing bags | none | COMPLETE 2026-11-25: BETWEEN, leaning against | what E1 asks |
-| E1 | Bench Hand launch baseline (three arms) | bench-hand | NOT STARTED, next | seating or separation; E4's acceptance number |
+| E1 | Launch baseline on the robot's Hand (FEAT-68, report FEAT-67) | robot | NOT STARTED, next | seating or separation; E4's acceptance number |
 | E2 | Learner correctness fixes (BUG-137, BUG-138, one Memory) | none | NOT STARTED | nothing downstream; independent |
 | E3 | The transit term and yaw | robot | RETIRED 2026-11-25 | - |
-| E4 | Hand change against the bench baseline | bench-hand, then robot | NOT STARTED | whether the launch term is cut |
+| E4 | Hand change against the baseline | robot | NOT STARTED | whether the launch term is cut |
 | E5 | Catch-side robustness | robot | NOT STARTED | whether the 15 mm authority and the bounce-out causes need Items |
 | E6 | The Platform IMU's part | robot | RETIRED 2026-11-25 | - |
 | E7 | Close-out | none | NOT STARTED | archive of this plan |
@@ -178,45 +178,40 @@ matching configuration (95 % CI 2-46 %, n=81, median unchanged; pooled across Si
 Sittings that hold both kinds in one configuration), and off-axis Catches are followed by slightly
 larger g. Separate result: g appears in the 35 ms after the announced release (the ball's velocity against the
 Cup there explains 20-22 % of g; before release, 0 %). **Phase E1 cleared to start**, re-scoped
-2026-11-25 as a three-arm bench baseline that tests the owner's seating account against this reading. On
+2026-11-25 as a launch baseline on the robot's Hand that tests the owner's seating account against this reading. On
 the bags a perfect settle fix is bounded at about a quarter of g's variance (17 to about 14.5 mm/s).
 
-### Phase E1: Bench Hand launch baseline
+### Phase E1: Launch baseline on the robot's Hand
 
 **Purpose.** A number for the launch scatter of the current Cup, and a test that tells the owner's account
 (poor seating during the Dwell) from E0's reading (the release contact at separation). Without it a Hand
 change cannot be judged: Attempt length is too noisy to show whether a Cup change worked.
 
-**Preconditions.** The bench Hand in the Mocap cameras' view (owner, 2026-11-24). **No markers on the Cup are
-needed**: the bench Hand does not move sideways, so the ball's lateral launch velocity from Mocap is the
-launch term directly. The measure is the one E0 used (linear fit 0.035 to 0.2 s after release;
-`tools/probes/release_settle_bag_probe.py` holds the fit).
+**Where (owner, 2026-11-25).** The robot's Hand, not the bench Hand: the bench Hand has no ball sensor, so
+it cannot throw a fixed time after the ball lands. On the robot the Throw is the real one, the bag already
+holds everything `tools/probes/release_settle_bag_probe.py` needs, and no markers go on the Hand.
 
-**Work.** Three arms at one Apex, about 30 Throws each, the ball's lateral launch velocity sd per axis:
-- (a) hand-placed and settled, thrown after at least 2 s;
-- (b) dropped in from about Catch height and thrown after a Dwell of about 0.27 s;
-- (c) placed a few mm off-axis (or dropped in off-axis) and thrown after about 0.27 s.
+**Work.** FEAT-68 is the Sitting row: Self-throw at one Site, Apex 1.00 m, Platform Active and Level, on a
+scratch plant. Block S: 30 one-Throw Attempts with the ball hand-placed and rested 3 s. Blocks D27, D50,
+D100: about 66 running Throws each at Dwell 0.27, 0.50 and 1.00 s, flown in two mirrored halves. FEAT-67
+builds the per-block report. All eight goals were rehearsed offline at the default limits on 2026-11-25
+(`nomination OK`).
 
-**Criterion (pre-registered 2026-11-25, before any bench Throw).** On the robot g is about 17 mm/s per axis.
-- **Seating (the owner's account):** arm (a) at 6 mm/s or less AND arm (b) or (c) at twice arm (a)'s
-  variance or more. E4 then targets seating: a Cup that seats the ball faster, or a Catch that lands it
+**Criterion (pre-registered 2026-11-25, before any Throw).** The figure is the sd per axis of the lateral
+launch velocity about its block mean, with the measured Platform motion removed; about 17 mm/s on the E0
+bags.
+- **Seating (the owner's account):** S at 6 mm/s or less AND D27 at twice S's variance or more, falling as
+  the Dwell grows. E4 then targets seating: a Cup that seats the ball faster, or a Catch that lands it
   on-axis.
-- **Separation (E0's reading):** arm (a) at 12 mm/s or more, with (b) and (c) within 1.5 times its
+- **Separation (E0's reading):** S at 12 mm/s or more, with D27, D50 and D100 within 1.5 times S's
   variance. E4 then targets the release: Cup geometry and surface at the contact, Hand deceleration.
-- **Neither:** arm (a) at 6 mm/s or less and (b), (c) no worse means the term needs the robot (Platform
-  motion, Banking, the real Catch); a bench Cup change alone is then the wrong bet and E4 moves to the
-  robot. Anything between the thresholds is reported as mixed, with both shares.
-With 30 Throws an sd is known to about 13 %, so 6 against 12 mm/s is resolved; a variance ratio of 2 is
-marginal at 30 and needs about 60 per arm if it lands near the threshold.
+- **Mixed:** anything between, reported with both shares.
 
-**Hardware and safety.** **The bench Hand's stroke is SHORTER than the robot's with the same current cap
-(`stroke_cut` checks only the production clip): get the top stop first**, before any Throw. One bridge board
-serves bench and robot; run `live_session` (`tools/lib/live_session.sh`) first and never flash the
-bench-sysid firmware to the robot. Single-owner UDP on the bench. Run it as a Sitting with a `## Sitting`
-section on the filed Item.
+**Hardware and safety.** Robot, an ordinary Self-throw Sitting; `./run_tests.sh --full` first, and the row's
+own nominate calls are its rehearsal at the live limits. The robot Hand motor has slid roughly since the
+2026-11-20 overheat: this measures that Hand, and a repair before E4 means re-flying the row first.
 
-**Decides.** What E4 changes, and the number each Hand iteration is judged against. A bench result is a
-transfer claim to the robot until E4 confirms it there.
+**Decides.** What E4 changes, and the numbers each Hand iteration is judged against.
 
 ### Phase E2: Learner correctness fixes
 
@@ -262,7 +257,7 @@ about 20 mm sd of scatter, which barely moves the rms. BUG-79, IDEA-12 and IDEA-
 `BEAT_YAW_NOT_SUPPORTED` (schedule.py:822, :1507) stays. **What would reopen it:** E4 cutting the launch
 scatter enough that the bias is a visible share of the landing error.
 
-### Phase E4: Hand change against the bench baseline
+### Phase E4: Hand change against the baseline
 
 **Purpose.** The only step in this plan that can cut the launch scatter, which is 35-70 % of lateral landing
 variance: removing it would take about 20 mm sd to 11-16 mm.
@@ -270,14 +265,13 @@ variance: removing it would take about 20 mm sd to 11-16 mm.
 **Preconditions.** E1's result and number.
 
 **Work.** The owner's Hand or Cup change (design his; E1 says whether it should target seating or the
-release). Each iteration repeats the E1 arm that showed the scatter, on the bench, and is kept or dropped on
-that number. A kept change then flies on the robot as a normal Columns Attempt, and
-`release_settle_bag_probe.py` on that bag gives g for comparison with E0's 17 mm/s.
+release). Each iteration re-flies FEAT-68's row, or only the blocks that showed the scatter, and is kept or
+dropped on those numbers. A kept change then flies a normal Columns Attempt.
 
 **Criterion.** To be pre-registered here after E1 and before the first iteration (a proposed form: the
-bench launch sd at least halved, and g on the robot down by at least a third).
+launch sd of the block that showed the scatter at least halved).
 
-**Hardware and safety.** Bench Hand first (the E1 cautions apply), then the robot. A new Cup changes the
+**Hardware and safety.** Robot. A new Cup changes the
 ball's seat height and release point: re-check the Hand top stop and the Catch plane before the first robot
 Throw, and start a new plant Memory (E2(c)).
 
@@ -341,8 +335,8 @@ The old plan's stance "stays open until these have flown" (owner, 2026-11-06) wa
 
 1. The Destination of PWAY-2 still names bias for carried Throws, new configurations and yaw, which this plan
    no longer delivers (§ 3). Narrow it, or leave those as the Pathway's remaining Items?
-2. E4's criterion (proposed: bench launch sd at least halved, g on the robot down by at least a third) is
-   to be fixed after E1.
+2. E4's criterion (proposed: the launch sd of the block that showed the scatter at least halved) is to be
+   fixed after E1.
 3. E2's replay gate (rms no worse on every axis) comes from a prediction-quality replay, not a closed-loop
    simulation; owner to confirm.
 
