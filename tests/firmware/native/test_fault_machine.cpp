@@ -2231,3 +2231,56 @@ TEST_CASE("FW 53: the bus going down again during CONFIRM re-arms; the restarted
   CHECK_FALSE(s_stow_pending);
   CHECK(leg_held_mask() == 0);
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FW 53 U3 Finding 1: a stow blocked at the reconnect tick (a HOME, ACTIVATE or
+// DEACTIVATE still active) used to be lost: the reconnect branch cleared
+// s_fatal_can_error in that pass, so the start was never evaluated again and the
+// pending latch refused HOME / ACTIVATE / DEACTIVATE until a reboot. The start is
+// now evaluated every tick while the bus is up and the stow is pending.
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("FW 53: a stow blocked by a cold-start move at the reconnect tick starts once the move ends") {
+  for (int which = 0; which < 3; ++which) {
+    CAPTURE(which);
+    reset_all();
+    fake_set_clock(10'000'000, 10'000'000);
+    stage_six(0xFF, 0.0f, 0.0f);
+    fake_advance(3 * (uint64_t)CAN_AXIS_SILENCE_TIMEOUT_US);
+    fault_step();                                // loss: armed
+    REQUIRE(s_stow_pending);
+    if (which == 0) fake_set_homing(true);
+    if (which == 1) fake_set_activate(true);
+    if (which == 2) fake_set_deactivate(true);
+    stage_six(0xFF, 0.0f, 0.0f);
+    fault_step();                                // reconnect while blocked
+    CHECK_FALSE(fault_can_bus_down());
+    CHECK(s_stow_pending);
+    CHECK_FALSE(s_stowing);                      // never co-drive a Leg with the move
+    fake_advance(100000);
+    stage_six(0xFF, 0.0f, 0.0f);
+    fault_step();                                // still blocked
+    CHECK_FALSE(s_stowing);
+    fake_set_homing(false); fake_set_activate(false); fake_set_deactivate(false);
+    fake_advance(100000);
+    stage_six(0xFF, 0.0f, 0.0f);
+    fault_step();                                // the move ended: the stow starts
+    CHECK(s_stowing);
+    CHECK(interp_stow_active());
+  }
+}
+
+TEST_CASE("FW 53: an unblocked stow still starts in the reconnect tick, and never while the bus is down") {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  stage_six(0xFF, 0.0f, 0.0f);
+  fake_advance(3 * (uint64_t)CAN_AXIS_SILENCE_TIMEOUT_US);
+  fault_step();                                  // loss
+  CHECK_FALSE(s_stowing);
+  fake_advance(100000);
+  fault_step();                                  // still down: no start
+  CHECK_FALSE(s_stowing);
+  stage_six(0xFF, 0.0f, 0.0f);
+  fault_step();                                  // reconnect tick
+  CHECK(s_stowing);
+}

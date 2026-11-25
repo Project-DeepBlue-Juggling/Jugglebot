@@ -493,10 +493,18 @@ static void watchdog_and_stow() {
   // leg; the stow stays pending and runs the next cycle once homing finishes.
   if (s_fatal_can_error && all_present_legs_alive()) {
     s_fatal_can_error = false;
-    if (s_stow_pending && !s_stowing && !homing_active() && !activate_active() && !deactivate_active()) {
-      interp_begin_stow();            // profiled velocity-limited descent to the off pose
-      s_stowing = true;
-    }
+  }
+  // Start the armed stow once the bus is confirmed back and no cold-start move is
+  // driving a Leg. FW 53 (U3 Finding 1): this used to be evaluated only inside the
+  // reconnect branch above, in the same pass that cleared s_fatal_can_error, so a
+  // stow blocked by a move at that tick was never evaluated again: the pending latch
+  // then refused HOME / ACTIVATE / DEACTIVATE until a reboot. Evaluated every tick
+  // now; an unblocked stow still starts in the reconnect tick (s_stow_pending is set
+  // only together with s_fatal_can_error, and cleared when a stow ends).
+  if (!s_fatal_can_error && s_stow_pending && !s_stowing && all_present_legs_alive()
+      && !homing_active() && !activate_active() && !deactivate_active()) {
+    interp_begin_stow();              // profiled velocity-limited descent to the off pose
+    s_stowing = true;
   }
 
   // Stow progress. FW 53 (I-FW-19, fw53_design.md 3.3): the COMMANDED completion
