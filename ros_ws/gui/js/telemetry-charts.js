@@ -922,12 +922,17 @@ function initChartGridToggle() {
     const unitsDivider = document.createElement('span');
     unitsDivider.className = 'chart-toolbar-divider';
 
-    // Insert [units][divider][hide][show-all][event-logs][divider]
+    // Insert [units][divider][IMU charts][hide][show-all][event-logs][divider]
     // immediately before the visibility pills so the buttons sit adjacent to
-    // them, separated by the vertical rules.
+    // them, separated by the vertical rules. The IMU show/hide button is moved
+    // here from #imu-chart-controls (index.html) so the three show/hide buttons
+    // share one section (FEAT-66); imu-charts.js finds it by id, so its
+    // listener and label updates are unaffected by the move.
     rightGroup.insertBefore(unitsBtn, visToggles);
     rightGroup.insertBefore(unitsDivider, visToggles);
     applyUnitsButtonUI();
+    const imuBtn = document.getElementById('imu-charts-toggle-btn');
+    if (imuBtn) rightGroup.insertBefore(imuBtn, visToggles);
     rightGroup.insertBefore(btn, visToggles);
     rightGroup.insertBefore(showAllBtn, visToggles);
     rightGroup.insertBefore(markersBtn, visToggles);

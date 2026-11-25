@@ -498,6 +498,8 @@
 #signal-toggles { flex: 1 1 360px; min-width: 0; }
 /* The IMU filter / spectrum controls widen the right group: wrap it rather than clip Pause / Window. */
 #chart-right-group { flex-wrap: wrap; justify-content: flex-end; row-gap: 4px; flex-shrink: 1; min-width: 0; max-width: 100%; }
+/* .chart-toolbar-divider's display would otherwise override the hidden attribute. */
+#imu-controls-divider[hidden] { display: none; }
 #imu-chart-controls {
     display: flex;
     align-items: center;
