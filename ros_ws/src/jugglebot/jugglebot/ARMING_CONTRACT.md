@@ -191,6 +191,12 @@ work (2026-07-15) hit three distinct doors into that hole:
    Enforcement: `state_machine.activate_levelling_refusal` + `IdleHandler`; tests
    `tests/ros/test_state_machine.py::TestIdleLevelledActivate`,
    `tests/ros/test_orchestrator_node.py::TestLevelledActivate`.
+   Step 0 and A6 are separate gates on separate commands from IDLE and neither
+   reads the other's inputs: `home` passes only A6 (Leg states), `activate` only
+   C-LEVEL-1.A (the loaded correction), so a loaded correction never lets `home`
+   past Closed-loop Legs and six settled Idle Legs never let `activate` past a
+   missing correction. Test:
+   `tests/ros/test_state_machine.py::TestHomingGateAndLevelledActivateCompose`.
 1. ActiveHandler requests the profiled ACTIVATE, which the orchestrator sends
    with those targets (the bridge fires can-bridge `ACTIVATE_TO`; TRAP_TRAJ to the
    Levelled Active pose — `mpc_active=0`, the stream is irrelevant to a profiled

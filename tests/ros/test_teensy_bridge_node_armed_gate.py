@@ -156,3 +156,36 @@ def test_reboot_odrives_refused_while_armed_before_the_rpc_and_the_cold_start_cl
     finally:
         node._mpc_active = False
         _teardown(teensy, client, node)
+
+
+def test_shutdown_homing_abort_idle_and_the_not_homed_write_pass_while_armed():
+    """fw-integrate (2026-11-25): the FW 52 host gate meets two main-side paths.
+    BUG-47's shutdown homing abort sends SET_AXIS_STATE(axis, IDLE): a stop, never
+    refused. BUG-122's reference-loss clear writes is_homed=False through the
+    Platform Teensy relay (STATE_WRITE): not a reconfiguration RPC, never refused.
+    Both stay allowed even with both sides reporting Armed (a homing never runs
+    Armed in production; this pins that the gate cannot block either if it did)."""
+    teensy, client, node = _build_paired_node()
+    try:
+        box = _capture(teensy, RpcMethod.SET_AXIS_STATE)
+        node._mpc_active = True
+        _bridge_armed(node, True)
+        assert node._armed_anywhere()
+        node._abort_homing_axis(2, home_accepted=True)
+        assert box['calls'] == [rpc_args.encode_set_axis_state(2, proto.ODRIVE_STATES['IDLE'])]
+        assert not rpc_args.refused_while_armed(
+            RpcMethod.SET_AXIS_STATE, 2, proto.ODRIVE_STATES['IDLE'])
+        assert int(RpcMethod.STATE_WRITE) not in rpc_args_gated()
+        writes = _capture(teensy, RpcMethod.STATE_WRITE)
+        ok, msg = node._write_is_homed(False)
+        assert ok, msg
+        assert len(writes['calls']) == 1
+    finally:
+        node._mpc_active = False
+        _teardown(teensy, client, node)
+
+
+def rpc_args_gated():
+    """Every method the Python twin of the bridge's gate refuses for some axis/state."""
+    return {int(m) for m in RpcMethod
+            if any(rpc_args.refused_while_armed(m, ax, 8) for ax in range(p.NUM_LEGS + 1))}

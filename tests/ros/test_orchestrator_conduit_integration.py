@@ -234,6 +234,11 @@ def test_boot_home_level_activate_lands_on_the_levelled_active_pose():
     orch, traj, teensy, client, bridge = _four_nodes(activations)
     try:
         msg = _cold_start_msg(is_homed=False, encoder_search_complete=False)
+        # ARMING_CONTRACT A6 holds BOOT until the six Legs have been Idle for
+        # 2 s (composes with C-LEVEL-1.A below: fw-integrate 2026-11-25).
+        _run_until_with_traj(orch, traj, msg, None, max_ticks=3)
+        assert orch.sm.state == RobotState.BOOT
+        orch.ctx.legs_idle_since -= 10.0      # back-date the run, no sleep
         assert _run_until_with_traj(orch, traj, msg, RobotState.IDLE)
 
         # Activate before level: refused in IDLE, nothing reaches the bridge.

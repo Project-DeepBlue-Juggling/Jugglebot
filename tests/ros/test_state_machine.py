@@ -2195,3 +2195,80 @@ class TestHomingGate:
             assert sm.state in (RobotState.FAULT, RobotState.BOOT)
             ctx.operation_pending = False
             assert _requests_moving_legs(ctx.drain_requests()) == []
+
+
+class TestHomingGateAndLevelledActivateCompose:
+    """The two IDLE gates on ONE machine instance (fw-integrate, 2026-11-25):
+    ARMING_CONTRACT A6 guards every transition into HOMING (StateMachine
+    `_homing_entry_refused`), C-LEVEL-1.A guards the operator's `activate`
+    (IdleHandler, choreography step 0). Neither opens or closes the other:
+    a loaded correction never lets `home` past Closed-loop Legs, and six
+    settled Idle Legs never let `activate` past a missing correction."""
+
+    def test_each_gate_refuses_its_own_command_and_neither_weakens_the_other(self):
+        notes = []
+        sm = build_default_machine(log_fn=lambda msg: None)
+        ctx = Context()
+        ctx.notify = notes.append
+        _boot_ready(ctx)
+        ctx.is_homed = True                          # BOOT -> IDLE with no Homing
+        _legs(ctx, [_CL] * 6)
+        ctx.gravity_correction_loaded = False        # a fresh status, nothing loaded
+        ctx.traj_status_age_s = 0.1
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
+
+        # (a) Legs Closed-loop, no correction: `home` refused by A6 alone ...
+        ctx.enqueue_command('home')
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
+        assert ctx.drain_requests() == []
+        assert len(notes) == 1 and 'Closed-loop' in notes[0]
+        assert not notes[0].startswith('activate refused')
+        # ... and `activate` refused by C-LEVEL-1.A alone (no fetch, nothing moved).
+        ctx.enqueue_command('activate')
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
+        assert ctx.drain_requests() == []
+        assert len(notes) == 2 and notes[1].startswith('activate refused')
+        assert 'gravity_correction_loaded is false' in notes[1]
+
+        # (b) A loaded correction does not open A6.
+        _levelled(ctx)
+        _legs(ctx, [_CL] * 6)
+        ctx.enqueue_command('home')
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
+        assert ctx.drain_requests() == []
+        assert len(notes) == 3 and 'Closed-loop' in notes[2]
+
+        # (c) Six settled Idle Legs do not open C-LEVEL-1.A.
+        ctx.gravity_correction_loaded = False
+        _legs(ctx, [_IDLE] * 6)
+        ctx.enqueue_command('activate')
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
+        assert ctx.drain_requests() == []
+        assert len(notes) == 4 and notes[3].startswith('activate refused')
+
+        # (d) A6 passes for `home` with the correction still missing.
+        ctx.enqueue_command('home')
+        sm.tick(ctx)
+        assert sm.state == RobotState.HOMING
+        assert len(notes) == 4                       # no notice on a pass
+
+        # (e) Back in IDLE (forced; HOMING's own flow is covered elsewhere), a
+        # fresh loaded correction lets `activate` fetch and leave for ACTIVE.
+        sm.force_transition(RobotState.IDLE, ctx)
+        sm.tick(ctx)                                 # IDLE on_enter
+        ctx.clear_requests()
+        _levelled(ctx)
+        ctx.enqueue_command('activate')
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
+        assert ctx.drain_requests() == ['fetch_activate_targets']
+        ctx.activate_leg_targets_rev = list(_LEVELLED_TARGETS)
+        ctx.operation_result = True
+        sm.tick(ctx)
+        assert sm.state == RobotState.ACTIVE
+        assert len(notes) == 4
