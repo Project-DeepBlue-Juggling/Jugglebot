@@ -60,6 +60,42 @@ struct StowVerdict {
 // asks whether every OTHER present Leg is at Stow.
 StowVerdict platform_at_stow(uint64_t now, uint8_t except_leg = 0xFF);
 
+// ── The bench exemption (owner, 2026-11-25) ──────────────────────────────────
+// "The bench leg can be put into IDLE at any position, without any negative
+// consequence ... the bench setup will only ever have one ODrive on CAN2, while the
+// robot has 7 (and the Platform Teensy)." The same board drives both, so the rig is
+// inferred from what the Jugglebot bus has carried since boot, and every doubt
+// reads ROBOT (gate on). rig_is_bench(now) is true iff ALL of:
+//   * the robot latch is clear;
+//   * exactly ONE ODrive axis, Leg or Hand (node ids 0..6), has been heard since
+//     boot: a well-formed frame noted by rig_note_axis_frame, or heartbeat_seen;
+//   * no Platform Teensy frame since boot (rig_note_platform_frame);
+//   * the bus was transmittable at the last 1 kHz sample, and
+//     now - max(first axis frame, bus last became transmittable) >= RIG_BENCH_SETTLE_US.
+// A second axis or any Platform Teensy frame sets the robot latch (sticky until the
+// next bridge boot), even if those nodes later fall silent. A bench misread as a
+// robot is harmless (its Leg must then be at Stow to idle); the reverse is the
+// failure this predicate is built against (leg_stow_gate.cpp, logbook
+// 2026-11-25-fw53-u1b-bench-exemption).
+bool rig_is_bench(uint64_t now);
+
+// The one question every Leg de-energise asks (the wrappers, DEACTIVATE):
+// rig_is_bench(now) || platform_at_stow(now, except_leg).ok.
+bool leg_idle_permitted(uint64_t now, uint8_t except_leg = 0xFF);
+
+// The witnesses, written by the Jugglebot-bus RX/service path (can_buses.cpp,
+// task_can_rx): a well-formed frame from ODrive axis `axis`; any Platform Teensy
+// frame (is_platform_teensy_tx_id); the live ESR1.SYNCH sample.
+void rig_note_axis_frame(uint8_t axis, uint64_t now);
+void rig_note_platform_frame();
+void rig_note_bus(bool transmittable, uint64_t now);
+
+// Console view (the [rig] serial line): bit a = axis a heard since boot; the
+// Platform witness; the sticky robot latch.
+uint8_t rig_axes_heard_mask();
+bool    rig_platform_seen();
+bool    rig_robot_latched();
+
 // The firmware twin of ARMING_CONTRACT A6, for HOME(Leg): every present Leg has
 // a fresh, CL-confirmed heartbeat reporting IDLE (strictly; ENCODER_INDEX_SEARCH
 // and an at-Stow Closed-loop Leg both refuse).
@@ -79,7 +115,8 @@ enum class DeResult : uint8_t { SENT, REFUSED, TX_FAILED };
 //     driving (homing_axis_in_flight()): sent without the predicate (the A6 twin
 //     established every Leg IDLE when the HOME was accepted). Any other
 //     HOMING_OWNER request falls through to the predicate like any caller;
-//   * anything else for a Leg: platform_at_stow(micros64()). On refusal nothing
+//   * anything else for a Leg: leg_idle_permitted(micros64()), i.e. the bench
+//     exemption or platform_at_stow(). On refusal nothing
 //     goes on CAN, the census counts it, and LADDER/STOW callers set the Leg's
 //     HELD bit (an RPC refusal is the host's answer, not a held Leg);
 //   * axis >= NUM_AXES: REFUSED, not counted.

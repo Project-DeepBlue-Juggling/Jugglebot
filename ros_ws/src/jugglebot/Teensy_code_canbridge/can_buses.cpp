@@ -13,6 +13,7 @@
 #include "version_check.h"   // cache Get_Version replies (version_record)
 #include "gpio_poll.h"       // hand ball-sensor TxSdo replies (gpio_poll_record)
 #include "rpc.h"             // hand torque-scale TxSdo replies (Rpc::hand_torque_scale_record)
+#include "leg_stow_gate.h"   // rig_note_* : the bench/robot witnesses for rig_is_bench (FW 53)
 
 namespace CanBridge {
 
@@ -196,7 +197,10 @@ static void decode_into_cache(const CAN_message_t& msg) {
   // single SPARSEST stream (the 10 Hz heartbeat) of the ~272 frames/s an ODrive
   // broadcasts. Stray/garbled frames are excluded by the two guards above, so a
   // bus full of junk cannot forge liveness for a silent node.
-  atomic_write_u64(&a.last_rx_us, micros64());
+  const uint64_t rx_mono = micros64();
+  atomic_write_u64(&a.last_rx_us, rx_mono);
+  // FW 53: the same well-formed frame is this axis's witness for rig_is_bench().
+  rig_note_axis_frame(axis, rx_mono);
 
   switch (cmd) {
     case ODriveCmd::heartbeat_message: {
@@ -634,6 +638,9 @@ static void on_jugglebot_rx(const CAN_message_t& msg) {
   // delivered frame counts: the quantity is how late the RING hands frames over,
   // which has nothing to do with what any given frame turns out to contain.
   jb_lag_fold(msg.timestamp, now_mono);
+  // FW 53: any Platform Teensy frame since boot makes this board a robot
+  // (rig_is_bench). Above the early returns below, so every id counts.
+  if (is_platform_teensy_tx_id(msg.id)) rig_note_platform_frame();
   // FW 45: the Platform IMU upload frames (0x6E6) go to their own ring, before the
   // reply test, so up to 1600 frames/s never touch the 8-slot reply ring. One
   // compare per frame for every other id; for an IMU frame an 8-byte copy and three
@@ -962,6 +969,9 @@ void can_buses_service() {
   // jugglebot FLEXCAN2 — the ESR1 base must follow the role's controller.
   service_bus(can_cone,      s_cone_rxh,      IMXRT_FLEXCAN3_ADDRESS, s_cone_esr1,      s_cone_ringprobe);
   service_bus(can_jugglebot, s_jugglebot_rxh, IMXRT_FLEXCAN2_ADDRESS, s_jugglebot_esr1, s_jugglebot_ringprobe);
+  // FW 53: the bench settle clock runs only while the Jugglebot bus is transmittable
+  // (the same live ESR1.SYNCH as jugglebot_bus_transmittable), sampled at 1 kHz.
+  rig_note_bus(s_jugglebot_rxh.synced != 0, micros64());
   // One increment per TICK, not per bus: it is the denominator for the extrema
   // above, and all three buses are probed exactly once each per tick.
   ++s_ring_probe_ticks;

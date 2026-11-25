@@ -481,6 +481,27 @@ TEST_CASE("MONITOR timeout mid-descent: freeze frames within [0, seed], no IDLE"
   CHECK(leg_held_mask() == 0x03);
 }
 
+// FW 53 U1b (owner 2026-11-25): on the one-Leg bench (rig_is_bench) the Stow gate is
+// off, so a MONITOR timeout far above Stow IDLEs the Leg as FW 52 did, instead of the
+// robot's freeze. Mutation caught: leg_deactivate.cpp's timeout branch reverted to
+// platform_at_stow(now).ok (a freeze frame, no IDLE).
+TEST_CASE("MONITOR timeout on the one-Leg bench IDLEs the Leg above Stow (FAILED, not held)") {
+  full_reset(0x01, ST_CL, POSED);
+  rig_note_axis_frame(0, micros64());      // the bench Leg's first frame ...
+  rig_note_bus(true, micros64());          // ... on a transmittable bus, both at the start
+  run_to_monitor(0);
+  cs_set_mono(s_t_start_us + D_TIMEOUT_US + 1);   // 10 s > RIG_BENCH_SETTLE_US
+  confirmed(0, ST_CL, 0.8f, 0.0f);                 // blocked at 0.8 rev
+  REQUIRE(rig_is_bench(micros64()));
+  cs_clear_sent();
+  deactivate_step();
+  CHECK_FALSE(deactivate_active());
+  CHECK(count_set_state() == 1);
+  CHECK(cs_sent_count() == 1);
+  CHECK(deactivate_result(0) == DEACTIVATE_FAILED);
+  CHECK(leg_held_mask() == 0);
+}
+
 TEST_CASE("MONITOR timeout with the Platform at Stow IDLEs the legs (FAILED)") {
   full_reset(0x03, ST_CL, POSED);
   run_to_monitor(JbUdp::RpcArgs::AXIS_ALL);

@@ -500,6 +500,18 @@ static_assert(STOW_WINDOW_MIN_REV <= STOW_OFF_POSE_REV - JBOp::TARGET_REACHED_PO
 // SETUP settle (leg_activate/leg_deactivate SETTLE_SETUP_US). The ODrive's CL
 // engage latency is assumed, not measured (fw53_design.md section 9).
 constexpr uint64_t CL_ENGAGE_SETTLE_US = 10000ull;   // 10 ms
+// The one-Leg bench is exempt from the Stow gate (owner, 2026-11-25): rig_is_bench()
+// in leg_stow_gate.h. It reads "bench" only after exactly one ODrive axis and no
+// Platform Teensy frame have been heard for this long, counted from the LATER of the
+// first axis frame since boot and the Jugglebot bus last becoming transmittable
+// (ESR1.SYNCH). Sized so a robot whose drives come up one by one cannot be caught
+// between its first and second drive: an ODrive heartbeats at 10 Hz (100 ms) and
+// streams ~272 frames/s, so a live drive is heard within ~100 ms; robot drives share
+// one supply and boot together; and 5 s exceeds the ~3.5 s worst-case ODrive reboot
+// gap quoted at BUS_PARTNER_STALENESS_US, so even a drive that takes the longest
+// observed boot lands inside the window. Also ten Platform Teensy TRAFFIC_REPORTs
+// (2 Hz). The cost is a bench Leg that cannot be idled off-Stow for the first 5 s.
+constexpr uint64_t RIG_BENCH_SETTLE_US = 5000000ull;   // 5 s
 // Accel limit for the stow descent so the commanded velocity ramps (no startup
 // step). Reaches the gentle-move velocity limit in ~0.25 s.
 constexpr float STOW_ACCEL_RPS2 = 10.0f;

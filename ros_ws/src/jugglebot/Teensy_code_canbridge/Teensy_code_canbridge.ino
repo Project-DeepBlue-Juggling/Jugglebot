@@ -47,6 +47,7 @@ using namespace arduino;
 #include "leg_homing.h"          // leg homing state machine
 #include "leg_activate.h"        // leg activate (move to active pose)
 #include "leg_deactivate.h"      // leg deactivate (controlled lower + IDLE)
+#include "leg_stow_gate.h"       // rig_is_bench verdict for the [rig] console line (FW 53)
 #include "version_check.h"       // Get_Version sweep + version cache
 #include "gpio_poll.h"           // hand ball-present sensor poll (hand ODrive G02)
 #include "profiling.h"           // Profiling/instrumentation
@@ -454,6 +455,22 @@ static void task_diag(void*) {
                     (unsigned long)s.tx_frames, (unsigned long)s.crc_errors,
                     (unsigned long)s.seq_gaps, (unsigned long)s.drain_cap_hits,
                     (int)time_synced(), (unsigned)xPortGetFreeHeapSize());
+      // FW 53: the Stow gate's bench/robot verdict (rig_is_bench, leg_stow_gate.h), on
+      // every change and once a minute. "bench" = a Leg may be idled at any position.
+      // Evaluating it here at 1 Hz also sets the sticky robot latch promptly.
+      {
+        static int8_t last_rig = -1;
+        static uint32_t rig_tick = 0;
+        const bool bench = rig_is_bench(micros64());
+        const int8_t rig = rig_robot_latched() ? 2 : (bench ? 1 : 0);
+        if (rig != last_rig || rig_tick % 60u == 0u) {
+          Serial.printf("[rig] %s axes_heard=0x%02x platform_seen=%d\n",
+                        rig == 2 ? "robot (latched)" : (rig == 1 ? "bench (Stow gate off)" : "undecided (gate on)"),
+                        (unsigned)rig_axes_heard_mask(), (int)rig_platform_seen());
+          last_rig = rig;
+        }
+        rig_tick++;
+      }
       // FW 52 (BUG-99 D5): datagrams dropped for a source that is not the Jetson.
       // Nonzero = some host other than 192.168.42.1 is talking to the bridge, or
       // the Jetson is sending from another address (then the bridge ignores it:

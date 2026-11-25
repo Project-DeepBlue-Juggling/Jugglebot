@@ -352,3 +352,171 @@ TEST_CASE("15: all_present_legs_idle is strict IDLE under the same freshness rul
   cs_stage_leg(3, IDLE, 0.0f, 0.0f, FRESH_HB, FRESH_ENC);
   CHECK(all_present_legs_idle(micros64()));
 }
+
+// =============================================================================
+//  The bench exemption, rig_is_bench (FW 53 U1b, owner 2026-11-25). The RX witnesses
+//  are driven directly through rig_note_* (can_buses.cpp's hooks are not compiled
+//  natively); cs_stage_leg sets heartbeat_seen, which the census also counts.
+//  Mutation table: fw53-u1b logbook entry.
+// =============================================================================
+static constexpr uint64_t SETTLE = RIG_BENCH_SETTLE_US;
+
+// The bench Leg 0, CL at 2 rev (far off Stow), heard at `t_axis`, bus transmittable from `t_bus`.
+static void stage_bench_leg(uint64_t t_axis, uint64_t t_bus) {
+  reset_all();
+  cs_stage_leg(0, CL, 2.0f, 0.0f, FRESH_HB, FRESH_ENC);
+  rig_note_axis_frame(0, t_axis);
+  rig_note_bus(true, t_bus);
+}
+
+// ── 16 ── mutation M1: the wrappers ask platform_at_stow only (bench ignored) ──
+TEST_CASE("16: one Leg alone past the settle is a bench: IDLE, REBOOT and SDO_WRITE at 2 rev are SENT") {
+  stage_bench_leg(T0, T0);
+  cs_set_mono(T0 + SETTLE);
+  CHECK(rig_is_bench(micros64()));
+  CHECK_FALSE(at_stow());                      // the Platform predicate itself is unchanged
+  CHECK(leg_idle_permitted(micros64()));
+  CHECK(odrive_set_state_tx(0, IDLE, TxCls::RPC, Who::RPC) == DeResult::SENT);
+  CHECK(odrive_reboot_tx(0, TxCls::SAFETY, Who::RPC) == DeResult::SENT);
+  CHECK(odrive_sdo_write_tx(0, 0x1234, 1.0f, TxCls::RPC, Who::RPC) == DeResult::SENT);
+  CHECK(odrive_set_state_tx(0, IDLE, TxCls::OTHER, Who::LADDER) == DeResult::SENT);
+  CHECK(cs_sent_count() == 4);
+  CHECK(leg_deenergise_refusals() == 0);
+  CHECK(leg_held_mask() == 0);
+  CHECK_FALSE(rig_robot_latched());
+}
+
+// ── 17 ── mutations M2: no settle; M3: anchor = bus only; M4: anchor = first axis only ──
+TEST_CASE("17: before the settle a lone Leg is not a bench; the settle runs from the LATER of first axis and bus") {
+  // M2: 1 us short of the settle refuses.
+  stage_bench_leg(T0, T0);
+  cs_set_mono(T0 + SETTLE - 1);
+  CHECK_FALSE(rig_is_bench(micros64()));
+  CHECK(odrive_set_state_tx(0, IDLE, TxCls::RPC, Who::RPC) == DeResult::REFUSED);
+  CHECK(cs_sent_count() == 0);
+  // M3: the robot powered AFTER the bridge booted: the bus was transmittable for
+  // 60 s with nothing on it, then the first drive spoke. Its first 100 ms (and the
+  // whole settle) must not read as a bench.
+  stage_bench_leg(T0 + 60000000ull, T0);
+  cs_set_mono(T0 + 60000000ull + 100000ull);
+  CHECK_FALSE(rig_is_bench(micros64()));
+  cs_set_mono(T0 + 60000000ull + SETTLE - 1);
+  CHECK_FALSE(rig_is_bench(micros64()));
+  cs_set_mono(T0 + 60000000ull + SETTLE);
+  CHECK(rig_is_bench(micros64()));
+  // M4: the axis heard long ago, the bus transmittable only since T0 + 60 s.
+  stage_bench_leg(T0, T0 + 60000000ull);
+  cs_set_mono(T0 + 60000000ull + SETTLE - 1);
+  CHECK_FALSE(rig_is_bench(micros64()));
+  cs_set_mono(T0 + 60000000ull + SETTLE);
+  CHECK(rig_is_bench(micros64()));
+}
+
+// ── 18 ── mutations M5: the Platform witness ignored; M6: TRAFFIC_REPORT not a Platform id ──
+TEST_CASE("18: one Leg plus a Platform Teensy frame is a robot, latched; the Platform id classifier") {
+  stage_bench_leg(T0, T0);
+  rig_note_platform_frame();
+  cs_set_mono(T0 + 10 * SETTLE);
+  CHECK_FALSE(rig_is_bench(micros64()));
+  CHECK(rig_robot_latched());
+  CHECK(odrive_set_state_tx(0, IDLE, TxCls::RPC, Who::RPC) == DeResult::REFUSED);
+  CHECK(cs_sent_count() == 0);
+  // Every id the Platform Teensy sends counts; ODrive and bridge-sent ids do not.
+  for (uint32_t id : { PlatformCanId::TRAFFIC_REPORT, PlatformCanId::STATE_UPDATE,
+                       PlatformCanId::TILT_READING, PlatformCanId::FW_UPDATE_REPLY,
+                       PlatformCanId::HAND_FAN_STATUS, PlatformCanId::IMU_REPLY,
+                       PlatformCanId::IMU_STATUS, PlatformCanId::IMU_DATA,
+                       PlatformCanId::IMU_LIVE_ACCEL, PlatformCanId::IMU_LIVE_GYRO }) {
+    INFO("id=" << id);
+    CHECK(is_platform_teensy_tx_id(id));
+  }
+  CHECK_FALSE(is_platform_teensy_tx_id(0x001));                                  // Leg 0 heartbeat
+  CHECK_FALSE(is_platform_teensy_tx_id((uint32_t)(HAND_AXIS << 5) | 0x09));      // Hand encoder
+  CHECK_FALSE(is_platform_teensy_tx_id(0x7DD));                                  // bridge time sync
+}
+
+// ── 19 ── mutation M7: no sticky robot latch ──────────────────────────────────
+TEST_CASE("19: two axes heard, then one silent, stays a robot until the next boot") {
+  stage_bench_leg(T0, T0);
+  cs_stage_leg(1, IDLE, -0.1f, 0.0f, FRESH_HB, FRESH_ENC);   // heartbeat_seen only, no RX note
+  cs_set_mono(T0 + 1000);
+  CHECK_FALSE(rig_is_bench(micros64()));
+  CHECK(rig_robot_latched());
+  // Leg 1 silent for a minute (a stale heartbeat still counts as heard) ...
+  cs_set_mono(T0 + 60000000ull);
+  CHECK_FALSE(rig_is_bench(micros64()));
+  // ... and even with its presence latch wiped (a future reboot path), still a robot.
+  axes[1].heartbeat_seen = false;
+  CHECK(rig_axes_heard_mask() == 0x01);
+  CHECK_FALSE(rig_is_bench(micros64()));
+  CHECK(odrive_set_state_tx(0, IDLE, TxCls::RPC, Who::RPC) == DeResult::REFUSED);
+  // The next boot clears it.
+  leg_stow_gate_init();
+  rig_note_axis_frame(0, T0 + 60000000ull);
+  rig_note_bus(true, T0 + 60000000ull);
+  cs_set_mono(T0 + 60000000ull + SETTLE);
+  CHECK(rig_is_bench(micros64()));
+}
+
+// ── 20 ── mutation M8: only Leg axes counted (the Hand ignored) ───────────────
+TEST_CASE("20: one Leg plus the Hand is a robot") {
+  stage_bench_leg(T0, T0);
+  rig_note_axis_frame(HAND_AXIS, T0 + 500000ull);
+  cs_set_mono(T0 + 10 * SETTLE);
+  CHECK(rig_axes_heard_mask() == (uint8_t)(0x01 | (1u << HAND_AXIS)));
+  CHECK_FALSE(rig_is_bench(micros64()));
+  CHECK(rig_robot_latched());
+  CHECK(odrive_set_state_tx(0, IDLE, TxCls::RPC, Who::RPC) == DeResult::REFUSED);
+}
+
+// ── 21 ── mutations M9: a non-transmittable sample does not restart the clock;
+//          M10: rig_is_bench ignores the bus (tx == 0) ─────────────────────────
+TEST_CASE("21: the bus not transmittable holds the settle clock") {
+  stage_bench_leg(T0, T0);
+  // Bus drops 3 s in, returns 4 s in: the settle restarts from the return.
+  rig_note_bus(false, T0 + 3000000ull);
+  cs_set_mono(T0 + 3500000ull);
+  CHECK_FALSE(rig_is_bench(micros64()));
+  rig_note_bus(true, T0 + 4000000ull);
+  rig_note_bus(true, T0 + 4500000ull);          // later samples do not move the anchor
+  cs_set_mono(T0 + 4000000ull + SETTLE - 1);
+  CHECK_FALSE(rig_is_bench(micros64()));
+  CHECK(odrive_set_state_tx(0, IDLE, TxCls::RPC, Who::RPC) == DeResult::REFUSED);
+  cs_set_mono(T0 + 4000000ull + SETTLE);
+  CHECK(rig_is_bench(micros64()));
+  // Bus down now: not a bench, however long ago the settle completed.
+  rig_note_bus(false, T0 + 20000000ull);
+  cs_set_mono(T0 + 20000001ull);
+  CHECK_FALSE(rig_is_bench(micros64()));
+  // Never transmittable since boot: never a bench.
+  reset_all();
+  cs_stage_leg(0, CL, 2.0f, 0.0f, FRESH_HB, FRESH_ENC);
+  rig_note_axis_frame(0, T0);
+  cs_set_mono(T0 + 10 * SETTLE);
+  CHECK_FALSE(rig_is_bench(micros64()));
+}
+
+// ── 22 ── mutations M11: "exactly one" weakened to "any"; M12: no now >= anchor guard ──
+TEST_CASE("22: the six-Leg robot past the settle stays gated; a now older than the anchor is not settled") {
+  reset_all();
+  stage_all_idle();
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) rig_note_axis_frame(i, T0);
+  rig_note_bus(true, T0);
+  cs_stage_leg(3, CL, 2.2f, 0.0f, FRESH_HB, FRESH_ENC);
+  cs_set_mono(T0 + 10 * SETTLE);
+  CHECK_FALSE(rig_is_bench(micros64()));
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    CHECK(odrive_set_state_tx(i, IDLE, TxCls::RPC, Who::RPC) == DeResult::REFUSED);
+    CHECK(odrive_reboot_tx(i, TxCls::SAFETY, Who::RPC) == DeResult::REFUSED);
+    CHECK(odrive_sdo_write_tx(i, 0x1234, 1.0f, TxCls::RPC, Who::RPC) == DeResult::REFUSED);
+  }
+  CHECK(cs_sent_count() == 0);
+  // A caller that captured `now` before the first axis frame was stamped.
+  stage_bench_leg(T0 + 10 * SETTLE, T0);
+  CHECK_FALSE(rig_is_bench(T0));
+  // No axis heard at all is not a bench either (nothing to exempt).
+  reset_all();
+  rig_note_bus(true, T0);
+  cs_set_mono(T0 + 10 * SETTLE);
+  CHECK_FALSE(rig_is_bench(micros64()));
+}

@@ -38,13 +38,72 @@ namespace CanBridge {
 static volatile uint64_t s_cl_cmd_us[NUM_LEGS] = { 0 };   // atomic_*_u64 only
 static volatile uint8_t  s_held_mask = 0;
 static volatile uint32_t s_refusals  = 0;
+// rig_is_bench witnesses. Written by task_can_rx only (rig_note_*), except the
+// robot latch, which any reader may SET (never clear): a single byte, so a race
+// can only latch robot sooner.
+static volatile uint8_t  s_rig_heard_mask    = 0;     // bit a = axis a noted
+static volatile uint64_t s_rig_first_axis_us = 0;     // first axis frame since boot; atomic_*_u64
+static volatile uint64_t s_rig_tx_since_us   = 0;     // bus transmittable since; 0 = not at last sample
+static volatile bool     s_rig_platform_seen = false;
+static volatile bool     s_rig_robot         = false;
 
 void leg_stow_gate_init() {
   for (uint8_t i = 0; i < NUM_LEGS; ++i) atomic_write_u64(&s_cl_cmd_us[i], 0);
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   s_held_mask = 0;
   s_refusals  = 0;
+  s_rig_heard_mask    = 0;
+  s_rig_platform_seen = false;
+  s_rig_robot         = false;
   __set_PRIMASK(pm);
+  atomic_write_u64(&s_rig_first_axis_us, 0);
+  atomic_write_u64(&s_rig_tx_since_us, 0);
+}
+
+// ── Bench or robot ───────────────────────────────────────────────────────────
+// 0 is the "never" sentinel of both stamps; micros64() is nonzero once a frame can
+// arrive, and a 0 argument is bumped to 1 so a sentinel can never be written.
+void rig_note_axis_frame(uint8_t axis, uint64_t now) {
+  if (axis >= NUM_AXES) return;
+  // Stamp before the mask bit: a reader that sees the bit always sees an anchor.
+  // (A reader that sees the stamp without the bit counts zero axes: not a bench.)
+  if (atomic_read_u64(&s_rig_first_axis_us) == 0) atomic_write_u64(&s_rig_first_axis_us, now ? now : 1);
+  s_rig_heard_mask = (uint8_t)(s_rig_heard_mask | (uint8_t)(1u << axis));
+}
+void rig_note_platform_frame() { s_rig_platform_seen = true; }
+void rig_note_bus(bool transmittable, uint64_t now) {
+  if (!transmittable)                                 atomic_write_u64(&s_rig_tx_since_us, 0);
+  else if (atomic_read_u64(&s_rig_tx_since_us) == 0) atomic_write_u64(&s_rig_tx_since_us, now ? now : 1);
+}
+
+// The union with heartbeat_seen keeps the count at least as large as the presence
+// latch the rest of the firmware uses (leg_present), so no Leg the gate treats as
+// present can be missing from the census.
+uint8_t rig_axes_heard_mask() {
+  uint8_t m = s_rig_heard_mask;
+  for (uint8_t a = 0; a < NUM_AXES; ++a)
+    if (axes[a].heartbeat_seen) m = (uint8_t)(m | (uint8_t)(1u << a));
+  return m;
+}
+bool rig_platform_seen() { return s_rig_platform_seen; }
+bool rig_robot_latched() { return s_rig_robot; }
+
+bool rig_is_bench(uint64_t now) {
+  if (s_rig_robot) return false;
+  const uint8_t m = rig_axes_heard_mask();
+  const bool two_or_more = (m & (uint8_t)(m - 1u)) != 0;
+  if (two_or_more || s_rig_platform_seen) { s_rig_robot = true; return false; }
+  if (m == 0) return false;                       // nothing heard: no evidence either way
+  const uint64_t first = atomic_read_u64(&s_rig_first_axis_us);
+  const uint64_t tx    = atomic_read_u64(&s_rig_tx_since_us);
+  if (first == 0 || tx == 0) return false;        // no anchor, or the bus is not transmittable
+  const uint64_t anchor = first > tx ? first : tx;
+  // A stamp newer than `now` (caller captured now first) is not yet settled.
+  return now >= anchor && now - anchor >= RIG_BENCH_SETTLE_US;
+}
+
+bool leg_idle_permitted(uint64_t now, uint8_t except_leg) {
+  return rig_is_bench(now) || platform_at_stow(now, except_leg).ok;
 }
 
 // ── Per-Leg freshness ────────────────────────────────────────────────────────
@@ -133,7 +192,7 @@ static void note_refusal(uint8_t leg, Who who) {
 // ── The one gate in front of every Leg de-energise ───────────────────────────
 // True = the request for `leg` may go out. On false the refusal is recorded.
 static bool leg_deenergise_allowed(uint8_t leg, Who who) {
-  if (platform_at_stow(micros64()).ok) return true;
+  if (leg_idle_permitted(micros64())) return true;
   note_refusal(leg, who);
   return false;
 }

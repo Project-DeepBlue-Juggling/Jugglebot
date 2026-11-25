@@ -46,7 +46,7 @@
 #include "fault_machine.h"    // fault_can_bus_down / fault_guard_mode
 #include "leg_homing.h"       // homing_active (no concurrent cold-start moves)
 #include "leg_activate.h"     // activate_active (no concurrent cold-start moves)
-#include "leg_stow_gate.h"    // platform_at_stow, odrive_set_state_tx, leg_freeze_tx (I-FW-19)
+#include "leg_stow_gate.h"    // leg_idle_permitted (bench or Stow), odrive_set_state_tx, leg_freeze_tx (I-FW-19)
 #include "time_base.h"        // micros64, atomic_read_u64, rx_older_than
 
 namespace CanBridge {
@@ -212,8 +212,9 @@ uint16_t deactivate_request(uint8_t axis) {
   // I-FW-19, single-Leg DEACTIVATE: lowering one Leg and IDLEing it under a posed
   // Platform breaks the owner rule (and tilts the Platform), so every OTHER present
   // Leg must already be at Stow. On the one-Leg bench the others are absent and it
-  // passes. AXIS_ALL (the descent itself) and the Hand are not gated here.
-  if (axis < NUM_LEGS && !platform_at_stow(micros64(), axis).ok) return RpcStatus::ERR_REJECTED;
+  // passes (and rig_is_bench exempts the bench outright, inside leg_idle_permitted).
+  // AXIS_ALL (the descent itself) and the Hand are not gated here.
+  if (axis < NUM_LEGS && !leg_idle_permitted(micros64(), axis)) return RpcStatus::ERR_REJECTED;
   // Reject if a deactivate is active or a start is already pending (idempotent).
   // IRQ-guarded so (busy-check + latch) is atomic vs the deactivate task that
   // consumes s_start_req at the top of deactivate_step.
@@ -362,7 +363,7 @@ void deactivate_step() {
       // the gate's census / sticky HELD bit. The done mask then absorbs a refusal
       // inside the loop (the gate re-evaluates per call): an IDLE'd leg leaves the
       // arrival test, whose post-IDLE position relaxes into the foam.
-      if (all_arrived && platform_at_stow(now).ok) {
+      if (all_arrived && leg_idle_permitted(now)) {
         for (uint8_t i = 0; i < NUM_LEGS; ++i) {
           if (!is_live(i)) continue;
           if (odrive_set_state_tx(i, ODriveState::IDLE, TxCls::OTHER, Who::LADDER) == DeResult::SENT) {
@@ -378,9 +379,9 @@ void deactivate_step() {
           return;
         }
       }
-      // (4) Timeout (10 s, the whole op): IDLE only from Stow, else freeze.
+      // (4) Timeout (10 s, the whole op): IDLE only from Stow (or on the bench), else freeze.
       if (timed_out) {
-        if (platform_at_stow(now).ok) { gated_idle_live(); end_ladder(DEACTIVATE_FAILED); }
+        if (leg_idle_permitted(now)) { gated_idle_live(); end_ladder(DEACTIVATE_FAILED); }
         else                          { freeze_live_and_end(0); }
         return;
       }
