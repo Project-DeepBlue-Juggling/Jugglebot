@@ -18,8 +18,8 @@ links:
 - map/idea-platform-accelerometer.md
 filed_by: claude
 night_skip: waiting-trigger
-night_skip_on: '2026-11-24'
-night_skip_note: Waits on launches with shm_clean (landed 2026-11-23) and one with bridge_shm:=false; the stall watchdog dump decides it.
+night_skip_on: '2026-11-26'
+night_skip_note: The series runner's launch line must stop ignoring SIGINT, then unpowered launches rerun; needs ROS 2 running.
 ---
 
 ## What happened

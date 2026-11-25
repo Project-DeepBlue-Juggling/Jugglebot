@@ -19,6 +19,9 @@ links:
 - feature-bench-hand-launch-scatter-harness-a-throw-with-the-robot-s
 parent: learner-generalisation
 filed_by: claude-e0
+night_skip: sitting
+night_skip_on: '2026-11-26'
+night_skip_note: A robot Hand launch-scatter baseline (learner-efficacy E1); its Sitting section is written.
 ---
 
 Step E1 of `plans/active/learner-efficacy.md`. It gives the launch scatter of the current Cup as one number per block, and it tells the owner's account (the scatter comes from the ball not seating properly during the Dwell) from E0's reading (the scatter arises at separation, settled or not). Each Hand or Cup change in E4 is then kept or dropped by re-flying this same row.

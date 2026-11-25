@@ -17,8 +17,8 @@ links:
 - plans/archived/platform-imu.md
 filed_by: claude
 night_skip: low-priority
-night_skip_on: '2026-11-24'
-night_skip_note: 'Feasibility noted 2026-11-24: mostly Sitting steps; the ring-frequency gap is the one offline analysis.'
+night_skip_on: '2026-11-26'
+night_skip_note: Ring-frequency gap answered for x 2026-11-25; the rest are Sitting checks (lever arm, forced gap, Armed upload).
 ---
 
 Left open when plans/archived/platform-imu.md was archived on 2026-11-23 (IDEA-20 closed). None blocks use of the captures.

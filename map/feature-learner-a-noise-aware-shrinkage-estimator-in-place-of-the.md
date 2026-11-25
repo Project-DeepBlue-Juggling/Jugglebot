@@ -17,10 +17,6 @@ blocked_by: []
 links: []
 parent: learner-generalisation
 filed_by: claude
-night_skip: input-decision
-night_skip_on: '2026-11-25'
-night_skip_note: Builds the shrinkage estimator with continuity and empty-Memory tests and the replay on its Memory copy, then holds or merges per your answer.
-night_skip_input: Confirm or change the E2 gate (replay rms no worse on every axis, command jitter 30 % lower) and say whether the night may merge it or a day Session must.
 ---
 
 Replace the Learner's mean of the 16 most recent support rows with a noise-aware shrinkage estimator over all in-kernel rows. The goal is a quieter command at equal landing error, not smaller scatter: the predictability ceiling is 2 to 4 % of rms on x. Plan step E2(a) in `learner-efficacy.md`; evidence in `logbook/2026-11-24-learner-efficacy-review-and-scatter-decomposition.md`.

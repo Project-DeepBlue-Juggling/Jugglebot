@@ -22,8 +22,8 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-22'
-night_skip_note: Failed again 2026-11-20 (drops mark lateness, not its cause); emit lead and the due-aware rule wait on you and a Sitting.
+night_skip_on: '2026-11-26'
+night_skip_note: Emit lead 1 cost measured offline 2026-11-25; the lead 0 against lead 1 comparison is the BUG-111 Sitting section's A/B.
 ---
 
 On 2026-11-13 both LANE_REFUSED ends (11:46:53, 11:49:33) followed a :5557 drain that held two knots; `_SetpointCommandSource.recv_latest` forwarded only the newer one. Newest-only forwarding is right (confirmed against the firmware), but the cover that remains has only 7 to 14 ms of margin against a delivery stall.

@@ -16,6 +16,9 @@ area: hand
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: owner-session
+night_skip_on: '2026-11-26'
+night_skip_note: FEAT-1 phase 1 fixes it (the no-op requires Closed-loop); FEAT-1's plan waits on your decisions O1 to O7.
 ---
 
 `_park_hand` reports "already parked" on position alone, within 0.10 rev of 0.0, and the Hand's bottom stop is at -0.10 rev, on that band's edge. Inferred from code while writing the FEAT-1 plan (2026-11-24); not seen on hardware.
