@@ -1809,6 +1809,34 @@ class TestHomingGateThroughTick:
         orch._on_robot_state(short)
         assert orch.ctx.leg_states is None and orch.ctx.legs_idle_since is None
 
+    def test_gap_in_robot_state_restarts_the_settle_and_stale_refuses(self, orch):
+        """A6 freshness: a /robot_state gap longer than LEG_STATES_MAX_AGE_S makes
+        the Leg states unknown while it lasts, and the next fresh all-Idle
+        message starts a NEW 2 s settle (the old run proves nothing: a Leg may
+        have been re-energised and idled again in the gap)."""
+        from jugglebot.state_machine import LEG_STATES_MAX_AGE_S
+        orch._on_robot_state(_robot_state_legs(1))
+        _settle_legs(orch)                               # a settled all-Idle run
+        old_run = orch.ctx.legs_idle_since
+        # the topic stops: back-date the last message past the bound
+        orch.ctx.leg_states_time -= LEG_STATES_MAX_AGE_S + 1.0
+        assert orch.sm._homing_entry_refused(orch.ctx) is True
+        orch._on_robot_state(_robot_state_legs(1))       # resumes, all Idle
+        assert orch.ctx.legs_idle_since is not None
+        assert orch.ctx.legs_idle_since > old_run + 5.0  # restarted, not resumed
+        assert orch.sm._homing_entry_refused(orch.ctx) is True   # settling again
+        _settle_legs(orch)
+        assert orch.sm._homing_entry_refused(orch.ctx) is False
+
+    def test_continuous_robot_state_keeps_the_settle_run(self, orch):
+        """No gap, no restart: messages inside the bound keep legs_idle_since
+        (the normal cold start homes 2 s after the first all-Idle message)."""
+        orch._on_robot_state(_robot_state_legs(1))
+        t0 = orch.ctx.legs_idle_since
+        orch.ctx.leg_states_time -= 0.5                  # well inside the bound
+        orch._on_robot_state(_robot_state_legs(1))
+        assert orch.ctx.legs_idle_since == t0
+
     def test_one_leg_lost_in_active_then_clear_errors_never_homes(self, orch):
         """(a): Leg 0 MISSING_ESTIMATE while ACTIVE. Its drive disarms, the other
         five hold the Platform up, BUG-122 clears is_homed. On main before A6 the

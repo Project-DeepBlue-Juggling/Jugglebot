@@ -33,6 +33,7 @@ from diagnostic_msgs.msg import DiagnosticStatus
 
 from jugglebot.state_machine import (
     RobotState, Context, build_default_machine, BOOT_TIMEOUT_S,
+    LEG_STATES_MAX_AGE_S,
 )
 from jugglebot import mocap_status as mocap_st
 from jugglebot.juggle_request import parse_juggle_request
@@ -257,11 +258,20 @@ class OrchestratorNode(Node):
         # ARMING_CONTRACT A6 inputs: the six Leg axis states, and since when all
         # six have read IDLE without a break (the StateMachine's homing gate).
         # A message too short to carry every Leg is "not known": no Homing.
+        now = time.monotonic()
+        prev = self.ctx.leg_states_time
+        if prev is not None and now - prev > LEG_STATES_MAX_AGE_S:
+            # A gap in /robot_state: the Legs may have been re-energised and
+            # idled again in it, so the old all-Idle run proves nothing. The
+            # settle restarts from this message (A6 freshness).
+            self.ctx.legs_idle_since = None
         if len(states) > max(odrive.LEG_AXES):
             self.ctx.leg_states = tuple(int(states[i].current_state)
                                         for i in odrive.LEG_AXES)
+            self.ctx.leg_states_time = now
         else:
             self.ctx.leg_states = None
+            self.ctx.leg_states_time = None
         if (self.ctx.leg_states is not None
                 and all(s == odrive.AXIS_STATES['IDLE']
                         for s in self.ctx.leg_states)):

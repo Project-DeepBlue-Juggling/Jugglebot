@@ -1817,8 +1817,10 @@ _CL = 8
 
 def _legs(ctx, states, idle_for_s=10.0):
     """Set the six Leg axis states the way the orchestrator derives them: the
-    tuple, and legs_idle_since only while all six read IDLE."""
+    tuple, its arrival time (fresh), and legs_idle_since only while all six
+    read IDLE."""
     ctx.leg_states = tuple(states)
+    ctx.leg_states_time = time.monotonic()
     if all(s == _IDLE for s in states):
         ctx.legs_idle_since = time.monotonic() - idle_for_s
     else:
@@ -1852,19 +1854,50 @@ class TestHomingGate:
         from jugglebot.state_machine import (
             homing_refusal, HOMING_LEGS_IDLE_SETTLE_S, HOMING_SETTLING_PREFIX)
         settled = HOMING_LEGS_IDLE_SETTLE_S + 0.1
-        assert homing_refusal([_IDLE] * 6, settled) is None
-        assert 'not known' in homing_refusal(None, None)
-        assert 'not known' in homing_refusal([_IDLE] * 5, settled)
-        assert homing_refusal([_IDLE] * 6, None).startswith(HOMING_SETTLING_PREFIX)
-        assert homing_refusal([_IDLE] * 6, 0.5).startswith(HOMING_SETTLING_PREFIX)
-        all_cl = homing_refusal([_CL] * 6, None)
+        assert homing_refusal([_IDLE] * 6, settled, 0.0) is None
+        assert 'not known' in homing_refusal(None, None, 0.0)
+        assert 'not known' in homing_refusal([_IDLE] * 5, settled, 0.0)
+        assert homing_refusal([_IDLE] * 6, None, 0.0).startswith(HOMING_SETTLING_PREFIX)
+        assert homing_refusal([_IDLE] * 6, 0.5, 0.0).startswith(HOMING_SETTLING_PREFIX)
+        all_cl = homing_refusal([_CL] * 6, None, 0.0)
         assert 'all six Legs are Closed-loop' in all_cl and '/deactivate' in all_cl
-        mixed = homing_refusal([_IDLE] + [_CL] * 5, None)
+        mixed = homing_refusal([_IDLE] + [_CL] * 5, None, 0.0)
         assert 'Leg(s) 1, 2, 3, 4, 5 are Closed-loop' in mixed
         assert 'Leg(s) 0 are not' in mixed
         assert 'E-stop button' in mixed and '/deactivate' not in mixed
-        other = homing_refusal([0] + [_IDLE] * 5, None)
+        other = homing_refusal([0] + [_IDLE] * 5, None, 0.0)
         assert 'Leg 0 state 0' in other
+
+    def test_predicate_stale_states_are_unknown(self):
+        """A6 freshness: Leg states older than LEG_STATES_MAX_AGE_S (or never
+        timestamped) are unknown, even when they read all-Idle and settled."""
+        from jugglebot.state_machine import (
+            homing_refusal, LEG_STATES_MAX_AGE_S, HOMING_STALE_PREFIX)
+        assert homing_refusal([_IDLE] * 6, 10.0, LEG_STATES_MAX_AGE_S) is None
+        stale = homing_refusal([_IDLE] * 6, 10.0, LEG_STATES_MAX_AGE_S + 0.1)
+        assert stale.startswith(HOMING_STALE_PREFIX)
+        assert 'not known' in stale and 'stale' in stale and '1.1 s old' in stale
+        assert homing_refusal([_IDLE] * 6, 10.0, None).startswith(HOMING_STALE_PREFIX)
+
+    def test_stale_states_hold_boot_and_notify_once(self):
+        """The /robot_state topic stops: the 2 s settle must not keep running
+        against the old all-Idle snapshot, even though it reads settled."""
+        notes = []
+        sm = build_default_machine(log_fn=lambda msg: None)
+        ctx = Context()
+        ctx.notify = notes.append
+        _boot_ready(ctx)
+        ctx.is_homed = False
+        _legs(ctx, [_IDLE] * 6)
+        ctx.leg_states_time = time.monotonic() - 5.0      # the topic went quiet
+        for _ in range(20):
+            sm.tick(ctx)
+            assert sm.state == RobotState.BOOT
+            assert _requests_moving_legs(ctx.drain_requests()) == []
+        assert len(notes) == 1 and 'stale' in notes[0]    # once, age varies
+        _legs(ctx, [_IDLE] * 6)                           # topic resumed, fresh
+        sm.tick(ctx)
+        assert sm.state == RobotState.HOMING
 
     # ── (f) relaunch under a posed Platform ───────────────────────
     def test_relaunch_not_homed_under_closed_loop_legs_holds_boot(self):

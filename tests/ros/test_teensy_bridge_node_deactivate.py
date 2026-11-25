@@ -169,6 +169,35 @@ def test_deactivate_already_at_stow_skips_leg_move_but_idles_hand():
         _teardown(teensy, client, node)
 
 
+def test_deactivate_is_not_gated_on_the_homed_flag():
+    """A6 names /deactivate as the remedy for six Closed-loop Legs, a state shown
+    with is_homed false (a relaunch under a posed Platform; a Hand-only reference
+    loss). The bridge must fire the DEACTIVATE there: nothing in _run_deactivate
+    reads is_homed (the firmware's deactivate_request has no homed term either:
+    leg_deactivate.cpp checks bus, ESTOP guard, homing/activate/stow-pending,
+    armed stream, target presence, busy)."""
+    from jugglebot.teensy_bridge_node import RelayRobotState
+    teensy, client, node = _build_paired_node()
+    try:
+        with node._lock:
+            node._cold_start_state = RelayRobotState(
+                is_homed=False, levelling_complete=True,
+                pose_offset_tiltX=0.0, pose_offset_tiltY=0.0)
+            node._cold_start_authoritative = True
+        fired = []
+        teensy.on_rpc(int(RpcMethod.DEACTIVATE),
+                      lambda rid, a: (fired.append(a), (int(RpcStatus.OK), b""))[1])
+        _set_cache(node, pos_rev=(2.19,) * 6 + (0.0,), states=[CLOSED_LOOP] * 7)
+        t = threading.Thread(
+            target=lambda: node._run_deactivate(list(range(6)), poll_dt=0.02,
+                                                timeout_s=0.5))
+        t.start()
+        assert _poll(lambda: len(fired) >= 1), "DEACTIVATE not fired with is_homed False"
+        t.join(timeout=8.0)
+    finally:
+        _teardown(teensy, client, node)
+
+
 def test_deactivate_not_stowed_proceeds():
     """A leg still extended (|pos| > 0.2) → NOT stowed → the guard lets the deactivate
     proceed (the DEACTIVATE RPC fires)."""

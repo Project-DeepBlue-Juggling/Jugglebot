@@ -66,24 +66,46 @@ HOMING_LEGS_IDLE_SETTLE_S = 2.0
 # Prefix of the one quiet (non-refusal) answer: the Legs are Idle but not yet
 # for the settle time. It resolves by itself, so it is logged, not notified.
 HOMING_SETTLING_PREFIX = 'Homing waits'
+# How old the /robot_state that set the Leg states may be before they count as
+# unknown (A6 freshness). The bridge republishes /robot_state at the 100 Hz timer
+# rate while telemetry flows, and when the telemetry generation freezes it skips
+# at most _ROBOT_STATE_MAX_CONSEC_SKIPS = 50 timer ticks (~0.5 s) before it
+# publishes anyway (teensy_bridge_node._publish_robot_state; the link-lost case
+# publishes at the full rate), so a live bridge never leaves a gap near 1 s; the
+# worst gap on record is a 20 s recovery park that used to block the publisher
+# (fixed 2026-09-23, now its own callback group). 1 s is 2x the bridge bound.
+LEG_STATES_MAX_AGE_S = 1.0
+# Prefix of the stale refusal. Its text carries the age, so the once-per-episode
+# report keys on the prefix, not the whole string.
+HOMING_STALE_PREFIX = 'Homing refused: the six Leg drive states are not known'
 
 
 def _legs_list(legs):
     return ', '.join(str(i) for i in legs)
 
 
-def homing_refusal(leg_states, idle_for_s):
+def homing_refusal(leg_states, idle_for_s, states_age_s):
     """The A6 predicate: None if Homing may start, else the operator message.
 
     ``leg_states``: the six Leg ODrive axis states (axes 0-5) from the latest
     /robot_state, or None when not known. ``idle_for_s``: how long all six have
     read IDLE without a break, or None when they do not all read IDLE now.
+    ``states_age_s``: age of the /robot_state that set ``leg_states``, or None
+    when none has (older than LEG_STATES_MAX_AGE_S, the states are unknown: a
+    topic that stopped cannot show a Leg that was re-energised since).
     Every path into HOMING passes through this (StateMachine guard).
     """
     if leg_states is None or len(leg_states) != NUM_LEGS:
         return ('Homing refused: the six Leg drive states are not known, so the '
                 'Platform cannot be shown to be down (ARMING_CONTRACT A6). '
                 'Waiting for a full /robot_state.')
+    if states_age_s is None or states_age_s > LEG_STATES_MAX_AGE_S:
+        age = ('no /robot_state has set them' if states_age_s is None else
+               f'the last /robot_state that carried them is {states_age_s:.1f} s '
+               f'old, stale beyond {LEG_STATES_MAX_AGE_S:.0f} s')
+        return (f'{HOMING_STALE_PREFIX} ({age}), so the Platform cannot be '
+                f'shown to be down (ARMING_CONTRACT A6). Waiting for a fresh '
+                f'/robot_state; the Idle settle restarts when it resumes.')
     closed = [i for i, s in enumerate(leg_states) if s == ODRIVE_AXIS_CLOSED_LOOP]
     other = [(i, s) for i, s in enumerate(leg_states)
              if s not in (ODRIVE_AXIS_IDLE, ODRIVE_AXIS_CLOSED_LOOP)]
@@ -145,8 +167,11 @@ class Context:
         # a message carries every Leg), and the time.monotonic() at which all six
         # were first seen IDLE in the current unbroken run (None while any Leg is
         # not IDLE). Read only by homing_refusal through the StateMachine guard.
+        # leg_states_time: time.monotonic() of the /robot_state that set
+        # leg_states (None while they are unknown); A6 freshness.
         self.leg_states = None
         self.legs_idle_since = None
+        self.leg_states_time = None
         self.errors = []                     # Error strings from /robot_state
         self.fatal_error = False
         self.fatal_can_error = False
@@ -320,12 +345,16 @@ class StateMachine:
         once) if a transition into HOMING must not happen now."""
         idle_for = (None if ctx.legs_idle_since is None
                     else time.monotonic() - ctx.legs_idle_since)
-        refusal = homing_refusal(ctx.leg_states, idle_for)
+        age = (None if ctx.leg_states_time is None
+               else time.monotonic() - ctx.leg_states_time)
+        refusal = homing_refusal(ctx.leg_states, idle_for, age)
         if refusal is None:
             self._homing_refusal_said = None
             return False
-        if refusal != self._homing_refusal_said:
-            self._homing_refusal_said = refusal
+        key = (HOMING_STALE_PREFIX if refusal.startswith(HOMING_STALE_PREFIX)
+               else refusal)
+        if key != self._homing_refusal_said:
+            self._homing_refusal_said = key
             # No ' -> ' in this line: the orchestrator's log sink reads that as
             # a transition. It lands at DEBUG; the notice below is the WARN.
             self._log(f'HOMING held in {self._state.name}: {refusal}')

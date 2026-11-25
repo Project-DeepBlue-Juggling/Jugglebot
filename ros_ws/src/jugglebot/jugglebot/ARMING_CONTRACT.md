@@ -105,6 +105,19 @@ work (2026-07-15) hit three distinct doors into that hole:
   used: they mean nothing once a reference is lost, which is exactly when
   Homing is needed. Unknown Leg states (no /robot_state yet, or one too short
   to carry every Leg) refuse: Homing never starts on a guess.
+  **Freshness:** the Leg states count as known only while the `/robot_state`
+  that set them is at most `LEG_STATES_MAX_AGE_S` (1 s) old; an older (or never
+  stamped) snapshot is "not known" and refuses, with a message that says it is
+  stale and how old. The bridge publishes `/robot_state` at the 100 Hz timer
+  rate and, when telemetry freezes, skips at most 50 ticks (~0.5 s) before it
+  publishes anyway (`_ROBOT_STATE_MAX_CONSEC_SKIPS`), so a live bridge never
+  trips the bound. A gap longer than the bound also RESTARTS the 2 s settle
+  (`orchestrator_node._on_robot_state` clears `legs_idle_since` before the first
+  message after the gap): a Leg may have been re-energised and idled again in
+  the gap, so the old all-Idle run proves nothing about the Platform now. Tests:
+  `tests/ros/test_state_machine.py::TestHomingGate::test_predicate_stale_states_are_unknown`
+  and `::test_stale_states_hold_boot_and_notify_once`;
+  `tests/ros/test_orchestrator_node.py::TestHomingGateThroughTick::test_gap_in_robot_state_restarts_the_settle_and_stale_refuses`.
   **One enforcement point:** `StateMachine` checks `homing_refusal(ctx)` on
   every transition into HOMING, whether a handler returned it (BOOT not homed,
   IDLE `home`) or it was forced. On a refusal the machine stays where it was
@@ -125,9 +138,35 @@ work (2026-07-15) hit three distinct doors into that hole:
     `clear_errors` once power is back.
   - **A Leg in any other state** (a drive still starting, or calibrating):
     wait, or power-cycle it with the E-stop button, then `clear_errors`.
-  Not covered by A6: the bridge's manual `/home` and `/encoder_search`
-  services, which no production path calls (a bench probe does); they are an
-  open follow-up, as is a firmware-side gate in `homing_request`.
+  Not covered by A6: every path that reaches a Leg HOME or ENCODER_SEARCH
+  without the StateMachine. These are NOT gated: the bridge's `/home` and
+  `/encoder_search` services typed by an operator (`ros2 service call`; the
+  production orchestrator uses the home action and its own encoder-search
+  client, both behind the StateMachine), the bench drivers that send the RPC
+  straight over UDP (`tests/hardware/teensy_home_bench.py`,
+  `tests/hardware/bench_leg_sysid.py`, `tests/hardware/teensy_encoder_search_bench.py`,
+  all through the `teensy_link/homing.py` and `encoder_search.py` libraries),
+  and the instruction text of `tools/probes/canhub_tier2_hw_validation.py`
+  (it prints `ros2 service call /home`). Checked by grep 2026-11-25:
+  `RpcMethod.HOME` outside tests/ros and tests/teensy_link is sent by exactly
+  those two bench drivers plus the bridge. Not callers, despite appearing in an
+  earlier audit: `tests/hardware/bench_hand_frame_bench.py` (drives the Hand's
+  ODrive directly), `tests/hardware/kincal_capture.py` (prints the operator
+  steps; its `home` is the gated orchestrator command) and
+  `tools/probes/gui_synthetic_stack.py` (registers a fake recording `/home`
+  service). The planned remedy for the manual paths is a firmware check in
+  `homing_request` (refuse a Leg HOME while any other Leg is Closed-loop).
+  **The `/deactivate` remedy works where the refusal is shown.** Read
+  2026-11-25: `_svc_deactivate` -> `_run_deactivate` has no `is_homed` or fault
+  term, and the firmware's `deactivate_request` (`leg_deactivate.cpp`) refuses
+  only for a dead CAN bus, the guard in ESTOP (a latched Fault, which BOOT
+  clears before it ever asks for HOMING), a homing/activate move or a pending
+  fault stow, an armed setpoint stream (the bridge disarms first, A3), no
+  present target Leg, or a deactivate already running. None depends on the
+  homed flag, so it is accepted with `is_homed` false (a relaunch under a posed
+  Platform, a Hand-only reference loss). If it IS refused (ERR_BUS_DOWN from a
+  latched guard), `clear_errors` first; the E-stop button stays the fallback.
+  Test: `tests/ros/test_teensy_bridge_node_deactivate.py::test_deactivate_is_not_gated_on_the_homed_flag`.
 
 ## Enforcement points
 
@@ -138,7 +177,7 @@ work (2026-07-15) hit three distinct doors into that hole:
 | A3 | `teensy_bridge_node.py` `_run_deactivate` head | disarm-before-DEACTIVATE order test |
 | A4 | `state_machine.py` `ActiveHandler.on_exit` (no blank) + `IdleHandler` deferred blank | mode-survives-deactivate ordering test |
 | A5 | `trajectory_node.py` wire-state WARN + response suffix + `is_homed` seed gate; `teensy_bridge_node.py` `teensy_mpc_active` KeyValue; `state_machine.py` `BootHandler` latch pre-flight | disarmed-accept, seed-gate, pre-flight tests |
-| A6 | `state_machine.py` `homing_refusal` (the predicate) checked by `StateMachine._homing_entry_refused` on every transition into HOMING; `orchestrator_node.py` the `leg_states` / `legs_idle_since` derivation in `_on_robot_state` | `tests/ros/test_state_machine.py::TestHomingGate`; `tests/ros/test_orchestrator_node.py::TestHomingGateThroughTick` |
+| A6 | `state_machine.py` `homing_refusal` (the predicate) checked by `StateMachine._homing_entry_refused` on every transition into HOMING; `orchestrator_node.py` the `leg_states` / `legs_idle_since` / `leg_states_time` derivation in `_on_robot_state` | `tests/ros/test_state_machine.py::TestHomingGate`; `tests/ros/test_orchestrator_node.py::TestHomingGateThroughTick` |
 
 ## The choreography (one cycle, walked at the control-system level)
 
