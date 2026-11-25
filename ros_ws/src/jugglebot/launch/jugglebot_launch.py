@@ -996,6 +996,11 @@ def generate_launch_description():
             # per-throw corpus is built on.
             '/jugglebot/juggle/_action/feedback',
             '/jugglebot/juggle/_action/status',
+            # The two action topics above are HIDDEN (their names hold a
+            # `_`-prefixed token), and record drops hidden topics, even listed
+            # ones, unless told otherwise: 0 of 960 bags held either (BUG-144,
+            # 2026-11-25). Foxy's record verb takes this flag.
+            '--include-hidden-topics',
             '-s', 'mcap', '-o', bag_dir,
         ],
         # 'log': everything into launch.log; on the screen the operator
