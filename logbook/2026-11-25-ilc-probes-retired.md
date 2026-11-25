@@ -30,3 +30,5 @@ Grep before and after (`grep -rnE 'hand_contact_softness|hand_sensor_settle|test
 ## Verification
 
 (2026-11-25, `flock /tmp/jugglebot-tests.lock python -m pytest -q` on tests/ros/test_ball_possession.py, the other importers of ball_possession, tests/sim/test_docs_links.py, test_logbook_front_matter.py, test_logbook_index.py: `2 failed, 1082 passed in 287.73s`; the 2 failures are test_logbook_index (this entry has no INDEX row yet; the orchestrator regenerates with mapkit gen at integration), all else passes.)
+
+- Default gate on the integrated branch, 2026-11-25 14:58 (e3c06e1f: main 0f73bf4f + this change + the ILC probe retirement), `flock /tmp/jugglebot-tests.lock ./run_tests.sh`: **11197 passed, 57 skipped, 2 xfailed in 760.53 s**, serial tail **7 passed in 30.53 s**.
