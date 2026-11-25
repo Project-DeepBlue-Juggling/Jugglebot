@@ -4,7 +4,7 @@ kind: bug
 title: Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18)
 status: in_progress
 created: '2026-11-18'
-updated: '2026-11-24T18:06:30Z'
+updated: '2026-11-25T04:58:09Z'
 owners: []
 priority: high
 effort: m
@@ -60,11 +60,19 @@ Not checked: which tick promoted the frame; the Hand's physical response in any 
 ## Sitting
 
 - setup: level, armed, bb-fed
-- why: only another fault can show whether a late setpoint at the Throw peak is the trigger.
-- do: fly every launch with the FEAT-49 fault capture armed; no extra Attempts.
-- pass: a SPINOUT is captured and the bag shows whether the command peak exceeded the plan peak at a late frame.
-- record: the capture path, the launch log line of the SPINOUT, the nearest setpoint drain dropped line and its lag.
-- minutes: 5
+- why: Emit lead 1 (setpoint frames sent one knot earlier) should remove the late-frame step behind BUG-111's Hand SPINOUT and the stamp-gap STOPs behind BUG-89; only a paired Sitting, same Patterns and time on lead 0 (main) and lead 1 (branch sitting/emit-lead-1), can show it. The nodes fix the lead at import, so each arm needs a checkout, a build and a relaunch; there is no runtime switch.
+- do:
+  - Arm A, on main (lead 0): launch with the bag recording. Dress rehearsal: grep each node's start-up line "wire budget:", it must read emit_lead_knots=0 WIRE_READ_KNOTS=3 in trajectory_node and skill_node.
+  - Arm A rehearsal, one nominate call per Pattern; each must answer accepted and moves nothing: columns,apex_m=0.95,separation_mm=125,dwell_s=0.27; columns_turned,...,columns_angle_deg=45 and =90; oval_1ball_fed,apex_m=1.00,separation_mm=150,dwell_s=0.50; columns_1ball_fed at the usual working point. columns_turned needs mocap on the robot base markers and Ball Butler's Base markers.
+  - Arm A flights, 10 minutes of Attempt time per group: Columns, turned Columns (45 degrees), oval_1ball_fed, columns_1ball_fed. Note the clock time of each Attempt. Then Ctrl-C the launch (Cup empty, Platform stowed).
+  - Switch to arm B: from ~/Desktop/Jugglebot run git fetch && git checkout sitting/emit-lead-1 && git merge --ff-only origin/sitting/emit-lead-1 && git log --oneline -1 and read the log line (it must start with the branch tip the Session names). Then cd ~/Desktop/Jugglebot/ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot. Then relaunch exactly as arm A.
+  - Arm B rehearsal on the loaded Jetson (bag recording and GUI up) before arming: "wire budget:" must read emit_lead_knots=1 WIRE_READ_KNOTS=4 in BOTH trajectory_node and skill_node; then the same nominate calls as arm A, every one accepted. If either line reads otherwise, stop, do not arm, go back to main.
+  - Arm B flights: the same four groups, same Patterns and parameters, same Attempt time as arm A. Abort arm B at the first Hand SPINOUT, Guard Fault or E-stop button press: Ctrl-C, then switch back.
+  - Switch back (always, even after an abort): Ctrl-C the launch, git checkout main && git pull --ff-only && git log --oneline -1 (go on only if git printed Switched to branch 'main' or Already on main), then colcon build --packages-select jugglebot_interfaces jugglebot, and relaunch only if more flights follow.
+- pass: Arm B has zero Hand SPINOUT; in-Attempt stamp-gap STOPs per Attempt-minute at most 1/4 of arm A's; SPLICE_TOO_LATE plus ORIGIN_TOO_LATE ends per Attempt-minute no higher than arm A's; zero REBASE_DISCONTINUOUS and zero Attempt-start Hand resume refusals; Columns Catches per Attempt not below arm A's minus arm A's own spread. Read arm B's lag and frame-age diagnostics as 25 ms different from arm A's by design.
+- record: Per arm and Pattern: launch log and bag paths, Attempt minutes, Hand SPINOUT lines, firmware scheduler STOP lines (stamp gap) inside Attempts, Hand C1 stops, LANE_REFUSED ends, count of "setpoint drain dropped" lines, SPLICE_TOO_LATE, ORIGIN_TOO_LATE, REBASED and REBASE_DISCONTINUOUS lines, Attempt-start Hand resume refusals, re-aims accepted and declined with reason, Catches per Attempt, max emit gap, the "wire budget:" line.
+- minutes: 150
+- branch: sitting/emit-lead-1
 
 ## Sitting result (2026-11-20 15:11)
 
@@ -78,3 +86,4 @@ Not checked: which tick promoted the frame; the Hand's physical response in any 
 - 2026-11-20: the 500 Hz plan replay with the arrival times of seq 50752 and 50753, or a saved capture.
 - 2026-11-25: 500 Hz replay (tools/probes/hand_late_knot_replay.py) confirms both SPINOUTs: a late release-knot frame let the firmware extend the accelerating cubic, then its promotion stepped the velocity command by 34 to 40 rev/s (2026-11-18) and 18 to 38 rev/s (2026-11-20). They are the only 2 of 209 replayed drops at a release knot above 90 rev/s. Emit lead 1 removes both steps.
 - 2026-11-25: emit lead 1 designed and phase 1 landed: the planner's wire horizon is 3 + emit_lead_knots, the fresh-REST rebase threshold is the onset budget minus (lead + 1) knots (50 ms at lead 1, not 100), and the stall fence stays 37.5 ms. The configured lead is still 0 and every constant is identical. Next: a lead-1 test tier, the cost measurement, then seeding holds at the wire horizon.
+- 2026-11-25: lead-1 arm built as branch sitting/emit-lead-1 (pushed, never merged): 975 planner and node tests and the five-configuration sim gate pass at the configured lead 1. The Sitting section is now the paired A/B (main at lead 0 against the branch at lead 1), owner decision 2026-11-25.

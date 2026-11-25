@@ -37,15 +37,16 @@ A long REST can be refused `SPLICE_TOO_LATE` when it should have been installed 
 
 ## Sitting
 
-- setup: level, armed, bb-fed
-- why: BUG-95's band REST (a Feed's PRE-TILT REST dispatched while a long bridge REST still has 0.225-2.0 s to run) now installs fresh at the bridge's end and slides at most 8 knots (0.200 s) instead of ending the Attempt SPLICE_TOO_LATE; it is offline-only and the slide moves the Feed Catch's splice, so it is flown before it is trusted.
+- setup: level, bb-fed
+- why: BUG-95's band REST (a Feed's pre-tilt REST dispatched onto a still-running long bridge REST) now installs fresh at the bridge's end and slides at most 8 knots (0.200 s) instead of ending the Attempt SPLICE_TOO_LATE. Offline, the band is reached only for a narrow Ball Butler Feed timing, so this flight is a census plus a regression check, not a forced hit; a raised Hand makes it possible, not certain.
 - do:
-  - Launch on main after the rebuild, with the bag recording. Dress rehearsal before arming: `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns_1ball_fed,apex_m=..,separation_mm=..,dwell_s=..'}"` at the usual working point; it must answer accepted and moves nothing.
-  - Fly Ball Butler-fed Columns Attempts as usual, 10 Feeds. The band is reached only when an Attempt opens with the Hand at least about 4 rev from rest (the log line "opening REST returns the Hand to rest ... over" reads 2.2 s or more); note each such Attempt.
-  - Watch each Feed: is the Feed Catch made.
-- pass: no Attempt ends SPLICE_TOO_LATE at a PRE-TILT REST unless its message says "slide cap"; every "band REST anchored at the running record's end" install slid at most 8 knots, was followed by "spliced CATCH at knot" with no TILT_PIN, and its Feed was caught; Feed Catches no fewer than on the last Ball Butler-fed Sitting.
-- record: launch log and bag paths; for each band install its slide in knots and its "installed ... from it" offset; Feeds caught of fed; every SPLICE_TOO_LATE or TILT_PIN line with its time.
-- minutes: 20
+  - Launch on main after the rebuild with auto_arm:=false and the bag recording. Boot, Home, Level, Activate. Dress rehearsal before arming: ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns_1ball_fed,apex_m=..,separation_mm=..,dwell_s=..'}" at the usual working point; it must answer accepted and moves nothing.
+  - Read /robot_state: Hand homed, no Hand error flags, no jam hold. Cup empty, no ball. Only then one call: ros2 service call /hand_move_to jugglebot_interfaces/srv/SetFloat "{data: 4.5}". It moves the Hand at 1.0 rev/s (about 4.5 s). Do not repeat it if the reply is anything but arrived; stop and ask a Session.
+  - Read the Hand from /robot_state: about 4.5 rev (within 0.05), still there 10 s later. Then arm with /set_setpoint_output and fly 10 Ball Butler-fed columns_1ball_fed Attempts as usual; the opening REST should take about 2.3 s (the DEBUG line reads: opening REST returns the Hand to rest ... over).
+  - Then fly 10 more Attempts with the Hand left at rest for the control group. Watch each Feed: is the Feed Catch made.
+- pass: No Attempt ends SPLICE_TOO_LATE at a PRE-TILT REST unless its message says "slide cap". Every "band REST anchored at the running record's end" install (it is not guaranteed to occur) slid at most 8 knots, was followed by "spliced CATCH at knot" with no TILT_PIN, and its Feed was caught. The Hand held 4.5 rev (within 0.05) after the move with no error flag. Feed Catches per Attempt no fewer than on the last Ball Butler-fed Sitting.
+- record: Launch log and bag paths; the /hand_move_to reply text and the Hand rev before, right after and 10 s later; each Attempt's opening-REST period; the count of band installs and for each its slide in knots and its installed-from offset; Feeds caught of fed per group; every SPLICE_TOO_LATE, REJECTED_RELOAD_UNSCHEDULABLE or TILT_PIN line with its time.
+- minutes: 35
 
 ## Progress
 

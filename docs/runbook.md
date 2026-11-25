@@ -6,11 +6,11 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (14 Items, 324 min)
+## Robot  (14 Items, 484 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
-| BUG-111 Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18) | 5 | level, armed, bb-fed | - | - |
+| BUG-111 Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18) | 150 | level, armed, bb-fed | `sitting/emit-lead-1` | - |
 | BUG-122 Hand stays homed after its drive loses the position reference, so the next move rams the top stop | 5 | level | - | - |
 | BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen | 40 | armed | - | - |
 | BUG-78 Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws | 20 | level, armed, bb-fed | - | - |
@@ -18,7 +18,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0) | 45 | armed, bb-fed, bridge-cycled | - | - |
 | FEAT-39 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30 | 50 | level, armed, bb-fed, bridge-cycled | - | - |
 | BUG-132 Platform IMU capture timestamps run 23 to 55 ms early against Mocap and the encoders | 10 | level, armed, bb-fed | - | - |
-| BUG-95 A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads | 20 | level, armed, bb-fed | - | - |
+| BUG-95 A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads | 35 | level, bb-fed | - | - |
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | - | - |
 | IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | - |
