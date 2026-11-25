@@ -2,9 +2,9 @@
 id: BUG-47
 kind: bug
 title: teensy_bridge_node does not exit after a rejected shutdown Stow; launch SIGTERM-killed it 4.8 s later (2026-10-31 13:06)
-status: in_progress
+status: complete
 created: '2026-11-01'
-updated: '2026-11-25T00:34:55Z'
+updated: '2026-11-25T03:57:43Z'
 owners: []
 priority: medium
 effort: s
@@ -16,9 +16,6 @@ area: can-bridge
 blocked_by: []
 links: []
 filed_by: claude
-night_skip: out-of-reach
-night_skip_on: '2026-11-22'
-night_skip_note: Not reproduced offline; the hypothesis needs real rclpy (FEAT-55).
 ---
 
 On 2026-10-31 13:06 (launch log `~/.ros/log/2026-10-31-13-06-17-735496-jetson-1119080/launch.log`) the shutdown Stow was rejected at once (`DEACTIVATE: ERR_REJECTED`, leg 0 latched ODRIVE_FATAL after a SPINOUT_DETECTED), yet `teensy_bridge_node` did not exit; launch SIGTERM-killed it 4.8 s later (exit -15). A rejected Stow should leave nothing to wait for, so something in the teardown after it blocks for seconds.
@@ -56,3 +53,4 @@ So the executor may be waiting on the homing goal's callback. This is not proven
 - 2026-11-25: reproduced under real rclpy: exit 21 s after SIGINT with a home_motors goal in flight (strict xfail in tests/rclpy_smoke). Cause: the process joins the worker still in _run_home's monitor loop, which has no stop check; not executor.shutdown(). Fix waits on an owner answer (abort homing and Idle the axis on SIGINT).
 - 2026-11-25: 24 of 24 unpowered launches (BUG-129 series, 2026-11-25) left the bridge unexited 30 s after SIGINT with no homing in flight and no shutdown line in the log; it had to be killed. A cheap, reliable reproduction without the robot powered. The blocking point is not yet located.
 - 2026-11-25: CORRECTION to the previous line: the 24 of 24 unpowered no-exits were the BUG-129 series runner, not the node. It started the launch as a bash background job, so the whole launch ignored SIGINT. On a fake unpowered peer the node exits in 2.0 s. The homing-in-flight case (21 s) is fixed on branch offline/bug47, held for the owner's answer on abort and Idle.
+- 2026-11-25: fixed: SIGINT with a Homing in flight aborts it, Idles the axis and writes not-homed before the transport closes (owner decision 2026-11-25); exit 1.4 s instead of 21 s on the real-rclpy harness. The unpowered no-exit was the BUG-129 series runner ignoring SIGINT, not the node. Not yet confirmed on hardware. Entry 2026-11-25-bridge-sigint-exit-bug47.

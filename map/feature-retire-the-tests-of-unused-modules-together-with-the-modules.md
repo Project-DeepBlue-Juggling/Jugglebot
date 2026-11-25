@@ -2,9 +2,9 @@
 id: FEAT-59
 kind: feature
 title: Retire the tests of unused modules together with the modules
-status: in_progress
+status: complete
 created: '2026-11-18'
-updated: '2026-11-25T02:25:09Z'
+updated: '2026-11-25T03:57:53Z'
 owners:
 - night-shift
 - claude
@@ -56,3 +56,4 @@ Recommendation: 2. Both tools are dormant by their own docstrings. `toss_release
 
 - 2026-11-20: Night Shift 2026-11-20: vel-FF slice held on night-shift/2026-11-20-FEAT-59 (removes 16 tests: gate (i) holds it); ILC tool deletion needs a day Session; unblocked by a day Session merge
 - 2026-11-25: the dormant vel-FF plumbing check and its 16 tests are retired on main (no live reader: its own test, one docstring, history only). Still open: the two ILC probes with their test and README rows; nothing live imports them, and the owner decides whether they are finished with.
+- 2026-11-25: retired on the owner's 2026-11-25 decision: the two critical-point-ILC probes with their 30 tests and README rows; the vel-FF plumbing check was already retired. Nothing live imported them. Recover with git show 923e6ade:<path>. Entry 2026-11-25-ilc-probes-retired.
