@@ -4,9 +4,15 @@ kind: bug
 title: Hand park reports already parked on a Hand that is Idle on its bottom stop
 status: inbox
 created: '2026-11-25'
-updated: '2026-11-24T17:39:52Z'
+updated: '2026-11-25T16:01:28Z'
 owners: []
 priority: medium
+effort: xs
+hardware: robot
+owner: hands
+radius: local
+diagnosis: hypothesis
+area: hand
 blocked_by: []
 links: []
 filed_by: claude

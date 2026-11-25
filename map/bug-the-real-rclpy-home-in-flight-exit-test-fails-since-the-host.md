@@ -2,9 +2,9 @@
 id: BUG-145
 kind: bug
 title: 'The real-rclpy Home-in-flight exit test fails since the host Leg IDLE gate: its fake peer sends no Leg DIAGNOSTIC frames'
-status: inbox
+status: complete
 created: '2026-11-26'
-updated: '2026-11-25T15:47:33Z'
+updated: '2026-11-25T15:48:57Z'
 owners: []
 priority: high
 effort: xs
@@ -14,7 +14,8 @@ radius: local
 diagnosis: confirmed
 area: tests-tooling
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-26-rclpy-smoke-home-test-leg-diagnostics.md
 filed_by: claude
 ---
 
