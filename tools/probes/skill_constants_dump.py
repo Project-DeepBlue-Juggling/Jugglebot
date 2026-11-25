@@ -26,11 +26,17 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 _MODULES = ('schedule', 'executor', 'bump')
 
 
-def dump() -> dict:
+def dump(emit_lead=None) -> dict:
     for p in (os.path.join(_ROOT, 'ros_ws', 'src', 'jugglebot'), _ROOT,
               os.path.join(_ROOT, 'config', 'generated')):
         if p not in sys.path:
             sys.path.insert(0, p)
+    if emit_lead is not None:
+        # Set BEFORE the first skills import (the constants are import-time).
+        import hardware_config as hw_top
+        import jugglebot.hardware_config as hw
+        hw_top.JB_TRAJ_EMIT_LEAD_KNOTS = hw.JB_TRAJ_EMIT_LEAD_KNOTS = \
+            int(emit_lead)
     out = {}
     for m in _MODULES:
         mod = importlib.import_module('jugglebot.motion.skills.' + m)
@@ -61,13 +67,16 @@ def diff(a: dict, b: dict) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('out', nargs='?', help='JSON file to write')
+    ap.add_argument('--emit-lead', type=int, default=None,
+                    help='dump as if JB_TRAJ_EMIT_LEAD_KNOTS were this '
+                         '(default: the configured lead)')
     ap.add_argument('--diff', nargs=2, metavar=('BEFORE', 'AFTER'))
     a = ap.parse_args(argv)
     if a.diff:
         return diff(*[json.load(open(f)) for f in a.diff])
     if not a.out:
         ap.error('give OUT.json or --diff BEFORE AFTER')
-    d = dump()
+    d = dump(a.emit_lead)
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     with open(a.out, 'w') as fh:
         json.dump(d, fh, indent=1, sort_keys=True)
