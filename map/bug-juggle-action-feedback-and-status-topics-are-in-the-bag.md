@@ -28,12 +28,12 @@ Fix candidate: add --include-hidden-topics to the record command, then confirm b
 
 ## Sitting
 
-- setup: bridge-cycled
+- setup: level, armed, bridge-cycled
 - why: The fix (record passes --include-hidden-topics) can only be shown by a bag the launch actually records.
 - do:
-  - Launch with recording on, Boot and Home, then run one Juggle goal as the Sitting already plans
+  - Launch with recording on, then Boot, Home, Level and Activate and run one Juggle goal (any Attempt the Sitting already flies counts)
   - After the launch ends, run `ros2 bag info` on that launch's bag directory
 - pass: The bag's topic list has /jugglebot/juggle/_action/feedback and /jugglebot/juggle/_action/status, each with at least one message
 - record: The message counts of both topics and the bag directory name
-- minutes: 2
+- minutes: 5
 - branch: night-shift/2026-11-26-BUG-144
