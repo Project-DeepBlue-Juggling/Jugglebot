@@ -300,14 +300,18 @@ ClConfirm legs_cl_confirm(uint8_t legs, uint64_t now) {
   bool all = true;
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     if (!(legs & (uint8_t)(1u << i))) continue;
-    if (axes[i].active_errors != 0) return ClConfirm::FAILED;
+    // An error (Get_Error: active_errors, or the cached disarm_reason, which
+    // CLEAR_ERRORS zeroes) fails the wait at once, whatever the heartbeat says.
+    if (axes[i].active_errors != 0 || axes[i].disarm_reason != 0) return ClConfirm::FAILED;
     // Stamp read before state (the receive decode writes the state first).
     const uint64_t cl = leg_cl_cmd_us(i);
     const uint64_t hb = atomic_read_u64(&axes[i].last_heartbeat_us);
     const bool post_cl = cl != 0 && hb != 0 && !rx_older_than(now, hb, CAN_HEARTBEAT_STALE_US) &&
                          hb >= cl + CL_ENGAGE_SETTLE_US;
-    if (!post_cl) { all = false; continue; }                   // cached pre-CL, stale or none: no evidence
-    if (axes[i].axis_state != ODriveState::CLOSED_LOOP) return ClConfirm::FAILED;
+    // Cached pre-CL, stale or none: no evidence. A post-settle heartbeat that is not
+    // yet CLOSED_LOOP, with no error, is a drive still engaging (the engage latency
+    // is unmeasured): wait; CL_CONFIRM_WAIT_US ends a Leg that never engages.
+    if (!post_cl || axes[i].axis_state != ODriveState::CLOSED_LOOP) { all = false; continue; }
   }
   if (all) return ClConfirm::CONFIRMED;
   const uint64_t t0 = legs_last_cl_cmd_us(legs);

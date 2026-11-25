@@ -149,11 +149,16 @@ float leg_freeze_target(float pos, float vel, float seg_lo, float seg_hi);
 // "just unconfirmed".
 bool platform_blocked_only_by_cl_unconfirmed(uint64_t now);
 
-// How long a pre-motion ladder abort (ACTIVATE before its rise, DEACTIVATE before
-// its descent) waits for Closed-loop confirmation before it asks for the IDLEs
-// anyway. A Leg's first confirming heartbeat is due within CL_ENGAGE_SETTLE_US +
-// one 100 ms heartbeat period; 250 ms also covers one lost heartbeat (<= 210 ms).
-constexpr uint64_t CL_CONFIRM_WAIT_US = 250000ull;
+// How long the ladders wait for Closed-loop confirmation after the last CLOSED_LOOP
+// command: COMMAND's confirmation before any motion (legs_cl_confirm, FW 53 U8) and
+// the pre-motion abort's wait before it asks for the IDLEs (ABORT_WAIT), one
+// constant because both wait for the same event. A Leg whose drive takes E ms to
+// report CLOSED_LOOP (the engage latency, unmeasured) has its first CLOSED_LOOP
+// heartbeat within E + 99 ms (heartbeat period), E + 198 ms with one lost, and the
+// ladder sees it one 10 ms tick later: E + 208 ms must fit. 250 ms (U3) tolerated
+// only E < 42 ms; 400 ms tolerates E < 192 ms. Cost: a Leg that never engages
+// holds the others (stationary, nothing commanded) up to 400 ms before the abort.
+constexpr uint64_t CL_CONFIRM_WAIT_US = 400000ull;
 
 // The pre-motion abort's per-tick verdict. SEND: leg_idle_permitted(now), ask the
 // gate for the IDLEs now. WAIT: refused only for CL_UNCONFIRMED and fewer than
@@ -171,16 +176,18 @@ bool leg_dropped_out(uint8_t leg, uint64_t now);
 // FW 53 U8 (owner: no Leg is lowered or raised while another is free): the
 // ladders' Closed-loop confirmation, asked by ACTIVATE's and DEACTIVATE's COMMAND
 // before any motion target goes to any Leg. For the Leg bits of `legs`:
-//   FAILED    some target Leg has active_errors != 0, or its post-CL heartbeat
-//             (fresh, received >= its leg_cl_cmd_us + CL_ENGAGE_SETTLE_US) reports
-//             a state other than CLOSED_LOOP;
-//   CONFIRMED every target Leg has such a heartbeat reporting CLOSED_LOOP (and no
+//   FAILED    some target Leg has an error: active_errors != 0 or a cached
+//             disarm_reason != 0 (both from Get_Error);
+//   CONFIRMED every target Leg has a post-CL heartbeat (fresh, received >= its
+//             leg_cl_cmd_us + CL_ENGAGE_SETTLE_US) reporting CLOSED_LOOP (and no
 //             Leg bits at all: HAND_MOVE_TO, the Hand alone);
 //   WAIT      otherwise, while fewer than CL_CONFIRM_WAIT_US have passed since the
 //             latest target Leg's CL command (legs_last_cl_cmd_us);
 //   EXPIRED   otherwise.
 // A heartbeat cached before the CL command (an ACTIVATE after Homing: IDLE) is
-// neither a confirmation nor a failure. A Leg with no CL stamp never confirms.
+// neither a confirmation nor a failure; nor is a post-CL one reporting another
+// state with no error (a drive still engaging: the 400 ms bound ends a Leg that
+// never engages). A Leg with no CL stamp never confirms.
 enum class ClConfirm : uint8_t { CONFIRMED, WAIT, FAILED, EXPIRED };
 ClConfirm legs_cl_confirm(uint8_t legs, uint64_t now);
 // The latest leg_cl_cmd_us over the Leg bits of `legs` (0 if none): the start of

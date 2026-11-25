@@ -33,8 +33,8 @@
 //      ended);
 //    * FW 53 U8: COMMAND sends no target until every target Leg has confirmed
 //      CLOSED_LOOP by a heartbeat received after its own CL command (the Hand
-//      is not in this wait); a Leg reporting IDLE or an error, or no
-//      confirmation within CL_CONFIRM_WAIT_US of the last CL command, takes the
+//      is not in this wait); a Leg with an error, or no confirmation within
+//      CL_CONFIRM_WAIT_US (400 ms) of the last CL command, takes the
 //      pre-rise abort below, so no Leg rises with another free;
 //    * before the rise is commanded (SETUP, COMMAND): ABORT_WAIT. The gated IDLE
 //      goes out once the Platform is at Stow (the usual case after Homing: FW 52's
@@ -358,7 +358,7 @@ static void abort_ladder(uint64_t now,
 // FW 53 U8: COMMAND's Closed-loop confirmation failed or expired (legs_cl_confirm):
 // nothing has been commanded to move. The pre-rise abort (Hand IDLE, ABORT_WAIT),
 // with ABORT_WAIT's clock at the last target Leg's CLOSED_LOOP command, the start
-// of the window that just ended, so an expiry is not given a second 250 ms.
+// of the window that just ended, so an expiry is not given a second window.
 static void abort_unconfirmed(uint64_t now) {
   idle_hand_if_targeted();
   s_t_abort_us = legs_last_cl_cmd_us((uint8_t)(s_targets & LEG_BITS));
@@ -798,7 +798,7 @@ void activate_step() {
       if (now - s_t_phase_us < CL_ENGAGE_SETTLE_US) break;
       // FW 53 U8 (owner: no Leg is raised while another is free): no target to ANY
       // axis until every target Leg's post-CL heartbeat reports CLOSED_LOOP with no
-      // error. A Leg reporting anything else, or no confirmation within
+      // error. A Leg with an error, or no confirmation within
       // CL_CONFIRM_WAIT_US of the last CLOSED_LOOP command: the pre-rise abort.
       const ClConfirm cc = legs_cl_confirm((uint8_t)(s_targets & LEG_BITS), now);
       if (cc == ClConfirm::WAIT) break;

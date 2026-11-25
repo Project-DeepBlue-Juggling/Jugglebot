@@ -779,11 +779,13 @@ TEST_CASE("R3 mixed case: one Leg IDLE at a sagged length, five posed; DEACTIVAT
 
   // FW 53 U8 (owner: no Leg is lowered while another is free). Before U8 the five
   // started descending and froze only on Leg 2's first post-CL heartbeat; now
-  // COMMAND waits for every Leg's confirmation, Leg 2's reads IDLE, and the
-  // pre-descent abort holds: no Stow target and no freeze frame to any Leg.
+  // COMMAND waits for every Leg's confirmation, Leg 2 reports IDLE with its error
+  // (the re-fault), and the pre-descent abort holds: no Stow target and no freeze
+  // frame to any Leg.
   SUBCASE("re-faults on engage: no Leg descends, all held, Leg 2 is not IDLE'd by the ladder") {
     cl_confirm(0x3B);                              // the five confirm Closed-loop at the Active pose
-    confirmed(2, ST_IDLE, SAGGED);                 // its post-CL heartbeat: still IDLE
+    confirmed(2, ST_IDLE, SAGGED);                 // its post-CL heartbeat: still IDLE ...
+    axes[2].active_errors = 0x1000;                // ... and Get_Error reports the re-fault
     deactivate_step();
     CHECK_FALSE(deactivate_active());
     CHECK(count_set_state() == 6);                 // the six CLOSED_LOOP of SETUP, no IDLE
@@ -861,17 +863,18 @@ TEST_CASE("U8: a pre-CL cached IDLE heartbeat neither confirms nor fails") {
   CHECK(count_stow_targets() == 2);
 }
 
-// The re-fault of the mixed-case recovery, generalised: a confirming heartbeat that
-// reports IDLE, or an active error, ends the ladder FAILED with no motion frame to
-// any Leg; posed, the gate refuses every IDLE, so all hold (HELD). Mutations
-// caught: FAILED treated as WAIT (the ladder stays active); the error check removed.
-TEST_CASE("U8: a Leg reporting IDLE or an error after its settle: no motion frame to any Leg, all held") {
+// The re-fault of the mixed-case recovery, generalised: a target Leg with an error
+// (active_errors, or a cached disarm_reason) ends the ladder FAILED at once with no
+// motion frame to any Leg; posed, the gate refuses every IDLE, so all hold (HELD).
+// Mutations caught: the active_errors check removed; the disarm_reason check removed.
+TEST_CASE("U8: a Leg with an error after its CL command: no motion frame to any Leg, all held") {
   full_reset(0x3F, ST_CL, POSED);
   (void)run_to_command(JbUdp::RpcArgs::AXIS_ALL);
   cs_advance(10000);
-  SUBCASE("IDLE") {
+  SUBCASE("IDLE with a cached disarm_reason") {
     cl_confirm(0x37);
     confirmed(3, ST_IDLE, POSED);
+    axes[3].disarm_reason = 0x1;
   }
   SUBCASE("CLOSED_LOOP with an active error") {
     cl_confirm(0x3F);
@@ -903,6 +906,11 @@ TEST_CASE("U8: the CL_CONFIRM_WAIT_US expiry ends the ladder with no motion fram
   CHECK(s_phase == DPhase::COMMAND);
   cs_set_mono(t_last_cl + CL_CONFIRM_WAIT_US + 10000);
   cl_confirm(0x2F);                                // the five stay live (fresh encoder, heartbeat)
+  // Leg 4's last heartbeat: received before its CL command + settle (Leg 4's SETUP
+  // tick was one tick before t_last_cl), still fresh at the expiry: CL_UNCONFIRMED,
+  // not STALE_HB, so a restarted abort window would WAIT.
+  cs_stage_leg(4, (uint8_t)axes[4].axis_state, axes[4].pos_rev, 0.0f,
+               (int64_t)(micros64() - (t_last_cl - 5000)), 0);
   deactivate_step();
   CHECK_FALSE(deactivate_active());
   CHECK(cs_sent_count() == 0);
@@ -946,11 +954,58 @@ TEST_CASE("U8: the one-Leg bench waits for its Leg; a failed engage IDLEs it (be
   CHECK(s_phase == DPhase::COMMAND);
   CHECK(cs_sent_count() == 0);
   cs_advance(10000);
-  confirmed(0, ST_IDLE, 1.5f);                     // re-faulted on engage
+  confirmed(0, ST_IDLE, 1.5f);                     // re-faulted on engage ...
+  axes[0].active_errors = 0x1;                     // ... with its error
   deactivate_step();
   CHECK_FALSE(deactivate_active());
   CHECK(count_stow_targets() == 0);
   CHECK(count_set_state() == 1);                   // the gated IDLE (bench)
   CHECK(deactivate_result(0) == DEACTIVATE_FAILED);
   CHECK(leg_held_mask() == 0);
+}
+
+// U8 follow-up (orchestrator, 2026-11-26): the drive's engage latency is unmeasured,
+// so a post-settle heartbeat that still reports IDLE with NO error is a Leg still
+// engaging: wait. The 400 ms bound ends a Leg that never engages. Staged: Leg 5
+// engages slowly (IDLE at +90 ms, the +189 ms heartbeat lost, CLOSED_LOOP at +288 ms,
+// i.e. an engage latency of about 100 ms plus one lost heartbeat). Mutations
+// caught: a non-CL no-error heartbeat fails at once (the pre-follow-up rule); a
+// non-CL heartbeat counted as confirmed; the bound left at 250 ms.
+TEST_CASE("U8: a slow engage (post-settle IDLE, no error) waits; CLOSED_LOOP completes, none expires") {
+  full_reset(0x3F, ST_CL, POSED);
+  const uint64_t t_last_cl = run_to_command(JbUdp::RpcArgs::AXIS_ALL);
+  cl_confirm(0x1F);
+  cs_set_mono(t_last_cl + 90000);
+  confirmed(5, ST_IDLE, POSED);                    // engaging: IDLE, no error
+  cs_clear_sent();
+  deactivate_step();
+  CHECK(s_phase == DPhase::COMMAND);
+  cs_set_mono(t_last_cl + 260000);                 // past the old 250 ms bound
+  cl_confirm(0x1F);
+  deactivate_step();
+  CHECK(s_phase == DPhase::COMMAND);
+  CHECK(cs_sent_count() == 0);
+  SUBCASE("engages: CLOSED_LOOP at +288 ms, the six descend together") {
+    cs_set_mono(t_last_cl + 288000);
+    cl_confirm(0x3F);
+    deactivate_step();
+    CHECK(s_phase == DPhase::MONITOR);
+    CHECK(count_stow_targets() == 6);
+    CHECK(cs_sent_count() == 6);
+  }
+  SUBCASE("never engages: IDLE with no error to the bound, the pre-descent abort, no motion") {
+    cs_set_mono(t_last_cl + CL_CONFIRM_WAIT_US - 10000);
+    cl_confirm(0x1F);
+    confirmed(5, ST_IDLE, POSED);
+    deactivate_step();
+    CHECK(s_phase == DPhase::COMMAND);
+    cs_set_mono(t_last_cl + CL_CONFIRM_WAIT_US + 10000);
+    cl_confirm(0x1F);
+    confirmed(5, ST_IDLE, POSED);
+    deactivate_step();
+    CHECK_FALSE(deactivate_active());
+    CHECK(cs_sent_count() == 0);                   // posed: every IDLE refused, nothing moved
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(deactivate_result(i) == DEACTIVATE_FAILED);
+    CHECK(leg_held_mask() == 0x3F);
+  }
 }

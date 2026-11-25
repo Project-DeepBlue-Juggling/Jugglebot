@@ -272,11 +272,15 @@ work (2026-07-15) hit three distinct doors into that hole:
     confirmation depends on, the bench-versus-robot inference on the real bus, and
     the re-engage of a dropped Leg under load. Both ladders send no motion
     target to any Leg until every target Leg has confirmed Closed-loop by a
-    heartbeat received at least 10 ms after its own Closed-loop command (at most
-    250 ms after the last one). So if the dropped Leg re-faults on engage,
+    heartbeat received at least 10 ms after its own Closed-loop command. A Leg
+    still reporting Idle with no error is waited for. A Leg with an error, or
+    no confirmation within 400 ms of the last Closed-loop command, fails the
+    ladder before any motion. So if the dropped Leg re-faults on engage,
     nothing moves: the five hold, every Leg is HELD and the recovery ends FAILED.
-    Also unverified: that a drive reports Closed-loop within those 10 ms. A
-    slower drive fails a normal activate or deactivate before any motion.
+    Also unverified: the engage latency, from the Closed-loop command to a
+    Leg's first Closed-loop heartbeat. It must stay under about 190 ms (400 ms
+    less two 99 ms heartbeat periods, one of them lost, and one 10 ms tick). A
+    slower drive fails a normal activate or deactivate, with nothing moved.
 
 ## Enforcement points
 

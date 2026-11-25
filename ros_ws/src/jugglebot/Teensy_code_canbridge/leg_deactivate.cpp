@@ -26,8 +26,8 @@
 //      only if the Platform is already at Stow, else refused (nothing on CAN,
 //      HELD bit set), so configured Legs hold their measured seed and the rest
 //      hold their stream pose. FW 53 U8: COMMAND sends no Stow target until
-//      every target Leg has confirmed CLOSED_LOOP; a Leg that reports IDLE or an
-//      error after its CL command, or no confirmation within CL_CONFIRM_WAIT_US,
+//      every target Leg has confirmed CLOSED_LOOP; a Leg with an error, or no
+//      confirmation within CL_CONFIRM_WAIT_US (400 ms) of the last CL command,
 //      takes this abort, so no Leg descends with another free. FW 53 U3: while the only refusals are Legs whose
 //      CLOSED_LOOP no heartbeat has confirmed yet, the abort waits (ABORT_WAIT,
 //      at most CL_CONFIRM_WAIT_US, nothing sent) before asking, as ACTIVATE's does;
@@ -332,7 +332,7 @@ void deactivate_step() {
       if (now - s_t_phase_us < CL_ENGAGE_SETTLE_US) break;
       // FW 53 U8 (owner: no Leg is lowered while another is free): no Stow target
       // to ANY Leg until every target Leg's post-CL heartbeat reports CLOSED_LOOP
-      // with no error. A Leg reporting anything else, or no confirmation within
+      // with no error. A Leg with an error, or no confirmation within
       // CL_CONFIRM_WAIT_US of the last CLOSED_LOOP command: the pre-descent abort
       // (IDLE from Stow or on the bench, else hold, HELD), nothing moved.
       const ClConfirm cc = legs_cl_confirm(s_targets, now);

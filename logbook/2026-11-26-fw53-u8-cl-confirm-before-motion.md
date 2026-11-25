@@ -1,5 +1,5 @@
 ---
-title: "FW 53 unit 8: both can-bridge cold-start ladders send no motion target to any Leg until every target Leg has confirmed Closed-loop by a heartbeat received after its own Closed-loop command (bounded 250 ms); a Leg that reports IDLE or an error, or the expiry, takes the existing pre-motion abort, so the mixed-case recovery's re-fault branch now moves nothing"
+title: "FW 53 unit 8: both can-bridge cold-start ladders send no motion target to any Leg until every target Leg has confirmed Closed-loop by a heartbeat received after its own Closed-loop command (bounded, CL_CONFIRM_WAIT_US raised to 400 ms); a Leg with an error, or the expiry, takes the existing pre-motion abort while a Leg still engaging is waited for, so the mixed-case recovery's re-fault branch now moves nothing"
 type: bugfix
 date: 2026-11-26
 status: in-progress
@@ -24,7 +24,7 @@ subsystem: [can-bridge, safety]
 
 Both ladders (DEACTIVATE in `leg_deactivate.cpp`, ACTIVATE in `leg_activate.cpp`) used to send every target Leg its motion target a fixed 10 ms (`CL_ENGAGE_SETTLE_US`) after the last SETUP tick. Nothing checked that each drive had actually entered Closed-loop. If one Leg failed to engage, the other Legs started moving while it was free. The freeze came only with that Leg's first post-CL heartbeat, about 100 ms later, through `leg_dropped_out`. U6b pinned this exposure in the mixed-case recovery: its re-fault-on-engage subcase had five Legs starting to descend.
 
-The owner ruled that no Leg is lowered or raised while another is free. COMMAND now waits until every target Leg has confirmed Closed-loop, using the new shared helper `legs_cl_confirm` in `leg_stow_gate`. A Leg confirms with a fresh heartbeat (younger than `CAN_HEARTBEAT_STALE_US`) received at least `CL_ENGAGE_SETTLE_US` after that Leg's own Closed-loop command stamp (`leg_cl_cmd_us`), reporting CLOSED_LOOP with no active error. The wait is bounded: `CL_CONFIRM_WAIT_US` (250 ms) from the last target Leg's Closed-loop command. A target Leg's post-CL heartbeat reporting any other state, a non-zero `active_errors`, or the expiry takes the existing pre-motion abort, with that same window as its clock. The pre-motion abort sends the gated IDLE if the Platform is at Stow or the rig is the bench, and otherwise holds with HELD. The ladder ends FAILED, and no motion frame goes to any Leg.
+The owner ruled that no Leg is lowered or raised while another is free. COMMAND now waits until every target Leg has confirmed Closed-loop, using the new shared helper `legs_cl_confirm` in `leg_stow_gate`. A Leg confirms with a fresh heartbeat (younger than `CAN_HEARTBEAT_STALE_US`) received at least `CL_ENGAGE_SETTLE_US` after that Leg's own Closed-loop command stamp (`leg_cl_cmd_us`), reporting CLOSED_LOOP. The wait is bounded: `CL_CONFIRM_WAIT_US` from the last target Leg's Closed-loop command, raised from 250 to 400 ms by the same-day follow-up below. A target Leg with an error (a non-zero `active_errors` or cached `disarm_reason`), or the expiry, takes the existing pre-motion abort, with that same window as its clock. A post-CL heartbeat in another state with no error is waited for (follow-up). The pre-motion abort sends the gated IDLE if the Platform is at Stow or the rig is the bench, and otherwise holds with HELD. The ladder ends FAILED, and no motion frame goes to any Leg.
 
 FW_VERSION stays 53. Nothing is on the wire, and the host is unchanged.
 
@@ -76,12 +76,30 @@ Ticks are 10 ms (`HOMING_RATE_HZ` 100). SETUP configures one target per tick, an
 - **The wait's failure test is the post-CL heartbeat, the same comparison as `leg_dropped_out` and the Stow predicate's CL_UNCONFIRMED.** A heartbeat from before `c_i` + 10 ms reads IDLE in every ACTIVATE after Homing, so it must count as neither failure nor confirmation. `active_errors` (decoded from the separate Get_Error frame, not the heartbeat) fails the wait for any target Leg, confirmed or not. SETUP has already refused a Leg with errors, so a non-zero value now is new.
 - **On a failure or expiry, the pre-motion abort's window is the confirmation window (starts at L), not a fresh 250 ms from `now`.** Both waits are for the same event: CL confirmation after the last CL command. A fresh window after an expiry would double the bound to 500 ms for a Leg whose heartbeat is missing. Aborts that arrive during the wait for other reasons (Soft E-stop, commands-not-allowed, the 10 s timeout) keep U3's `now` clock, so their behaviour is unchanged.
 - **The dropped Leg gets a HELD bit too.** The existing pre-motion abort asks the gate for an IDLE of every target Leg, and a refusal sets HELD, so in the re-fault walk HELD = all six. The existing "error not cleared" subcase of the same recovery already pins exactly that (0x3F with Leg 2 IDLE). I kept it, to reuse the existing abort as the brief asks rather than add a second abort shape. The host reads HELD only as a failure reason (`teensy_link/deactivate.py`, `activate.py`).
-- **Risk accepted (unverified):** a drive that takes longer than 10 ms to report CLOSED_LOOP after the command, with a heartbeat landing inside that window, would now fail a normal ladder. That is the safe side: no motion, IDLE from Stow or hold. The same 10 ms assumption already drives `leg_dropped_out` in MONITOR and the Stow predicate. The bench rehearsal should look at the CL-to-heartbeat latency.
+- **Risk found and closed by the follow-up below.** As first built, a post-settle heartbeat that was not yet CLOSED_LOOP failed the ladder at once. A drive taking longer than 10 ms to engage, with a heartbeat landing in that gap, would therefore have failed normal ladders. That failure is safe, but it could have made the robot unusable.
 - **Host margins, by reading.**
   - `teensy_link/activate.py` and `deactivate.py` `DEFAULT_TIMEOUT_S` = 20 s, and the bridge node's activate hard deadline is the monitor's deadline + 5 s (`teensy_bridge_node.py` ~9878). Against these the added ≤ 0.25 s is negligible.
   - The firmware's own 10 s `GENTLE_MOVE_TIMEOUT_S` covers SETUP + the wait + the move. A full-stroke gentle move is a few seconds at 2.5 rev/s, so it still has margin.
   - The shutdown DEACTIVATE (`_SHUTDOWN_DEACTIVATE_TIMEOUT_S`) gains at most ~0.2 s. Not re-measured.
 - **Out of scope:** the deferred reconnect stow in `fault_machine.cpp` is not a ladder and is untouched.
+
+## Follow-up (same day, orchestrator decision): a drive still engaging is waited for
+
+The first build of this unit returned FAILED as soon as a target Leg's post-settle heartbeat (≥ `c_i` + 10 ms) reported anything but CLOSED_LOOP. Nothing in the repo shows that a Leg drive reports CLOSED_LOOP within 10 ms of the command. If engaging took about 30 ms, a heartbeat landing in that gap (period ~99 ms, six Legs) would fail a large share of perfectly normal activates and deactivates. That is safe, since nothing moves, but it would make the robot unusable, and the latency cannot be measured before the flash.
+
+- **The change in `legs_cl_confirm`.**
+  - A post-settle heartbeat in another state, with no error, is now WAIT.
+  - FAILED is kept for any target Leg with an error. That is `active_errors != 0`, and now also a cached `disarm_reason != 0`: the same Get_Error frame carries it, `fault_machine.cpp` already reads it as a disarm (`:176`), and CLEAR_ERRORS zeroes the cache (`clear_disarm_reasons`).
+  - A Leg that never engages is ended by the bound (EXPIRED), which takes the same pre-motion abort, so there is still no motion.
+  - `leg_dropped_out` in MONITOR is unchanged. MONITOR is now entered only after every Leg has confirmed, so a later non-CL heartbeat there is a real drop.
+- **The bound.**
+  - Write E for the engage latency. A Leg's first CLOSED_LOOP heartbeat comes by `c_i` + E + 99 ms, or `c_i` + E + 198 ms with one lost heartbeat. The ladder sees it one 10 ms tick later.
+  - The window runs from the last Leg's command, and earlier Legs' commands are earlier still, so E + 208 ms must fit inside it.
+  - At 250 ms that allowed only E < 42 ms, so `CL_CONFIRM_WAIT_US` is raised to **400 ms**, which tolerates **E < 192 ms** (say about 190 ms, allowing for receive jitter).
+  - ABORT_WAIT keeps using the same constant, because both waits are for the same event: Closed-loop confirmation after the last Closed-loop command. A pre-motion abort after Homing can therefore now wait up to 400 ms before its gated IDLE.
+  - The cost of the longer bound: a Leg that never engages holds the others, stationary with nothing commanded, for up to 400 ms before the abort.
+- **Host margins** (unchanged by reading): monitors 20 s, the bridge's hard deadline +5 s, shutdown DEACTIVATE 6 s. Added start latency is now up to about E + 110 ms, or E + 210 ms with one lost heartbeat.
+- **What the first powered Sitting should measure**, per Leg and for both ACTIVATE and DEACTIVATE: the time from the CLOSED_LOOP command to the first heartbeat reporting CLOSED_LOOP. It must stay well under ~190 ms; bridge console or bag, heartbeat stamps against the SETUP tick.
 
 ## What changed
 
@@ -94,8 +112,8 @@ Ticks are 10 ms (`HOMING_RATE_HZ` 100). SETUP configures one target per tick, an
 - **`INVARIANTS.md` I-FW-19:** the ladder sentence now states the confirmation before motion, and the mixed-case sentence says a re-fault holds all six. The tests column names the "U8:" cases.
 - **`ARMING_CONTRACT.md`:** the unverified-list sentence no longer says that "the five descend until that Leg's first Closed-loop heartbeat". It now states the wait and the new unverified item, the CL-to-heartbeat latency.
 - **Tests:**
-  - `test_leg_deactivate.cpp` gains `cl_confirm`, `run_to_command` and `count_stow_targets`; `run_to_monitor` now confirms every target in COMMAND. There are 6 new U8 cases (34 in total).
-  - `test_leg_activate.cpp` gains `cl_confirm`, `run_to_command` and `n_targets_sent`; `run_to_monitor` and `to_monitor` now confirm the target Legs in COMMAND. There are 7 new U8 cases (72 in total; the seventh pins `legs_cl_confirm`'s freshness term directly).
+  - `test_leg_deactivate.cpp` gains `cl_confirm`, `run_to_command` and `count_stow_targets`; `run_to_monitor` now confirms every target in COMMAND. There are 7 new U8 cases (35 in total; the seventh, added by the follow-up, is the slow engage).
+  - `test_leg_activate.cpp` gains `cl_confirm`, `run_to_command` and `n_targets_sent`; `run_to_monitor` and `to_monitor` now confirm the target Legs in COMMAND. There are 8 new U8 cases (73 in total; one pins `legs_cl_confirm`'s freshness term directly, one, added by the follow-up, is the slow engage).
 
 **Existing assertions whose meaning changed** (old → new). No assertion value changed except in the R3 re-fault subcase. The rest changed only in their staging:
 - **deactivate "R3 mixed case … re-faults on engage"** (renamed "…: no Leg descends, all held, Leg 2 is not IDLE'd by the ladder"):
@@ -104,6 +122,20 @@ Ticks are 10 ms (`HOMING_RATE_HZ` 100). SETUP configures one target per tick, an
   - The parent subcase's "reaches MONITOR, 12 `set_input_pos`, HELD 0" checks moved into the "re-engages" subcase, after `cl_confirm(0x3F)`.
 - **deactivate `run_to_monitor`, activate `run_to_monitor` / `to_monitor`:** "reaches MONITOR" now also means "every target Leg carries a fresh post-CL CLOSED_LOOP heartbeat". Before, its last heartbeat was the fixture's pre-CL one. The U3 mid-rise cases stage their own confirmations (`abort_mid_rise`), so their meaning is unchanged.
 - **deactivate "COMMAND descends to STOW_OFF_POSE_REV", "IDLEs the leg on arrival at STOW", "the hand never enters the descent ladder", and activate "COMMAND emits the active-pose leg_setpoint":** each gets a `cl_confirm` before its COMMAND tick. Frame counts and bytes are unchanged.
+
+**Changed by the follow-up** (old → new). These were the cases that pinned "a non-CL heartbeat after the settle fails at once":
+- **deactivate R3 "re-faults on engage":**
+  - Old: Leg 2's post-CL IDLE heartbeat alone failed the ladder.
+  - New: the stage also sets `active_errors = 0x1000` on Leg 2, because a re-fault reports its error. The assertions are unchanged.
+- **deactivate and activate "U8: a Leg reporting IDLE or an error after its settle…"**, renamed "U8: a Leg with an error after its CL command…":
+  - The deactivate IDLE subcase becomes "IDLE with a cached disarm_reason". The activate after-Homing subcase stages `active_errors = 0x1` on the IDLE Leg.
+  - Old: IDLE alone failed the ladder at once. New: the error does.
+- **Both bench cases ("…a failed engage IDLEs it (bench)"):** the re-faulted Leg also carries `active_errors = 0x1`.
+- **Mutation U4:**
+  - Old: "a non-CL confirming heartbeat treated as WAIT". That is now the design.
+  - New: "a post-settle non-CL heartbeat with no error FAILS at once", the pre-follow-up rule.
+  - New mutations: U12 (the `disarm_reason` check removed), U13 (a non-CL heartbeat counted as confirmed) and U14 (the bound left at 250 ms).
+  - U5 now removes only the `active_errors` term.
 
 ## Verification
 
@@ -117,4 +149,12 @@ All runs are from 2026-11-26, in `$S/wt-fw53`.
 - **Scoped suite** (full native build included). Command: `flock /tmp/jugglebot-tests.lock nice -n 10 python -m pytest -q -p no:cacheprovider tests/firmware tests/teensy_link`. Result: **1218 passed, 4 skipped in 512.07 s**.
 - **Docs.** Command: `python -m pytest -q -p no:cacheprovider tests/sim/test_docs_links.py tests/sim/test_glossary_avoid_words.py tests/sim/test_logbook_front_matter.py tests/firmware/test_bridge_fw_version_xref.py`. Result: **25 passed**.
 - **Image** (build only, no upload). Command: `pio run -e teensy41`. Result: SUCCESS, and the three touched files compiled without warnings. `firmware.hex` sha256 `40b8652487451c6ce91783b40eefe892d424ca40ceab5c4b2656da7b74c40c9c`.
+- **After the follow-up** (2026-11-26):
+  - **Native** (same `quick.py` command): activate **73/73**, deactivate **35/35**, stow_gate **22/22**.
+  - **Mutations** (same `mutate.py` command; this time 39 in total, U3's 24 plus U8's 15):
+    - Run 2 (`$S/out/fw53-u8/mutations2.txt`): 37/39 CAUGHT. U8 and U9 SURVIVED: with the 400 ms window, the unconfirmed Leg 4's cached heartbeat went stale (over 500 ms old) before the expiry, so the verdict read STALE_HB and held whatever the window.
+    - The expiry cases now re-stage Leg 4 with a fresh pre-CL heartbeat. U6, U8, U9 and U14 were then re-run (`mutate.py $S/wt-fw53 U8 U9 U6 U14`, `mutations3.txt`): **4/4 CAUGHT**, so **39/39 in total**.
+  - **Scoped suite** (`flock /tmp/jugglebot-tests.lock nice -n 10 python -m pytest -q -p no:cacheprovider tests/firmware tests/teensy_link`): **1218 passed, 4 skipped in 511.07 s**.
+  - **The four doc tests:** 25 passed.
+  - **`pio run -e teensy41`** (build only): SUCCESS. `firmware.hex` sha256 `ff4d9b409a83ac437e29c5556b82c64d26a85ef5bbfc3ebab08738c7c241b491`, which supersedes the hash above.
 - **Not run:** `./run_tests.sh`, and nothing on hardware.

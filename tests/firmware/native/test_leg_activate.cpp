@@ -1778,14 +1778,15 @@ TEST_CASE("U8: after Homing, staggered confirmations; no target to any axis unti
   CHECK(cs_sent_count() == 7);
 }
 
-// Mutations caught: FAILED treated as WAIT (still active); the error check removed.
-TEST_CASE("U8: a Leg reporting IDLE or an error after its settle: no target to any axis; IDLE from Stow, or hold") {
+// Mutation caught: the error check removed.
+TEST_CASE("U8: a Leg with an error after its CL command: no target to any axis; IDLE from Stow, or hold") {
   SUBCASE("after Homing: the gated IDLE from Stow, Hand IDLE, FAILED, not held") {
     homed((uint8_t)(0x3F | HAND_BIT));
     (void)run_to_command(JbUdp::RpcArgs::AXIS_ALL);
     cs_advance(10000);
     cl_confirm(0x37);
-    confirmed(3, ST_IDLE, HOMED);                  // re-faulted on engage
+    confirmed(3, ST_IDLE, HOMED);                  // re-faulted on engage ...
+    axes[3].active_errors = 0x1;                   // ... with its error
     cs_clear_sent();
     activate_step();
     CHECK_FALSE(activate_active());
@@ -1828,6 +1829,11 @@ TEST_CASE("U8: the CL_CONFIRM_WAIT_US expiry: no target, Hand IDLE, the unconfir
   CHECK(cs_sent_count() == 0);
   cs_set_mono(t_last_cl + CL_CONFIRM_WAIT_US + 10000);
   cl_confirm(0x2F);                                // the five stay live (fresh encoder, heartbeat)
+  // Leg 4's last heartbeat: received before its CL command + settle (Leg 4's SETUP
+  // tick was one tick before t_last_cl), still fresh at the expiry: CL_UNCONFIRMED,
+  // not STALE_HB, so a restarted abort window would WAIT.
+  cs_stage_leg(4, (uint8_t)axes[4].axis_state, axes[4].pos_rev, 0.0f,
+               (int64_t)(micros64() - (t_last_cl - 5000)), 0);
   activate_step();
   CHECK_FALSE(activate_active());
   CHECK(n_targets_sent() == 0);
@@ -1896,7 +1902,8 @@ TEST_CASE("U8: the one-Leg bench waits for its Leg; a failed engage IDLEs it (be
   CHECK(s_phase == APhase::COMMAND);
   CHECK(cs_sent_count() == 0);
   cs_advance(10000);
-  confirmed(0, ST_IDLE, 0.4f);                     // re-faulted on engage
+  confirmed(0, ST_IDLE, 0.4f);                     // re-faulted on engage ...
+  axes[0].active_errors = 0x1;                     // ... with its error
   activate_step();
   CHECK_FALSE(activate_active());
   CHECK(n_targets_sent() == 0);
@@ -1918,4 +1925,43 @@ TEST_CASE("U8: legs_cl_confirm, a stale post-CL heartbeat is not a confirmation"
   CHECK(legs_last_cl_cmd_us(0x01) == t_cl);
   cs_set_mono(t_cl + CL_ENGAGE_SETTLE_US + CAN_HEARTBEAT_STALE_US + 10000);
   CHECK(legs_cl_confirm(0x01, micros64()) == ClConfirm::EXPIRED);
+}
+
+// U8 follow-up (orchestrator, 2026-11-26): see the DEACTIVATE twin. After Homing,
+// Leg 5 engages slowly (IDLE with no error at +90 ms, CLOSED_LOOP at +288 ms).
+// Mutations caught: as the twin.
+TEST_CASE("U8: a slow engage (post-settle IDLE, no error) waits; CLOSED_LOOP completes, none expires") {
+  homed(0x3F);
+  const uint64_t t_last_cl = run_to_command(JbUdp::RpcArgs::AXIS_ALL);
+  cl_confirm(0x1F);
+  cs_set_mono(t_last_cl + 90000);
+  confirmed(5, ST_IDLE, HOMED);                    // engaging: IDLE, no error
+  cs_clear_sent();
+  activate_step();
+  CHECK(s_phase == APhase::COMMAND);
+  cs_set_mono(t_last_cl + 260000);
+  cl_confirm(0x1F);
+  activate_step();
+  CHECK(s_phase == APhase::COMMAND);
+  CHECK(cs_sent_count() == 0);
+  SUBCASE("engages: CLOSED_LOOP at +288 ms, the six rise together") {
+    cs_set_mono(t_last_cl + 288000);
+    cl_confirm(0x3F);
+    activate_step();
+    CHECK(s_phase == APhase::MONITOR);
+    CHECK(n_targets_sent() == 6);
+    CHECK(cs_sent_count() == 6);
+  }
+  SUBCASE("never engages: IDLE with no error to the bound, the pre-rise abort IDLEs from Stow, no motion") {
+    cs_set_mono(t_last_cl + CL_CONFIRM_WAIT_US + 10000);
+    cl_confirm(0x1F);
+    confirmed(5, ST_IDLE, HOMED);
+    activate_step();
+    CHECK_FALSE(activate_active());
+    CHECK(n_targets_sent() == 0);
+    CHECK(n_cmd(ODriveCmd::set_input_pos) == 0);
+    CHECK(n_cmd(ODriveCmd::set_requested_state) == 6);   // the gated IDLEs: at Stow
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) CHECK(activate_result(i) == ACTIVATE_FAILED);
+    CHECK(leg_held_mask() == 0);
+  }
 }
