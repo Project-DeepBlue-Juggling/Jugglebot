@@ -31,10 +31,11 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | --- | ---: | --- | --- | --- |
 | BUG-19 Hand ODrive state can silently diverge from what the can-bridge commanded | 30 | bridge-cycled | - | - |
 
-## Bench hand  (1 Item, 30 min)
+## Bench hand  (2 Items, 105 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
+| FEAT-68 Bench Hand launch baseline: launch scatter of a settled, a dropped-in and an off-axis ball (learner-efficacy E1) | 75 | bridge-cycled | - | - |
 | BUG-41 Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled | 30 | bridge-cycled | - | - |
 
 ## Needs a Sitting section
