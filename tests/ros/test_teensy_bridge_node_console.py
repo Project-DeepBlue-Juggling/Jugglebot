@@ -153,6 +153,7 @@ def test_main_destroys_action_servers_before_node(monkeypatch):
     class _Node:
         _home_action = _Srv()
         _bb_throw_action = _Srv()
+        _boot_interrupted = False   # BUG-141: main() reads it (the real node always has it)
         def on_shutdown(self): order.append('shutdown')
         def destroy_node(self): order.append('node')
 
