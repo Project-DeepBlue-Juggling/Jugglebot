@@ -31,6 +31,7 @@ NOMINATE_EXTRA_FIELDS = {
     'apex_m_ball2': float,
     'columns_angle_deg': float,
     'polygon_n': int,     # polygon_walk only (JP-5)
+    'orbit_n': int,       # centre_orbit only (JP-14)
 }
 
 

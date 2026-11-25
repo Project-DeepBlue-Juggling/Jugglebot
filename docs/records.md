@@ -99,6 +99,11 @@ _No record yet._
 
 ## 2 balls
 
+<!-- pattern: centre_orbit balls: 2 -->
+### Centre and orbit
+
+_No record yet._
+
 <!-- pattern: columns balls: 2 -->
 ### Columns
 

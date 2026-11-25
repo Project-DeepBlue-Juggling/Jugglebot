@@ -5345,7 +5345,7 @@ def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, evidence):
     covered = {'self_toss', 'hop', 'columns', 'columns_1ball',
                'columns_1ball_fed', 'columns_turned', 'columns_highlow',
                'oval_1ball', 'oval_1ball_fed', 'polygon_walk', 'reload',
-               'human_catch'}
+               'human_catch', 'centre_orbit'}
     # 'magazine' has no schedule (one MAGAZINE segment from rest; its own
     # tests are tests/ros/test_skill_node_magazine.py).
     assert set(sn.SkillNode._PATTERNS) - {'magazine'} == covered

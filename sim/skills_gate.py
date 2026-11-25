@@ -275,6 +275,11 @@ class SkillsGateConfig:
     separation_mm: float = 100.0
     #: JP-10: rotate the columns Site pair by this many degrees (0 = straight).
     angle_deg: float = 0.0
+    #: JP-14 Centre and orbit (``--orbit-n``): Ball 2's Sites per lap; then
+    #: :attr:`separation_mm` is the orbit RADIUS, ball A keeps the centre C
+    #: and ball B starts at O1 (``sites.centre_orbit_sites``,
+    #: ``Pattern.orbit_sites``).  ``None`` = plain Columns, unchanged.
+    orbit_n: Optional[int] = None
     dwell_s: float = 0.27
     n_throws: int = 20
     seeds: tuple = (0, 1, 2, 3, 4)
@@ -1705,7 +1710,13 @@ class SkillsGate:
         plant = self.plant
         geom = self.geom
         noise = JuggleNoise(cfg.noise, seed=seed)
-        site0, site1 = sites.columns_sites(cfg.separation_mm, cfg.angle_deg)
+        orbit = None
+        if cfg.orbit_n is not None:
+            _all = sites.centre_orbit_sites(cfg.separation_mm, cfg.orbit_n)
+            site0, site1, orbit = _all[0], _all[1], _all[1:]
+        else:
+            site0, site1 = sites.columns_sites(cfg.separation_mm,
+                                               cfg.angle_deg)
 
         # 1. Settle the machine at rest at site 0 (ball A's home).
         rest0 = self._rest_state(site0)
@@ -1745,7 +1756,8 @@ class SkillsGate:
 
         pattern = sk.Pattern(sites=(site0, site1), apex_m=cfg.apex_m,
                              dwell_s=cfg.dwell_s, n_throws=cfg.n_throws,
-                             apex_m_ball_b=cfg.apex_m_ball2)
+                             apex_m_ball_b=cfg.apex_m_ball2,
+                             orbit_sites=orbit)
         sched = sk.compile_columns(pattern, t0_abs_s)
         scheduled_catches = sum(1 for s in sched.skills if s.kind == CATCH)
         # The Stop (D2, E1'): the last throw is aimed at the OTHER site and
@@ -3867,6 +3879,8 @@ _NOMINATE_DEFAULTS = {
     'oval_1ball_fed':    (0.95, _OVAL_SEPARATION_MM, _OVAL_DWELL_S),
     # JP-5: the square's EDGE (nominated 2026-11-18: 100 mm/0.27 s margin 0.189)
     'polygon_walk':      (0.9, 100.0, 0.27),
+    # JP-14: the orbit RADIUS (nominated 2026-11-25 at orbit_n 8: margin 0.189)
+    'centre_orbit':      (0.95, 100.0, 0.27),
 }
 _NOMINATE_DEFAULTS_HELP = '; '.join(
     '%s %g/%g/%g' % ((k,) + v) for k, v in _NOMINATE_DEFAULTS.items()
@@ -3904,6 +3918,7 @@ def _main_nominate(p, args) -> int:
                             is not None else sep),
         dwell_s=float(args.dwell_s if args.dwell_s is not None else dwell),
         apex_m_ball2=ball2, angle_deg=float(angle),
+        orbit_n=int(args.orbit_n if args.orbit_n is not None else 8),
         planner_mode=args.planner_mode,
         carry_zvd=(args.carry_zvd == 'true'),
         n_throws=args.n_throws)
@@ -3926,6 +3941,10 @@ def main(argv=None) -> int:
                    help='headless (the default; accepted for symmetry)')
     p.add_argument('--viewer-speed', type=float, default=1.0)
     p.add_argument('--report', default=None)
+    p.add_argument('--orbit-n', type=int, default=None,
+                   help='JP-14 centre_orbit: Ball 2 Sites per lap (the plain '
+                        'gate and --nominate --pattern centre_orbit; '
+                        '--separation-mm is the orbit radius)')
     p.add_argument('--angle-deg', type=float, default=0.0,
                    help='JP-10: turn the columns Site pair by this angle '
                         '(deg) about the origin (pose planner)')
@@ -4242,6 +4261,11 @@ def main(argv=None) -> int:
         cfg.apex_m = float(args.apex_m)
     if args.apex_ball2 is not None:
         cfg.apex_m_ball2 = float(args.apex_ball2)
+    if args.orbit_n is not None:
+        if args.planner_mode != 'pose':
+            p.error('--orbit-n needs --planner-mode pose (JP-14 is pose-only, '
+                    'IDEA-14)')
+        cfg.orbit_n = int(args.orbit_n)
     if beat_spec is not None:
         if beat_spec['throw'] > cfg.n_throws - 1:
             p.error('--beat-change throw=%d needs a stream of at least %d '

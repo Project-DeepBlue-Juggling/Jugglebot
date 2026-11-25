@@ -119,7 +119,8 @@ from jugglebot.motion.skills.segments import CATCH, REST, THROW
 from jugglebot.motion.skills import segments as sk_seg
 from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
                                            RELEASE_CUP_Z_MM,
-                                           REST_HAND_REV, Site, columns_sites)
+                                           REST_HAND_REV, Site, centre_orbit_sites,
+                                           columns_sites)
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.robot_frame import RobotFrame, rotation_angle_deg
 from jugglebot.motion.trajectory import ballistics_bc
@@ -618,6 +619,9 @@ _CUP_RULE = {
     'columns_turned': {_E: RELOAD_FIRST, _S: THROW_FIRST},
     # High-low Columns (JP-9): Columns' own entry, both cup states.
     'columns_highlow': {_E: RELOAD_FIRST, _S: THROW_FIRST},
+    # JP-14 Centre and orbit: Columns' own entry (Ball 1 held or reloaded at
+    # the Feed Site O1, hopped to the centre; Ball 2 fed at O1).
+    'centre_orbit': {_E: RELOAD_FIRST, _S: THROW_FIRST},
     # A is phantom, B is BB-fed: needs an EMPTY cup.
     'columns_1ball_fed': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
     # The one-ball oval (plan two-ball-oval § 2.8): the entry is the ordinary
@@ -1315,6 +1319,9 @@ class SkillNode(Node):
         # JP-5 (`polygon_walk`): the Site count N (>= 3; separation_mm is the
         # polygon's edge). Read at goal accept ONLY by that pattern.
         self.declare_parameter('polygon_n', 4)
+        # JP-14 (`centre_orbit`): Ball 2's Sites per lap N (separation_mm is
+        # the orbit's radius). Read at goal accept ONLY by that pattern.
+        self.declare_parameter('orbit_n', 8)
         # PWAY-11 P2 (`human_catch`): the policy's owner decisions D3-D8 and
         # the plan window, each defaulting to `HumanCatchPolicy`'s own
         # keyword default; the home Site xy as two scalars. Read at goal
@@ -4367,7 +4374,7 @@ class SkillNode(Node):
     _PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
                 'columns_1ball_fed', 'columns_turned', 'columns_highlow',
                 'oval_1ball', 'oval_1ball_fed', 'polygon_walk', 'magazine',
-                'reload', 'human_catch')
+                'reload', 'human_catch', 'centre_orbit')
 
     def _record_params(self, pattern, apex_m, separation_mm, dwell_s,
                        turned_angle_deg, apex_m_ball2,
@@ -4386,6 +4393,9 @@ class SkillNode(Node):
             if pattern == 'polygon_walk':
                 out.append(('polygon_n',
                             '%d' % int(self.get_parameter('polygon_n').value)))
+            if pattern == 'centre_orbit':
+                out.append(('orbit_n',
+                            '%d' % int(self.get_parameter('orbit_n').value)))
             if pattern == 'columns_turned':
                 out.append(('turned_angle_deg', '%g' % round(turned_angle_deg, 2)))
             if pattern == 'columns_highlow' and apex_m_ball2 is not None:
@@ -4598,6 +4608,10 @@ class SkillNode(Node):
             result = self._run_columns(apex_m, separation_mm, dwell_s,
                                        n_throws, reload_a=reload,
                                        apex_m_ball2=apex_m_ball2)
+        elif pattern == 'centre_orbit':
+            result = self._run_columns(
+                apex_m, separation_mm, dwell_s, n_throws, reload_a=reload,
+                orbit_n=int(self.get_parameter('orbit_n').value))
         elif pattern == 'columns_1ball_fed':
             # `reload` is True here by construction (the cup rule: EMPTY ->
             # RELOAD_FIRST, SEATED refused), so ball A is phantom and ball B
@@ -4662,7 +4676,7 @@ class SkillNode(Node):
 
     def _nomination_config(self, pattern, apex_m, separation_mm, dwell_s, *,
                            apex_m_ball2=None, angle_deg=0.0, feed_site=None,
-                           polygon_n=None):
+                           polygon_n=None, orbit_n=None):
         """The :class:`nominate.NominationConfig` for one goal: the goal /
         resolved fields plus the node parameters that shape the plan
         (``planner_mode``, ``carry_zvd``, ``columns_feed_site``,
@@ -4677,6 +4691,8 @@ class SkillNode(Node):
             angle_deg=float(angle_deg),
             polygon_n=(int(polygon_n) if polygon_n is not None
                        else int(self.get_parameter('polygon_n').value)),
+            orbit_n=(int(orbit_n) if orbit_n is not None
+                     else int(self.get_parameter('orbit_n').value)),
             planner_mode=self._planner_mode(), carry_zvd=self._carry_zvd(),
             entry=('hop' if _FED_COLUMNS_HOP_ENTRY
                    and pattern in nom.COLUMNS_FED else 't0'),
@@ -4739,9 +4755,17 @@ class SkillNode(Node):
         if nom.workspace_ok(config):
             return None
         try:
-            sites = columns_sites(
-                config.separation_mm,
-                config.angle_deg if config.pattern == 'columns_turned' else 0.0)
+            if config.pattern == 'centre_orbit':
+                # JP-14: a radius / orbit_n outside the compiled range is the
+                # nomination's COMPILE refusal (ORBIT_*_OUT_OF_RANGE), named
+                # there, not a workspace question.
+                sites = centre_orbit_sites(config.separation_mm,
+                                           config.orbit_n)
+            else:
+                sites = columns_sites(
+                    config.separation_mm,
+                    config.angle_deg if config.pattern == 'columns_turned'
+                    else 0.0)
         except ValueError:
             return None
         lim_mm = float(cup_cycle.CupCycleConfig().workspace_xy_m) * 1000.0
@@ -4872,7 +4896,8 @@ class SkillNode(Node):
                      reload_a: bool = False,
                      phantom_a: bool = False,
                      angle_deg: float = 0.0,
-                     apex_m_ball2: Optional[float] = None) -> SimpleNamespace:
+                     apex_m_ball2: Optional[float] = None,
+                     orbit_n: Optional[int] = None) -> SimpleNamespace:
         """The ``columns`` branch of :meth:`_start_pattern` — R5's
         feed-triggered two-phase start (owner decision D1, 2026-09-30),
         replacing the R2-R4 body that refused outright (`_hand_home_error`,
@@ -4969,13 +4994,27 @@ class SkillNode(Node):
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
         plant_id = str(self.get_parameter('plant_id').value)
-        sites = columns_sites(separation_mm, angle_deg)
+        if orbit_n is not None:
+            # JP-14 Centre and orbit: Ball 2 is fed at O1 (the Site nearest
+            # Ball Butler, where columns' P1 is) and Ball 1 keeps the centre
+            # C; `columns_feed_site` is not read.
+            try:
+                orbit_all = centre_orbit_sites(separation_mm, orbit_n)
+            except ValueError as exc:
+                msg = 'centre_orbit refused: %s' % (exc,)
+                self.get_logger().debug(msg)
+                return SimpleNamespace(success=False, message=msg)
+            sites = (orbit_all[1], orbit_all[0])
+        else:
+            sites = columns_sites(separation_mm, angle_deg)
         # R5 sitting 2 (2026-10-02): `columns_feed_site` picks which of the
         # two named sites ball B is fed at; the other holds ball A (see the
         # docstring above). `columns_sites` always returns `(P1, P2)` (a
         # turned pair: `P1@<angle>`, `P2@<angle>`), so this is a plain pick
         # by index, never a guess from xy.
-        if angle_deg != 0.0:
+        if orbit_n is not None:
+            feed_site, a_site = sites[0], sites[1]
+        elif angle_deg != 0.0:
             # JP-10: the fed Site is GEOMETRIC for a turned pair -- the one
             # nearest Ball Butler (tie -> P1), so the incoming ball's descent
             # never crosses the held ball's column. `columns_feed_site`
@@ -5012,6 +5051,7 @@ class SkillNode(Node):
         # box no longer gates a goal); the executor's own online check
         # (`_checker`) covers every command, so no box rides on it.
         columns_name = ('columns_1ball_fed' if phantom_a
+                        else 'centre_orbit' if orbit_n is not None
                         else 'columns_highlow' if apex_m_ball2 is not None
                         else 'columns_turned' if angle_deg != 0.0
                         else 'columns')
@@ -5020,7 +5060,7 @@ class SkillNode(Node):
                 self._nomination_config(
                     columns_name, apex_m, separation_mm, dwell_s,
                     apex_m_ball2=apex_m_ball2, angle_deg=angle_deg,
-                    feed_site=feed_site.name), n_throws)
+                    feed_site=feed_site.name, orbit_n=orbit_n), n_throws)
         except ValueError as exc:
             msg = 'columns pattern refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -8004,6 +8044,7 @@ class SkillNode(Node):
         apex_m_ball2 = None
         angle_deg = 0.0
         polygon_n = None
+        orbit_n = None
         feed_site = None
         refusal = None
         if pattern == 'columns_highlow':
@@ -8014,6 +8055,9 @@ class SkillNode(Node):
         elif pattern == 'polygon_walk':
             polygon_n = int(vals.get('polygon_n', 0)
                             or self.get_parameter('polygon_n').value)
+        elif pattern == 'centre_orbit':
+            orbit_n = int(vals.get('orbit_n', 0)
+                          or self.get_parameter('orbit_n').value)
         elif pattern == 'columns_turned':
             angle_deg = (vals.get('columns_angle_deg', 0.0)
                          or float(self.get_parameter('columns_angle_deg').value))
@@ -8037,7 +8081,8 @@ class SkillNode(Node):
         res = self._nominate(self._nomination_config(
             pattern, apex_m, separation_mm, dwell_s,
             apex_m_ball2=apex_m_ball2, angle_deg=angle_deg,
-            feed_site=feed_site, polygon_n=polygon_n), with_aim=True)
+            feed_site=feed_site, polygon_n=polygon_n, orbit_n=orbit_n),
+            with_aim=True)
         response.success = res.ok
         response.message = '\n'.join([res.summary] + (
             [] if res.ok else list(res.lines)))
