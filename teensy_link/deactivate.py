@@ -21,12 +21,13 @@ where the position is reliable), then drops it to IDLE. We cannot judge success
 from the post-IDLE position — the instant a leg IDLEs it relaxes into the foam
 stop by a variable amount (the 2026-06-26 homing-observer lesson,
 [[2026-06-26-phase11-u5-six-leg-cutover]]) — *and* we cannot judge it from the
-IDLE alone: the firmware also reaches IDLE on every **abort** path (E-STOP,
-firmware timeout on a stalled descent, transient bus-WARN → ``abort_all`` IDLEs
-the leg with no ODrive error). Since the firmware op-timeout (10 s) is shorter
-than this observer's timeout, a stalled descent *always* aborts to IDLE before
-the observer would time out — so "IDLE ⇒ done" would silently report a failed or
-uncontrolled descent as success. Therefore:
+IDLE alone: a leg also reaches IDLE without a controlled descent when it
+disarms itself, and up to FW 52 the firmware IDLE'd every leg on every
+**abort** path (E-STOP, timeout, bus fault). From FW 53 (I-FW-19) an abort
+IDLEs the legs only if the Platform is already at Stow and otherwise HOLDS them
+in CLOSED_LOOP (frozen, or with nothing sent), so a stalled or aborted descent
+ends at this observer's timeout instead. Either way "IDLE ⇒ done" would report a
+failed or uncontrolled descent as success. Therefore:
 
   * **success** ⇒ the leg was observed within ``arrival_tol_rev`` of STOW *while
     in CLOSED_LOOP* (reliable position, latched), AND then reached IDLE with no

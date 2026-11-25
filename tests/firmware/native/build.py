@@ -173,9 +173,10 @@ _BINARIES = {
         NATIVE_DIR / "test_leg_activate.cpp",
         ["axis_state", "ball_butler_state", "coldstart_hal"],
     ),
+    # FW 53 U2: the ladder's leg state changes go through the Stow gate (I-FW-19).
     "test_leg_deactivate": (
         NATIVE_DIR / "test_leg_deactivate.cpp",
-        ["axis_state", "ball_butler_state", "coldstart_hal"],
+        ["axis_state", "ball_butler_state", "coldstart_hal", "leg_stow_gate"],
     ),
     "test_leg_homing": (
         NATIVE_DIR / "test_leg_homing.cpp",

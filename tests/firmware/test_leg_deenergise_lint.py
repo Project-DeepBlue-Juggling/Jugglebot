@@ -52,11 +52,7 @@ _HOMING_OWNER_FILES = {"leg_stow_gate.h", "leg_stow_gate.cpp", "leg_homing.cpp",
 
 # The FW 52 direct call sites (file, code line), exact multiset. Shrinks unit by unit; empty at U5.
 _ALLOWLIST: list[tuple[str, str]] = [
-    # U2: leg_deactivate.cpp
-    ("leg_deactivate.cpp", "can_jugglebot_send(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE));"),
-    ("leg_deactivate.cpp", "can_jugglebot_send(ODrive::encode_set_state(i, ODriveState::IDLE));"),
-    ("leg_deactivate.cpp", "ODrive::encode_set_state(i, ODriveState::CLOSED_LOOP)) && ok;"),
-    ("leg_deactivate.cpp", "can_jugglebot_send(ODrive::encode_set_state(i, ODriveState::IDLE));"),
+    # U2: leg_deactivate.cpp (migrated in FW 53 U2; no entries left)
     # U3: leg_activate.cpp
     ("leg_activate.cpp", "can_jugglebot_send(ODrive::encode_set_state(i, ODriveState::IDLE));"),
     ("leg_activate.cpp", "if (!can_jugglebot_send(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)))"),
