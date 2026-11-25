@@ -2,25 +2,22 @@
 id: BUG-138
 kind: bug
 title: Plant model pools carried and from-rest rows, so oval rows move the Columns offset
-status: inbox
+status: complete
 created: '2026-11-24'
-updated: '2026-11-24T16:53:10Z'
+updated: '2026-11-25T16:28:21Z'
 owners: []
 priority: medium
 effort: m
 hardware: none
-owner: decision
-radius: subsystem
+owner: none
+radius: normative
 diagnosis: hypothesis
 area: learner
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-26-plant-model-lateral-law-per-release-kind.md
 parent: learner-generalisation
 filed_by: claude
-night_skip: input-decision
-night_skip_on: '2026-11-25'
-night_skip_note: Builds the split you choose (per-kind model, a kind term, or K shared with per-kind laterals) with a leakage test, then merges if the gate says MERGE.
-night_skip_input: 'Pick option 1-4 in the BUG-138 question ticket: split the plant model by release kind, add a kind term, share K and split the laterals, or defer to E7.'
 ---
 
 The plant model's f0 pools carried and from-rest rows across release kinds, so rows from the oval move the offset applied to Columns. Found in the PWAY-2 review, `logbook/2026-11-24-learner-efficacy-review-and-scatter-decomposition.md`. Plan step E2(b) in `learner-efficacy.md`.
