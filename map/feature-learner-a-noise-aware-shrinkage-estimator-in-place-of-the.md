@@ -2,10 +2,11 @@
 id: FEAT-65
 kind: feature
 title: 'Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows'
-status: inbox
+status: in_progress
 created: '2026-11-24'
-updated: '2026-11-24T16:53:14Z'
-owners: []
+updated: '2026-11-25T17:40:29Z'
+owners:
+- night-shift
 priority: medium
 effort: m
 hardware: none
@@ -63,3 +64,7 @@ Night Shift 2026-11-25 drafted these; TKT-94 carries them and its answer re-open
 5. Keep E2 for a day Session.
 
 Recommendation: 1, because the replay differences between laws are 0.1 to 0.3 mm with no confidence interval.
+
+## Progress
+
+- 2026-11-26: Night Shift 2026-11-26: held on night-shift/2026-11-26-FEAT-65: built per TKT-94; replay misses the Apex gate (+0.67 mm rms), jitter 24 to 65 percent lower; unblocked by your answer in TKT-97
