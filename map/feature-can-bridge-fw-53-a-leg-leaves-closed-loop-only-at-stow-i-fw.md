@@ -33,21 +33,18 @@ Nothing in FW 53 has run with motor power. Unverified on hardware: a Leg's mid-m
 ## Progress
 
 - 2026-11-26: built as units U1 to U9 with an independent audit (nothing blocking), full-tier gate green, flashed 11:04 (BridgeIdentity 53/14; unpowered launch check clean; `rig_bench` 0, `legs_held` none). Host side live after the rebuild. Open until the Sitting below is flown.
+- 2026-11-27: Sitting section cut to the plain cycle. The fault-injection steps cannot be flown: no service, GUI control or RPC raises a Soft E-stop or trips the Guard while the ladders run disarmed, and every way to disarm one Leg is refused away from Stow. The rise also lasts about 1 s, so a hand-timed abort is not possible.
+- 2026-11-27: The abort paths (return to Stow from a rise, a descent that continues through a Guard trip, the one-Leg recovery) stay verified by the native tests only until a firmware test hook exists. A reboot refused at the Active pose is refused by the host, not by the Stow gate.
 
 ## Sitting
 
 - setup: level, bridge-cycled
-- why: FW 53 changes every abort path from a drop to a hold, a freeze or a return to Stow and adds waits and refusals to the normal cycle, and none of it has been flown.
+- why: FW 53 adds waits and refusals to the normal activate and deactivate cycle and has never run with motor power. The fault paths have no operator trigger and are not flown here.
 - do:
-  - Part 1, plain cycle. Launch with the Platform down. Check the launch log reads `BRIDGE_FW_CHECK: OK` with can-bridge v53 and `/link_status` shows `rig_bench` 0 and `legs_held` none.
+  - Launch with the Platform down. Check the launch log reads `BRIDGE_FW_CHECK: OK` with can-bridge v53 and `/link_status` shows `rig_bench` 0 and `legs_held` none.
   - Boot, home, level, activate, deactivate, with no fault injected. Watch for a refused or failed activate or deactivate.
   - From the bag, per Leg: the time from the Closed-loop command to its first Closed-loop heartbeat on the activate and on the deactivate; the rest position on the stop after Homing; `disarm_reason` after the deactivate.
-  - With the Platform at the Active pose call `/reboot_odrives`; then deactivate and call it again at Stow.
-  - Part 2, fault injection, a second person supporting the Platform and a hand on the E-stop button throughout. Activate and raise a Soft E-stop about 1 s into the rise.
-  - Repeat with the Soft E-stop late in the rise, inside the deceleration.
-  - Activate, then trip the Guard during the deactivate descent.
-  - From a low pose, force a disarm that keeps the encoder estimate on one Leg, check `disarm_reason` stays set in `/robot_state`, then send `clear_errors` and watch the re-engage and the Stow of all six.
-  - Record how far the free Leg sagged before the clear.
-- pass: Part 1: the cycle completes with `legs_held` none; every Leg confirms Closed-loop in under 190 ms and rests above -0.11 rev; `disarm_reason` is 0 after an ordinary Idle; `/reboot_odrives` is refused while posed and accepted at Stow. Part 2: both aborts return to Stow with a continuous setpoint, apex at most 0.10 rev above the abort position, Idle only after arrival, inside 10 s; the Guard trip finishes the descent; the recovery re-engages with no setpoint step and ends in IDLE.
-- record: the bag path for each step; per Leg the engage time, the rest position and `disarm_reason`; the apex above the abort position, peak speed and current, and the return duration for both aborts; the refusal text; the re-engage dip and the free Leg's sag in rev; any HELD bit seen.
-- minutes: 90
+  - With the Platform at the Active pose run `ros2 service call /reboot_odrives std_srvs/srv/Trigger`; it must be refused. Then deactivate and, as the last act of that launch, call it again at Stow: it is accepted and clears the homed flag, so end the launch afterwards.
+- pass: the cycle completes with `legs_held` none and `rig_bench` 0; every Leg confirms Closed-loop in under 190 ms; every Leg rests above -0.11 rev; `disarm_reason` reads 0 after an ordinary Idle; `/reboot_odrives` is refused while posed and accepted at Stow.
+- record: the bag path; per Leg the engage time, the rest position and `disarm_reason`; the refusal text; what the robot did after the accepted reboot; any HELD bit seen.
+- minutes: 25

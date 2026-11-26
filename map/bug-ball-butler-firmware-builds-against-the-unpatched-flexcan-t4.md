@@ -42,7 +42,7 @@ Ball Butler firmware (BallButler repo, `ball_butler_main`) builds against upstre
 - setup: bridge-cycled, bb-fed
 - why: the held Ball Butler FW 10 builds against the patched FlexCAN_T4 and reports its receive-ring health and uptime; it must be flashed and shown to Feed as before, with the ring numbers in the bag.
 - do:
-  - Launch down. Merge BallButler branch `offline/bug133-flexcan` and Jugglebot branch `offline/bb-uptime` together, then colcon build.
+  - Launch down. Check out BallButler branch `offline/bug133-flexcan` and Jugglebot branch `offline/bb-uptime` together, then colcon build; both merge to main after a pass.
   - Flash the Ball Butler from `ball_butler_main` and read back its firmware version.
   - Launch; confirm the `BB_STATUS: first frame` log line and `bb_fw_version` 10 on `/link_status`.
   - Fly Feed Throws for as long as the Sitting allows without power-cycling the Ball Butler, including at least 2 minutes with the Ball Butler at rest.
