@@ -2,9 +2,9 @@
 id: BUG-147
 kind: bug
 title: Ball Butler flasher takes the first reply frame for BEGIN and COMMIT without checking its opcode
-status: inbox
+status: complete
 created: '2026-11-26'
-updated: '2026-11-26T03:18:42Z'
+updated: '2026-11-26T15:55:30Z'
 owners: []
 priority: low
 effort: xs
@@ -14,7 +14,8 @@ radius: local
 diagnosis: confirmed
 area: ball-butler
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-27-flasher-reply-opcode-filter.md
 filed_by: claude
 ---
 
