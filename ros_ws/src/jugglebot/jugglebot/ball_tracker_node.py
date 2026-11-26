@@ -11,6 +11,7 @@ Publishes:
   - balls (BallStateArray) — all tracked balls at mocap rate
 """
 
+import math
 import time
 
 import rclpy
@@ -100,6 +101,22 @@ class BallTrackerNode(Node):
         detect_human_throws = bool(
             self.get_parameter('detect_human_throws').value)
 
+        # FEAT-27 (2026-11-26): gravity's horizontal part in the Mocap world
+        # frame, mm/s^2, for the Fit and every published landing. Config
+        # default [0, 0] (the pre-FEAT-27 Tracker bit for bit); a declared
+        # parameter so the Sitting can A/B the measured value without a
+        # relaunch: `ros2 param set /ball_tracker_node
+        # gravity_world_xy_mmps2 "[43.0, 83.0]"` (and "[0.0, 0.0]" back).
+        self.declare_parameter(
+            'gravity_world_xy_mmps2',
+            [float(v) for v in hw.TRACKING_GRAVITY_WORLD_XY_MMPS2])
+        gravity_xy = _gravity_xy_or_none(
+            self.get_parameter('gravity_world_xy_mmps2').value)
+        if gravity_xy is None:
+            raise ValueError(
+                'gravity_world_xy_mmps2 must be two finite numbers, got %r'
+                % (self.get_parameter('gravity_world_xy_mmps2').value,))
+
         # BUG-92: Ball Butler frame box; min > max on either axis disables it.
         hx = (float(hw.TRACKING_HUMAN_THROW_EXCLUSION_X_MIN_MM),
               float(hw.TRACKING_HUMAN_THROW_EXCLUSION_X_MAX_MM))
@@ -129,6 +146,7 @@ class BallTrackerNode(Node):
             flight_fit_min_samples=hw.TRACKING_FLIGHT_FIT_MIN_SAMPLES,
             flight_fit_residual_mm=hw.TRACKING_FLIGHT_FIT_RESIDUAL_MM,
             flight_fit_freeze_above_plane_mm=hw.TRACKING_FLIGHT_FIT_FREEZE_ABOVE_PLANE_MM,
+            gravity_world_xy_mmps2=gravity_xy,
             # One DEBUG line per announced-ball confirmation / demotion
             # (matcher, 2026-10-14): python-logging DEBUG does not reach
             # launch.log under rclpy, the node's own logger does.
@@ -212,6 +230,7 @@ class BallTrackerNode(Node):
         self.get_logger().info(
             f"Ball tracker up (landing plane z={self._landing_z:.0f} mm, "
             f"detect_human_throws={detect_human_throws}, "
+            f"gravity_world_xy=({gravity_xy[0]:.1f}, {gravity_xy[1]:.1f}) mm/s^2, "
             f"human_throw_exclusion_box(x,z mm)={human_throw_box}, "
             f"{blas_threads.format_blas_short(self._blas_threads)})")
         self.get_logger().debug(
@@ -572,6 +591,18 @@ class BallTrackerNode(Node):
                 self._landing_z_robot = float(param.value)
                 self._apply_landing_plane()
                 continue
+            if param.name == 'gravity_world_xy_mmps2':
+                g = _gravity_xy_or_none(param.value)
+                if g is None:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='gravity_world_xy_mmps2 must be two finite '
+                               'numbers (mm/s^2), got %r' % (param.value,))
+                self._tracker.set_gravity_world_xy(g[0], g[1])
+                self.get_logger().info(
+                    f"gravity_world_xy_mmps2 -> ({g[0]:.1f}, {g[1]:.1f}) "
+                    f"(ros2 param set; FEAT-27)")
+                continue
             if param.name != 'detect_human_throws':
                 continue
             value = bool(param.value)
@@ -589,6 +620,18 @@ class BallTrackerNode(Node):
     def destroy_node(self):
         self.get_logger().debug("Shutting down BallTrackerNode.")
         super().destroy_node()
+
+
+def _gravity_xy_or_none(value):
+    """``(gx, gy)`` floats from a parameter value, or None unless it is
+    exactly two finite numbers."""
+    try:
+        vals = [float(v) for v in value]
+    except (TypeError, ValueError):
+        return None
+    if len(vals) != 2 or not all(math.isfinite(v) for v in vals):
+        return None
+    return vals[0], vals[1]
 
 
 class _NodeLogAdapter:

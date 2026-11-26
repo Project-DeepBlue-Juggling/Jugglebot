@@ -333,6 +333,7 @@ namespace Tracking {
   constexpr uint32_t FLIGHT_FIT_MIN_SAMPLES = 12u;
   constexpr float FLIGHT_FIT_RESIDUAL_MM = 12.0f;
   constexpr float FLIGHT_FIT_FREEZE_ABOVE_PLANE_MM = 250.0f;
+  constexpr float GRAVITY_WORLD_XY_MMPS2[2] = {0.0f, 0.0f};
   constexpr float TRAPPED_HAND_MARKER_Z0_MM = -47.0f;
   constexpr float TRAPPED_HAND_MARKER_X_MM = 0.0f;
   constexpr float TRAPPED_HAND_MARKER_Y_MM = -5.0f;

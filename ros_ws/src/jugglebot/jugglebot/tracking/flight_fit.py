@@ -40,9 +40,18 @@ class FlightFit:
     """Accumulates raw `(t, pos)` samples for ONE ball's free flight and
     produces, on demand, a gravity-fixed least-squares fit:
 
-        x = x0 + vx*tau
-        y = y0 + vy*tau
+        x = x0 + vx*tau + gx*tau^2/2
+        y = y0 + vy*tau + gy*tau^2/2
         z = z0 + vz*tau - g*tau^2/2      (tau = t - t_ref)
+
+    (gx, gy) = `gravity_xy_mmps2`, gravity's horizontal part in the Mocap
+    world frame the fit works in (FEAT-27, 2026-11-26). That frame is tilted
+    0.55 deg from gravity: 1,139 free flights over six Sittings measured
+    (+43, +83) mm/s^2, which with (0, 0) put the landing (-8, -21) mm off
+    (Robot frame) for an early fit and (-3, -11) mm for the final one
+    (`temp/probes/feat27-gravity/`). The default (0, 0) is the pre-FEAT-27
+    fit bit for bit; the value comes from `ball_tracking.
+    gravity_world_xy_mmps2` through `matcher.BallTracker`.
 
     Admission rules applied in `add()` (see there for the reasoning):
       1. samples strictly before the ball's announced `throw_time` are
@@ -91,6 +100,7 @@ class FlightFit:
         min_span_s: float = 0.050,
         max_samples: int = 400,
         new_flight_rise_mm: Optional[float] = None,
+        gravity_xy_mmps2: Tuple[float, float] = (0.0, 0.0),
     ):
         self.throw_time = float(throw_time)
         self.landing_z = float(landing_z)
@@ -101,6 +111,11 @@ class FlightFit:
         self.max_samples = int(max_samples)
         self.new_flight_rise_mm = (None if new_flight_rise_mm is None
                                    else float(new_flight_rise_mm))
+        #: Gravity's horizontal part (gx, gy), mm/s^2, Mocap world frame (see
+        #: the class doc). Read at every `fit()` / `landing()`, so the owner
+        #: (`BallTracker.set_gravity_world_xy`) may change it between calls.
+        self.gravity_xy_mmps2: Tuple[float, float] = (
+            float(gravity_xy_mmps2[0]), float(gravity_xy_mmps2[1]))
 
         self._t: List[float] = []
         self._pos: List[np.ndarray] = []
@@ -232,6 +247,8 @@ class FlightFit:
         # there is only ever one positive root to find.
         t_ref = float(t_arr[-1])
 
+        gx, gy = self.gravity_xy_mmps2
+        tilted = gx != 0.0 or gy != 0.0   # (0, 0): the pre-FEAT-27 arithmetic exactly
         mask = np.ones(len(t_arr), dtype=bool)
         result = None
         for _pass in range(2):
@@ -245,6 +262,9 @@ class FlightFit:
             A = np.vstack([np.ones_like(tau), tau]).T  # (n, 2)
             targets = pos_arr[idx].copy()
             targets[:, 2] = targets[:, 2] + 0.5 * GRAVITY_MMPS2 * tau ** 2
+            if tilted:
+                targets[:, 0] = targets[:, 0] - 0.5 * gx * tau ** 2
+                targets[:, 1] = targets[:, 1] - 0.5 * gy * tau ** 2
 
             coeffs, *_ = np.linalg.lstsq(A, targets, rcond=None)  # (2, 3)
             pos0 = coeffs[0].copy()
@@ -252,6 +272,9 @@ class FlightFit:
 
             pred = (pos0[None, :] + vel0[None, :] * tau[:, None])
             pred[:, 2] = pred[:, 2] - 0.5 * GRAVITY_MMPS2 * tau ** 2
+            if tilted:
+                pred[:, 0] = pred[:, 0] + 0.5 * gx * tau ** 2
+                pred[:, 1] = pred[:, 1] + 0.5 * gy * tau ** 2
             residuals = np.linalg.norm(pos_arr[idx] - pred, axis=1)
 
             result = (pos0, vel0, idx, residuals)
@@ -288,12 +311,14 @@ class FlightFit:
 
         Reuses `ballistics.predict_landing_state` on the fitted state at
         `t_ref` — the crossing arithmetic has exactly one definition, shared
-        with the Kalman-filter landing path.
+        with the Kalman-filter landing path — and the same horizontal gravity
+        the fit used (`gravity_xy_mmps2`).
         """
         fr = self.fit()
         if fr is None:
             return None
-        result = predict_landing_state(fr.pos_ref, fr.vel_ref, landing_z)
+        result = predict_landing_state(fr.pos_ref, fr.vel_ref, landing_z,
+                                       g_xy_mmps2=self.gravity_xy_mmps2)
         if result is None:
             return None
         landing_pos, landing_vel, time_to_land = result
