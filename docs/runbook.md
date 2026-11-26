@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (20 Items, 644 min)
+## Robot  (21 Items, 654 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -21,6 +21,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-69 can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19) | 25 | level, bridge-cycled | - | 2026-11-27-robot |
 | BUG-132 Platform IMU capture timestamps run 23 to 55 ms early against Mocap and the encoders | 10 | level, armed, bb-fed | - | 2026-11-27-robot |
 | BUG-133 Ball Butler firmware builds against the unpatched FlexCAN_T4 and stamps the sync at dispatch | 20 | bb-fed, bridge-cycled | `offline/bb-uptime` | 2026-11-27-robot |
+| BUG-140 Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid | 10 | level, armed, bb-fed | `night-shift/2026-11-27-BUG-140` | - |
 | BUG-144 Juggle action feedback and status topics are in the bag record list but have never been recorded | 5 | level, armed, bridge-cycled | `night-shift/2026-11-26-BUG-144` | - |
 | BUG-32 Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff | 20 | level, armed, bb-fed | `offline/bug32-warm` | 2026-11-27-robot |
 | BUG-95 A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads | 35 | level, bb-fed | - | - |
@@ -50,7 +51,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-130 [Robot] Held Active pose is 0.6 degrees off Level: the levelling correction reaches Jog targets but not the hold: no ## Sitting section
 - BUG-135 [Robot] Platform CAN receive queue overflows during the inclinometer re-probe stall: no ## Sitting section
 - BUG-136 [Robot] Catching cone catch stamps could run 10 ms early per stranded receive frame: no ## Sitting section
-- BUG-140 [Robot] Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid: no ## Sitting section
 - BUG-142 [Robot] Hand park reports already parked on a Hand that is Idle on its bottom stop: no ## Sitting section
 - BUG-146 [Robot] Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt: no ## Sitting section
 - BUG-27 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
@@ -88,3 +88,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 ## Questions a Sitting can answer
 
 - TKT-98 BUG-146: fix the Hand C2 artefact with spline knot rates, a fourth-order stencil, exact tilt rates, or leave it? (parent BUG-146)
+- TKT-99 BUG-140 held on night-shift/2026-11-27-BUG-140: apply the audit's 2 fixes before the Sitting, fly it as is, or drop it? (parent BUG-140)
