@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly home backup to jeeves at 04:15 (after the 02:00 nightly and the 02:45 Night Shift)
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+# A night the Jetson is off still gets its backup at the next boot.
+Persistent=true
+RandomizedDelaySec=300
+Unit=jugglebot-backup-home.service
+
+[Install]
+WantedBy=timers.target

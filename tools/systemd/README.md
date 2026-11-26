@@ -238,3 +238,48 @@ ros2 launch jugglebot jugglebot_launch.py   # then, or in the launch file's traj
 ```
 
 The worker then reports `sched=CFS (disabled)` in its READY line.
+
+## Backup to the Pi server `jeeves` (`jugglebot-backup-{home,system}.{service,timer}`)
+
+[`tools/backup_to_jeeves.sh`](../backup_to_jeeves.sh) copies this Jetson to `jeeves@jeeves.local`
+(192.168.20.7), into the single directory `/home/jeeves/jetson-backup/`: `home/<date>/` nightly
+at 04:15 (a user unit) and `system/<date>/` on Sundays at 05:00 (a system unit, root, because the
+OS set reads files the `jetson` user cannot). Each dated directory is a full snapshot whose
+unchanged files are hard links into the previous one; seven dailies and four Sundays are kept.
+A run waits for a live Sitting to end, and writes one status line per set to
+`temp/reports/backup/status-{home,system}` (`GREEN|RED|DEFERRED <detail> <iso-date>`).
+
+It logs in with the passphrase-free key `~/.ssh/id_backup_jeeves`, which must be in the
+`authorized_keys` of the `jeeves` account. The bags the logbook cites have no other second copy,
+so re-arm this on any rebuilt Jetson.
+
+### Install
+
+```bash
+install -Dm644 tools/systemd/jugglebot-backup-home.service ~/.config/systemd/user/jugglebot-backup-home.service
+install -Dm644 tools/systemd/jugglebot-backup-home.timer   ~/.config/systemd/user/jugglebot-backup-home.timer
+systemctl --user daemon-reload && systemctl --user enable --now jugglebot-backup-home.timer
+
+sudo install -m644 tools/systemd/jugglebot-backup-system.service tools/systemd/jugglebot-backup-system.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now jugglebot-backup-system.timer
+```
+
+### Restore after an SSD failure
+
+A Jetson's bootloader partitions are written by NVIDIA's flashing tool, so this is a restore
+onto a fresh flash, never a bootable image.
+
+1. Fit the new NVMe and flash the same JetPack release with SDK Manager from another computer;
+   create the `jetson` user.
+2. On the Jetson, make a new key and add it on jeeves, then restore the home set as `jetson`:
+   `rsync -aHAX --numeric-ids -e ssh jeeves@jeeves.local:jetson-backup/home/latest/ /home/jetson/`
+3. Restore the system set as root, with the SAME `--fake-super` on the Pi side so owners and
+   modes come back, and without touching the freshly flashed boot files:
+   `sudo rsync -aHAX --numeric-ids --rsync-path "rsync --fake-super" --exclude /boot/ --exclude /etc/fstab -e "ssh -i /home/jetson/.ssh/id_backup_jeeves" jeeves@jeeves.local:jetson-backup/system/latest/ /`
+   then reboot. For a lighter restore, copy back only `/etc`, `/opt` and `/usr/local` and
+   reinstall packages from `system/latest/var/lib/dpkg/status`.
+4. Re-arm every unit in this file, `colcon build`, and run `./run_tests.sh`.
+
+Excluded on purpose (they rebuild themselves): caches, `~/.npm`, `~/.nvm`, the VS Code servers,
+`~/.platformio`, snaps, the Trash, `/tmp`, `ros_ws/{build,install,log}`, and the Night Shift and
+map-app clones.

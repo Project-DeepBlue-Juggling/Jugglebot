@@ -1,0 +1,15 @@
+[Unit]
+Description=Back up /home/jetson (bags, repo, calibration, config) to the Pi server jeeves
+Documentation=file:///home/jetson/Desktop/Jugglebot/tools/backup_to_jeeves.sh
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jetson/Desktop/Jugglebot
+ExecStart=/home/jetson/Desktop/Jugglebot/tools/backup_to_jeeves.sh home
+# The script waits up to 4 h for a live Sitting to end before it defers.
+TimeoutStartSec=8h
+Nice=15
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

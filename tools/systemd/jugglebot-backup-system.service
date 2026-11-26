@@ -1,0 +1,13 @@
+[Unit]
+Description=Back up the Jetson OS (/usr /etc /opt /var /boot) to the Pi server jeeves
+Documentation=file:///home/jetson/Desktop/Jugglebot/tools/backup_to_jeeves.sh
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# A SYSTEM unit (root): the OS set has to read files the jetson user cannot.
+Type=oneshot
+ExecStart=/home/jetson/Desktop/Jugglebot/tools/backup_to_jeeves.sh system
+TimeoutStartSec=8h
+Nice=15
+IOSchedulingClass=idle
