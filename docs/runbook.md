@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (16 Items, 549 min)
+## Robot  (17 Items, 639 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -18,6 +18,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0) | 45 | armed, bb-fed, bridge-cycled | - | - |
 | FEAT-39 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30 | 50 | level, armed, bb-fed, bridge-cycled | - | - |
 | FEAT-68 Launch baseline on the robot's Hand: launch scatter of a settled ball and of running Throws at Dwell 0.27, 0.50 and 1.00 (learner-efficacy E1) | 60 | level, armed | - | - |
+| FEAT-69 can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19) | 90 | level, bridge-cycled | - | - |
 | BUG-132 Platform IMU capture timestamps run 23 to 55 ms early against Mocap and the encoders | 10 | level, armed, bb-fed | - | - |
 | BUG-144 Juggle action feedback and status topics are in the bag record list but have never been recorded | 5 | level, armed, bridge-cycled | `night-shift/2026-11-26-BUG-144` | - |
 | BUG-95 A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads | 35 | level, bb-fed | - | - |
