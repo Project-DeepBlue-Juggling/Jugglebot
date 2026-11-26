@@ -636,15 +636,20 @@ def test_worst_rung_is_independent_of_float_noise_between_tied_margins():
     deterministically: re-order the noise over the SAME verdicts and the worst
     must stay the first rung in walk order, whatever the noise says."""
     nm.clear_cache()
-    rep = nm.nominate(C('columns', 0.95, 125.0, 0.27), P4, search=False)
-    five = [v for v in rep.verdicts if v.idx == 5]
-    assert len(five) == 3
-    base = min(v.margin for v in rep.verdicts)
-    for noise in ((0.0, 4e-11, 2e-10), (2e-10, 4e-11, 0.0), (4e-11, 0.0, 2e-10)):
-        for v, e in zip(five, noise):
-            v.margin = base + e
-        w = rep.worst()
-        assert (w.idx, w.flight_frac) == (5, -0.20), noise
-    # a REAL gap still wins over the tie rule
-    five[2].margin = base - 1e-3
-    assert rep.worst().flight_frac == 0.10
+    try:
+        # the margins below are mutated on the CACHED report; the finally
+        # drops it so no later test in this process reads the edited values
+        rep = nm.nominate(C('columns', 0.95, 125.0, 0.27), P4, search=False)
+        five = [v for v in rep.verdicts if v.idx == 5]
+        assert len(five) == 3
+        base = min(v.margin for v in rep.verdicts)
+        for noise in ((0.0, 4e-11, 2e-10), (2e-10, 4e-11, 0.0), (4e-11, 0.0, 2e-10)):
+            for v, e in zip(five, noise):
+                v.margin = base + e
+            w = rep.worst()
+            assert (w.idx, w.flight_frac) == (5, -0.20), noise
+        # a REAL gap still wins over the tie rule
+        five[2].margin = base - 1e-3
+        assert rep.worst().flight_frac == 0.10
+    finally:
+        nm.clear_cache()

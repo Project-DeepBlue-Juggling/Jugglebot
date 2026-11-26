@@ -4,14 +4,14 @@ kind: bug
 title: Columns P4 nomination returns a different rung under box load (test_columns_at_p4 fails loaded, passes quiet)
 status: complete
 created: '2026-11-26'
-updated: '2026-11-26T16:03:18Z'
+updated: '2026-11-26T16:05:21Z'
 owners: []
 priority: medium
 effort: s
 hardware: none
 owner: none
 radius: subsystem
-diagnosis: unknown
+diagnosis: confirmed
 area: skill-stack
 blocked_by: []
 links:
