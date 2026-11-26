@@ -2161,7 +2161,8 @@ REST_RETURN_HAND_ACC_LIMIT_RPS2 = 5.0
 
 #: Worst-case delay (s) from the opening REST's origin to the firmware's
 #: handover instant.  A fresh REST's origin is its dispatch instant (it is
-#: REBASED to ``t_inst + WIRE_READ_KNOTS·dt`` only when the solve outran
+#: REBASED to ``t_inst + WIRE_READ_KNOTS·dt``, snapped up onto the knot grid
+#: (BUG-140), only when the solve outran
 #: :data:`FRESH_REST_REBASE_S`), so its first sampled knot is at most
 #: ``FRESH_REST_REBASE_S + (EMIT_LEAD_KNOTS + 1)*dt`` after the origin: <= 0.1 s
 #: at every emit lead.  THIS is the physical budget; the threshold derives from
@@ -2169,7 +2170,8 @@ REST_RETURN_HAND_ACC_LIMIT_RPS2 = 5.0
 REST_RETURN_ONSET_S = 0.100
 
 #: The fresh-REST REBASE threshold: a solve longer than this slides a fresh
-#: REST's origin to ``t_inst + WIRE_READ_KNOTS*dt``.  Derived from
+#: REST's origin to ``t_inst + WIRE_READ_KNOTS*dt`` (snapped up onto the knot
+#: grid, BUG-140).  Derived from
 #: :data:`REST_RETURN_ONSET_S`, NOT from :data:`WIRE_READ_KNOTS` (75 ms at emit
 #: lead 0, 50 ms at lead 1): the worst gap from the origin to the first
 #: sampled knot is ``threshold + (EMIT_LEAD_KNOTS + 1)*dt``.

@@ -2,9 +2,9 @@
 id: BUG-140
 kind: bug
 title: Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid
-status: inbox
+status: complete
 created: '2026-11-25'
-updated: '2026-11-25T15:59:12Z'
+updated: '2026-11-26T16:12:41Z'
 owners: []
 priority: medium
 effort: s
@@ -14,12 +14,9 @@ radius: subsystem
 diagnosis: confirmed
 area: skill-stack
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-27-rest-rebase-snapped-to-the-knot-grid.md
 filed_by: claude
-night_skip: input-decision
-night_skip_on: '2026-11-26'
-night_skip_note: Builds the change you choose with grid and cap tests, writes its Sitting section, then holds it for a Sitting.
-night_skip_input: 'Pick option 1-4 in TKT-96: cap and snap to the Knot grid, snap only, cap only at a bound you name, or leave both.'
 ---
 
 A fresh REST outside the BUG-95 band still rebases with no cap, and lands off the knot grid. Found while finishing BUG-95 (2026-11-25).

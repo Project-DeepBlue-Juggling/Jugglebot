@@ -150,20 +150,20 @@ def test_a_solve_inside_the_wire_margin_is_unchanged(limits, geom):
 
 def test_an_at_rest_seed_keeps_the_whole_plan_and_the_old_origin(limits, geom):
     """(c) Seed at rest (0.293 rev, zero rates), 85 ms: the machine HOLDS the
-    seed over the slide, so the REBASE is the pre-I-PLAN-12 rule bit for bit —
-    NOT cut: ``t0 = t_inst + WIRE_READ_KNOTS*dt`` (off the solve grid, as
-    before), the whole solved plan, knot 0 = the held seed.  (Cutting here would
-    itself be a step: the plan walks the Hand 0.293 -> 0.342 rev over the
-    slide while the real Hand stands still.)"""
+    seed over the slide, so the plan is NOT cut: the whole solved plan, knot 0
+    = the held seed.  (Cutting here would itself be a step: the plan walks the
+    Hand 0.293 -> 0.342 rev over the slide while the real Hand stands still.)
+    Its origin is the in-motion branch's ``t_now + k*dt`` (BUG-140, 2026-11-27:
+    the first knot at or after ``t_inst + WIRE_READ_KNOTS*dt``, on the grid;
+    it was ``t_inst + WIRE_READ_KNOTS*dt`` itself, 0.015 s off the grid here)."""
     seed = _seed(0.293, 0.0)
     _r, _res0, seg0 = _install(limits, geom, seed, 0.0)
     rec, res, seg = _install(limits, geom, seed, SLOW_SOLVE_S)
     assert res.accepted and 'REBASED' in res.message, res.message
     assert 'dropped' not in res.message
-    assert res.message.startswith(
-        'fresh origin REBASED +%.3f s' % (SLOW_SOLVE_S + WIRE_MARGIN_S))
-    assert res.t0_s == pytest.approx(T0_ABS + SLOW_SOLVE_S + WIRE_MARGIN_S,
-                                     abs=1e-9)
+    k = int(math.ceil((SLOW_SOLVE_S + WIRE_MARGIN_S) / DT - 1e-9))
+    assert res.message.startswith('fresh origin REBASED +%.3f s' % (k * DT))
+    assert res.t0_s == pytest.approx(T0_ABS + k * DT, abs=1e-9)
     _assert_same_plan(seg.plan, seg0.plan)
     assert seg.plan.hand_rev[0] == pytest.approx(0.293, abs=1e-9)
 
@@ -239,7 +239,8 @@ def test_an_at_rest_rebase_with_a_levelling_frame_still_installs(
     ``CycleState.at_rest``, and its Hand may sit off the settle clamp (0.307
     rev): at the cup floor 0.293, at the ACTIVATE park 0.0001, at the
     2026-09-16 stale hold 0.5639.  The REBASE must still install, with the
-    whole plan bit-identical to the zero-latency solve and HEAD's origin."""
+    whole plan bit-identical to the zero-latency solve and HEAD's origin
+    (snapped onto the knot grid since BUG-140, 2026-11-27)."""
     from jugglebot.motion import levelling
     base = _rest_state(_REST_MM)
     corr = levelling.correction_from_offset(0.0, 0.005809100317737187)
@@ -250,6 +251,126 @@ def test_an_at_rest_rebase_with_a_levelling_frame_still_installs(
     rec, res, seg = _install(limits, geom, seed, SLOW_SOLVE_S)
     assert res.accepted, res.message
     assert 'REBASED' in res.message and 'dropped' not in res.message
-    assert res.t0_s == pytest.approx(T0_ABS + SLOW_SOLVE_S + WIRE_MARGIN_S,
-                                     abs=1e-9)
+    k = int(math.ceil((SLOW_SOLVE_S + WIRE_MARGIN_S) / DT - 1e-9))
+    assert res.t0_s == pytest.approx(T0_ABS + k * DT, abs=1e-9)
     _assert_same_plan(seg.plan, seg0.plan)
+
+
+# ---------------------------------------------------------------------------
+# BUG-140 (owner answer to TKT-96, option 2: snap only, no cap; 2026-11-27).
+# A fresh REST outside the BUG-95 band REBASED from a seed AT REST started at
+# `t_inst + WIRE_READ_KNOTS*dt`, off the knot grid, so the 40 Hz emitter (its
+# ticks are the absolute grid, `trajectory_node._ceil_to_grid`) sampled the
+# whole REST between its knots.  The origin is now the first knot of the
+# solve's grid at or after that instant (`executor.rebase_slide_knots`); on
+# the live path the node snaps `t_now` onto the absolute grid first, so that
+# is the emitter's grid.  T0_ABS (100.0 s) is a grid node, as the node's snap
+# makes it.
+# ---------------------------------------------------------------------------
+
+#: Install instants inside a knot at several phases (solve times past the
+#: rebase threshold at every emit lead).
+_OFF_GRID_SOLVES_S = (0.0801, 0.0937, 0.1049, 0.1123, 0.2161)
+
+
+def _whole_knots(x_s):
+    return abs(x_s / DT - round(x_s / DT)) <= 1e-9 / DT
+
+
+@pytest.mark.parametrize('solve_s', _OFF_GRID_SOLVES_S)
+def test_an_at_rest_rebase_outside_the_band_starts_on_the_knot_grid(
+        limits, geom, solve_s):
+    """(BUG-140 a) Seed at rest, no running record (outside the band), the
+    install instant at an arbitrary phase inside a knot: the origin is a whole
+    number of knots after ``t_now`` and a node of the emitter's absolute grid,
+    never before ``t_inst + WIRE_READ_KNOTS*dt`` (the wire read still holds)
+    and less than one knot after it; the plan is the whole zero-latency
+    solve; every emitter tick at or after the origin samples a knot exactly.
+    Failed on the old rule (``t0 = t_inst + WIRE_READ_KNOTS*dt``) at every
+    phase listed."""
+    seed = _seed(0.293, 0.0)
+    _r, _res0, seg0 = _install(limits, geom, seed, 0.0)
+    rec, res, seg = _install(limits, geom, seed, solve_s)
+    assert res.accepted and 'REBASED' in res.message, res.message
+    assert 'dropped' not in res.message and 'band REST' not in res.message
+    t0, floor_s = res.t0_s, T0_ABS + solve_s + WIRE_MARGIN_S
+    assert _whole_knots(t0 - T0_ABS), (t0 - T0_ABS) / DT
+    assert abs(ex._ceil_to_knot_grid(t0) - t0) <= 1e-9
+    assert floor_s - 1e-9 <= t0 < floor_s + DT
+    assert rec.t0_s == t0
+    _assert_same_plan(seg.plan, seg0.plan)
+    # The emitter's ticks (absolute grid) land on the plan's knots.
+    p = seg.plan
+    for j in range(p.n_knots):
+        h, _hv = p.hand_at(round(t0 / DT + j) * DT - t0)
+        assert h == pytest.approx(p.hand_rev[j], abs=1e-9), j
+
+
+@pytest.mark.parametrize('solve_s', _OFF_GRID_SOLVES_S)
+def test_an_in_motion_rebase_cuts_on_a_knot_and_reports_its_slide(
+        limits, geom, solve_s):
+    """(BUG-140 b) Seed in motion, the same phases: the head cut is the slide
+    (``k_cut`` knots dropped = the reported slide), the origin is ``t_now +
+    k*dt`` on the grid, and knot 0 is the zero-latency plan's knot ``k``, so
+    the I-PLAN-12 check passes (no new refusal).  The in-motion origin was
+    already on the solve's grid before BUG-140; only the appended ``slide N
+    knots`` clause is new, so this test fails on the old code by its message
+    assert alone."""
+    seed = _seed(**_MOVING)
+    _r, _res0, seg0 = _install(limits, geom, seed, 0.0)
+    rec, res, seg = _install(limits, geom, seed, solve_s)
+    assert res.accepted, res.message
+    k = int(math.ceil((solve_s + WIRE_MARGIN_S) / DT - 1e-9))
+    assert k == ex.rebase_slide_knots(T0_ABS, T0_ABS + solve_s + WIRE_MARGIN_S,
+                                      DT)
+    assert res.t0_s == pytest.approx(T0_ABS + k * DT, abs=1e-12)
+    assert '%d knot(s) dropped' % k in res.message
+    assert '; slide %d knots on the knot grid' % k in res.message
+    assert seg.plan.n_knots == seg0.plan.n_knots - k
+    assert seg.plan.hand_rev[0] == seg0.plan.hand_rev[k]
+    assert ex.rebase_discontinuity(
+        seg.plan, *seg0.plan.state_at(k * DT)[:2],
+        *seg0.plan.hand_at(k * DT), geom=geom) is None
+
+
+def test_a_one_second_slide_is_accepted_and_reported_in_whole_knots(
+        limits, geom):
+    """(BUG-140 c) No cap outside the band: an at-rest REST whose solve ran
+    0.9937 s (the logged corpus reached +1.015 s, 2026-10-16) installs, its
+    origin 43 knots (+1.075 s) after ``t_now`` on the grid, and the install
+    line reports the slide in whole knots and the snap.  The message prefix
+    ``fresh origin REBASED +X s`` is unchanged (the census and the Sittings'
+    slide table parse it).  Fails on the old code (no ``slide`` clause, and
+    ``t0`` off the grid)."""
+    solve_s = 0.9937
+    seed = _seed(0.293, 0.0)
+    rec, res, seg = ex.install_segment(
+        None, seed, sg.REST, _rest_terminal(T0_ABS + 4.0), T0_ABS,
+        limits=limits, geom=geom, t_install_s=lambda: T0_ABS + solve_s)
+    assert res.accepted, res.message
+    k = int(math.ceil((solve_s + WIRE_MARGIN_S) / DT - 1e-9))
+    assert k == (43 if ex.EMIT_LEAD_KNOTS == 0 else 44)
+    assert res.t0_s == pytest.approx(T0_ABS + k * DT, abs=1e-9)
+    assert res.message.startswith('fresh origin REBASED +%.3f s: ' % (k * DT))
+    snapped = T0_ABS + k * DT - (T0_ABS + solve_s + WIRE_MARGIN_S)
+    assert ('; slide %d knots on the knot grid, snapped +%.3f s past the wire '
+            'read' % (k, snapped)) in res.message, res.message
+
+
+def test_the_in_motion_past_its_own_end_boundary_is_unchanged(limits, geom):
+    """(BUG-140, the brief's edge case) The only REBASE refusal that depends
+    on the slide length is the in-motion ``ORIGIN_TOO_LATE`` "rebased past
+    its own end" (drop > n_knots - 2).  Its ``k`` is the same ceil as before
+    BUG-140, so the boundary does not move: a slide of n_knots - 2 knots
+    installs, one more knot refuses.  An at-rest REBASE has no such refusal
+    (the plan is kept whole), so the snap's < 1 knot cannot refuse anything
+    that flew.  Passes on the old code too: it pins that nothing moved."""
+    seed = _seed(**_MOVING)
+    _r, _res0, seg0 = _install(limits, geom, seed, 0.0)
+    n = int(seg0.plan.n_knots)
+    solve_ok = (n - 2) * DT - WIRE_MARGIN_S - 0.5 * DT
+    _r, res, _s = _install(limits, geom, seed, solve_ok)
+    assert res.accepted, res.message
+    assert '%d knot(s) dropped' % (n - 2) in res.message
+    _r, res, _s = _install(limits, geom, seed, solve_ok + DT)
+    assert res.accepted is False and res.code == ex.ORIGIN_TOO_LATE, res.message

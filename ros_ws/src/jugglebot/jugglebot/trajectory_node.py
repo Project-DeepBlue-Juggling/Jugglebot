@@ -5055,8 +5055,9 @@ class TrajectoryNode(Node):
             # seeds from `record`'s own terminal rest, which is a property of
             # `record` alone and does not depend on `t_now_s` either. The
             # SPLICE branch below is untouched: its `t_now_s` stays real wall
-            # time, because the chain's t0 is already on the grid when the running record's t0 is (a REBASED fresh REST's t0 is not; the fresh
-            # origin that seeded it was) — see the `fresh` predicate above,
+            # time, because the chain's t0 is already on the grid when the running record's t0 is (a REBASED fresh REST's t0 too since BUG-140,
+            # 2026-11-27: the executor puts it on the first knot of THIS snapped
+            # origin's grid at or after the wire read; before that it was not) — see the `fresh` predicate above,
             # which recomputes the identical way `install_segment` does, so a
             # monotonic forward snap here cannot flip that predicate's answer
             # inside it.
@@ -5508,8 +5509,8 @@ class TrajectoryNode(Node):
 
         A fresh REST has no k_s rule (the full ``k_s = 0`` test at the node's
         later clock would refuse every fresh REST: its origin is the dispatch
-        instant, or the worker's ``t_inst + WIRE_READ_KNOTS*dt`` when the solve
-        outran it, so ``t0`` is at or behind ``now`` by construction).  A band
+        instant, or the worker's ``t_inst + WIRE_READ_KNOTS*dt`` snapped up onto
+        the knot grid (< 1 knot more, BUG-140) when the solve outran it, so ``t0`` is at or behind ``now`` by construction).  A band
         REST (BUG-95) is the exception to that description, not to the fence:
         its origin is a grid anchor AHEAD of the worker's clock by (0, 1] knot
         past the wire read, and it takes this same stall fence BY DESIGN: the

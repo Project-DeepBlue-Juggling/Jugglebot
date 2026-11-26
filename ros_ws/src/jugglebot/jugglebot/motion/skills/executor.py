@@ -1987,6 +1987,18 @@ def rebase_discontinuity(plan: CyclePlan, ref_pose, ref_twist,
     return '; '.join(bad) if bad else None
 
 
+def rebase_slide_knots(t0_before_solve: float, t0_wire_s: float,
+                       dt: float) -> int:
+    """The whole knots a fresh REST's REBASE slides its origin: the fewest
+    ``k`` with ``t0_before_solve + k·dt >= t0_wire_s`` (``ceil`` with the
+    ``_ceil_to_grid`` 1e-9 guard, in knots, so an exact multiple stays put).
+    The ONE spelling of the REBASE's grid arithmetic (BUG-140), read by
+    :func:`_rebase_fresh_rest` for both seed branches; no cap (the band REST's
+    cap is :func:`band_rest_slide_refusal`, applied before this)."""
+    return int(math.ceil((float(t0_wire_s) - float(t0_before_solve))
+                         / float(dt) - 1e-9))
+
+
 def _rebase_fresh_rest(seg, seed: uc.CycleState, t0_before_solve: float,
                        t0_wire_s: float, limits, geom):
     """The REBASE of a fresh REST whose solve outran the wire (I-PLAN-12).
@@ -1994,20 +2006,30 @@ def _rebase_fresh_rest(seg, seed: uc.CycleState, t0_before_solve: float,
     Returns ``(plan, meta, t0, k_cut, held, refusal)``; ``refusal`` is
     ``None`` or ``(code, message)``.
 
+    The ORIGIN is the same for both seeds (BUG-140, owner answer to TKT-96:
+    option 2, snap only, 2026-11-27): ``t0 = t0_before_solve + k·dt`` with
+    ``k = ceil((t0_wire_s - t0_before_solve)/dt)``, the first knot of the
+    solve's own grid at or after ``t0_wire_s``, so never before the wire-read
+    margin and never more than one knot after it.  On the live path
+    ``t0_before_solve`` is the node's ``_snap_t0_to_grid(t_now)``, a node of
+    the emitter's absolute knot grid, so the origin is on that grid and the
+    40 Hz emitter samples the plan ON its knots for the whole REST (it sampled
+    between them on every at-rest REBASE until this snap).  No cap: a
+    ``t0_wire_s`` already on that grid (the band REST's whole-knot slide) is
+    returned unchanged.
+
     * Seed AT REST (:func:`_seed_holds_still`): the machine holds the seed
-      over the slide, so the solved plan is the same motion later — ``t0 =
-      t0_wire_s`` and the plan is untouched (bit-identical to the pre-I-PLAN-12
-      rule).  Reference = the seed.
+      over the slide, so the solved plan is the same motion later; the plan
+      is untouched (``k_cut = 0``) and the < 1 knot the snap adds is more of
+      the held knot 0.  Reference = the seed.
     * Seed IN MOTION: the machine kept moving over the slide (a fresh origin
       is declared while the running record still has up to ``lead_s`` to
       play, and the seed is that record's commanded state at dispatch), so
       knot 0 of the solved plan is where the machine WAS.  The seed is
-      propagated over the slide by DROPPING the plan's first ``k =
-      ceil((t0_wire_s - t0_before_solve)/dt)`` knots: ``t0 = t0_before_solve
-      + k·dt`` (on the solve's own grid, ``>= t0_wire_s``), knot 0 = the
-      solved plan's knot ``k``.  No new solve; the remaining knots are the
-      gated plan bit for bit.  Reference = the solved plan evaluated at
-      ``t0 - t0_before_solve`` on its own clock.
+      propagated over the slide by DROPPING the plan's first ``k`` knots
+      (``k_cut = k``), knot 0 = the solved plan's knot ``k``.  No new solve;
+      the remaining knots are the gated plan bit for bit.  Reference = the
+      solved plan evaluated at ``t0 - t0_before_solve`` on its own clock.
 
     Either way knot 0 is then checked against the reference
     (:func:`rebase_discontinuity`) and a mismatch is refused
@@ -2025,15 +2047,16 @@ def _rebase_fresh_rest(seg, seed: uc.CycleState, t0_before_solve: float,
     plan, meta = seg.plan, seg.meta
     dt = float(plan.dt)
     held = _seed_holds_still(seed, limits, geom)
+    k_slide = rebase_slide_knots(t0_before_solve, t0_wire_s, dt)
     if held:
-        t0, k_cut = float(t0_wire_s), 0
+        t0, k_cut = float(t0_before_solve) + k_slide * dt, 0
         ref = (np.asarray(seed.pose, dtype=float),
                (np.zeros(6) if seed.pose_vel is None
                 else np.asarray(seed.pose_vel, dtype=float)),
                float(seed.hand_rev), float(seed.hand_vel_rps or 0.0))
         cut_plan, cut_meta = plan, meta
     else:
-        k_cut = int(math.ceil((t0_wire_s - t0_before_solve) / dt - 1e-9))
+        k_cut = k_slide
         if k_cut > int(plan.n_knots) - 2:
             return (None, None, None, k_cut, held, (
                 ORIGIN_TOO_LATE,
@@ -2309,8 +2332,10 @@ def install_segment(record: Optional[PlanRecord],
     and, if the origin has gone stale:
 
     * kind ``REST`` — REBASED, not re-solved (:func:`_rebase_fresh_rest`).
-      From a seed AT REST: ``t0`` moves to ``t_inst + WIRE_READ_KNOTS·dt``
-      and the plan is unchanged — a REST from rest is the same motion later
+      From a seed AT REST: ``t0`` moves to the first knot of the solve's
+      grid at or after ``t_inst + WIRE_READ_KNOTS·dt`` (``t_now + k·dt``,
+      snapped onto the knot grid since BUG-140, uncapped) and the plan is
+      unchanged — a REST from rest is the same motion later
       and carries no absolute event.  From a seed IN MOTION (a fresh REST is
       dispatched while the running record still streams, e.g. the settle
       after a Feed catch, seeded with the Hand still riding down the stroke)
@@ -2535,6 +2560,8 @@ def install_segment(record: Optional[PlanRecord],
                         float(seg.meta.plan_wall_s)), None
                 t0_wire = t0 + slide_knots * dt
             else:
+                # The wire-read floor; `_rebase_fresh_rest` puts the origin on
+                # the first knot of the solve's grid at or after it (BUG-140).
                 t0_wire = t_inst + wire_margin_s
             if (t0_wire > t0 + 1e-12 if org.band_rest
                     else solve_s - rebase_threshold_s > 0.0):
@@ -2570,7 +2597,7 @@ def install_segment(record: Optional[PlanRecord],
                     return new_record, InstallResult(
                         True, 'OK',
                         'fresh origin REBASED +%.3f s: %s (%s over %.3f s '
-                        'from %s; solve %.3f s)%s%s'
+                        'from %s; solve %.3f s)%s%s%s'
                         % (t0 - t0_before_solve,
                            ('the wire read outran the running record\'s end'
                             if org.band_rest else
@@ -2582,6 +2609,15 @@ def install_segment(record: Optional[PlanRecord],
                            ('' if not k_cut else
                             '; seed propagated: first %d knot(s) dropped'
                             % k_cut),
+                           # BUG-140: the slide in whole Knots and the snap
+                           # past `t_inst + wire_margin_s`, appended (never
+                           # reworded) so the Sittings' slide table parses
+                           # from the launch log; the band REST says its own.
+                           ('' if org.band_rest else
+                            '; slide %d knots on the knot grid, snapped '
+                            '+%.3f s past the wire read'
+                            % (int(round((t0 - t0_before_solve) / dt)),
+                               t0 - t0_wire)),
                            ('' if not org.band_rest else
                             '; band REST anchored at the running record\'s '
                             'end, installed %+.3f s from it, slide %d of at '

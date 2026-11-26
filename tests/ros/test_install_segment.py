@@ -1142,7 +1142,7 @@ def test_the_emitter_stamps_each_frame_emit_lead_knots_ahead_of_its_tick():
                                atol=1e-12, rtol=0)
 
 
-def test_no_accepted_install_changes_a_knot_already_on_the_wire():
+def test_no_accepted_install_changes_a_knot_already_on_the_wire(monkeypatch):
     """I-WIRE-7 contract (emit-lead design 2(d)): every u0/u1/u2 knot the REAL
     emitter has published before an ACCEPTED splice must equal the spliced
     record sampled at the same stamps.
@@ -1175,6 +1175,14 @@ def test_no_accepted_install_changes_a_knot_already_on_the_wire():
     # tick RACE the install (a 2 ms handler tail); a solve of nearly the whole
     # budget keeps k_s at the minimum the planner accepts. The seeded random
     # trials add other phases.
+    #
+    # Since BUG-140 (2026-11-27) a REBASED at-rest REST starts ON the grid, so
+    # the live install path no longer makes this off-grid record; the old
+    # origin (`t_inst + WIRE_READ_KNOTS*dt` exactly) is restored here through
+    # the executor's one grid helper, keeping the harder, off-grid case this
+    # contract was written against (a splice must survive any record origin).
+    monkeypatch.setattr(sk_exec, 'rebase_slide_knots',
+                        lambda t0_b, t0_wire, dt_: (t0_wire - t0_b) / dt_)
     trials = [(g0, eps, short)
               for g0 in (0.25, 0.985) for eps in (0.5, 1.5, 6.0, 20.0)
               for short in (0.002, 0.3)]
