@@ -16,9 +16,9 @@ blocked_by: []
 links: []
 parent: learner-generalisation
 filed_by: claude
-night_skip: too-large
-night_skip_on: '2026-11-22'
-night_skip_note: Rated l, and it needs a Sitting.
+night_skip: sitting
+night_skip_on: '2026-11-27'
+night_skip_note: The gravity vector is on main (default off); its Sitting section checks the plumb lines and A/Bs the vector on Throws.
 ---
 
 Kinematic-calibration acceptance was never finished.

@@ -17,9 +17,9 @@ blocked_by: []
 links:
 - map/idea-platform-accelerometer.md
 filed_by: claude
-night_skip: waiting-trigger
-night_skip_on: '2026-11-26'
-night_skip_note: The series runner's launch line must stop ignoring SIGINT, then unpowered launches rerun; needs ROS 2 running.
+night_skip: owner-session
+night_skip_on: '2026-11-27'
+night_skip_note: The series runner is fixed (2026-11-26); the 12+12 unpowered launch rerun needs ROS 2 running, which is refused at night.
 ---
 
 ## What happened

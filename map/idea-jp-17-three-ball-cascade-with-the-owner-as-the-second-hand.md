@@ -20,8 +20,8 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 night_skip: owner-session
-night_skip_on: '2026-11-22'
-night_skip_note: 'PWAY-11 day-Session work: the 2026-11-21 replay sweep says aim scatter and Fit convergence limit first.'
+night_skip_on: '2026-11-27'
+night_skip_note: PWAY-11 day-Session work; aimed reach from a level rest is capped by the Hand C2 refusal (BUG-146).
 ---
 
 Owner 2026-10-30: a plain three-ball cascade, every throw at an equal Apex and timing, the Platform held tilted toward the owner the whole Attempt, catch and throw sites free.

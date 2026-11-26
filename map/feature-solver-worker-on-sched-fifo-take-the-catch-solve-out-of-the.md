@@ -17,9 +17,9 @@ links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
-night_skip: sitting
-night_skip_on: '2026-11-22'
-night_skip_note: A flown rung on the robot, owner hands.
+night_skip: waiting-trigger
+night_skip_on: '2026-11-27'
+night_skip_note: Off by owner decision; re-opens only if BUG-32's cpu_partition arm shows the Catch solve tail still biting.
 ---
 
 Owner pick 2026-10-28 evening as the lever after BUG-21.

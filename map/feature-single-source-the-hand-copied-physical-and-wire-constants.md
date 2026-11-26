@@ -16,8 +16,8 @@ blocked_by: []
 links: []
 filed_by: claude
 night_skip: frozen-path
-night_skip_on: '2026-11-22'
-night_skip_note: Single-sourcing touches config/ and the firmware headers, both frozen at night.
+night_skip_on: '2026-11-27'
+night_skip_note: Every copy is pinned by tests and gravity is single-sourced; generating the missing flag bits needs config/, frozen at night.
 ---
 
 Physical and wire constants that are typed by hand in more than one place, with nothing tying the copies together. From the 2026-11-13 maintainer review. The review itself added a test pinning the executor's `REBASE_TOL_*` to the firmware header; this Item holds the rest.

@@ -17,9 +17,9 @@ blocked_by: []
 links:
 - logbook/2026-11-06-sitting-debrief-2.md
 filed_by: claude
-night_skip: owner-session
-night_skip_on: '2026-11-26'
-night_skip_note: Offline replay steps 1 to 3 ran 2026-11-25 and did not reproduce the refusals; step 4 is your Session's (TKT-59).
+night_skip: waiting-trigger
+night_skip_on: '2026-11-27'
+night_skip_note: 'Owner decision 2026-11-26: read the logged re-aim direction from the next Sitting''s launch log, then choose the second re-aim policy.'
 ---
 
 `RESEND-REFUSED INFEASIBLE ... QP infeasible: unbounded dual step` on 29 of 346 Throws at the Sitting of 2026-11-06 15:53, against 2.3 % at the 13:19 Sitting and 0 to 0.4 % in the endurance logs the same afternoon.

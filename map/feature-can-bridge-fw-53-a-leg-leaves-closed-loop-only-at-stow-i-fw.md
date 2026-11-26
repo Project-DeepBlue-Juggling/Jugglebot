@@ -15,6 +15,9 @@ area: can-bridge
 blocked_by: []
 links: []
 filed_by: claude
+night_skip: sitting
+night_skip_on: '2026-11-27'
+night_skip_note: FW 53 flashed 2026-11-26 and never run with motor power; its Sitting section flies the plain activate and deactivate cycle.
 ---
 
 Owner rule, 2026-11-25: a Leg is never made Idle unless the Platform is already at Stow; once at Stow any or all Legs may go Idle. The Hand and the power cut of the E-stop button are exempt, and so is the one-Leg bench.

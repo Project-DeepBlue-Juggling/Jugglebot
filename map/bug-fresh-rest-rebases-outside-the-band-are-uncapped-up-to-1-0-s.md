@@ -17,10 +17,6 @@ area: skill-stack
 blocked_by: []
 links: []
 filed_by: claude
-night_skip: input-decision
-night_skip_on: '2026-11-26'
-night_skip_note: Builds the change you choose with grid and cap tests, writes its Sitting section, then holds it for a Sitting.
-night_skip_input: 'Pick option 1-4 in TKT-96: cap and snap to the Knot grid, snap only, cap only at a bound you name, or leave both.'
 ---
 
 A fresh REST outside the BUG-95 band still rebases with no cap, and lands off the knot grid. Found while finishing BUG-95 (2026-11-25).
