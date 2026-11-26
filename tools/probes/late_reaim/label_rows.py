@@ -17,6 +17,7 @@ RX_NOM = re.compile(r"skills/nominate '(\w+),apex_m=([\d.]+),separation_mm=(\d+)
 RX_RUN = re.compile(r"Juggle requested.*pattern='([a-z_0-9]+)'")
 RX_AIM = re.compile(r"(\d+\.\d+) CATCH-AIM skill (\d+): .*? t_land=(\d+\.\d+)")
 RX_OK = re.compile(r"(\d+\.\d+) RESEND skill (\d+): the fit moved the landing ([\d.]+) mm / ([-+\d.]+) s \(re-aim (\d+) of")
+RX_DIR = re.compile(r" dx=([-+]\d+\.\d) dy=([-+]\d+\.\d)\s*$")  # logged since 2026-11-26; absent on older logs
 RX_REF = re.compile(r"(\d+\.\d+) RESEND-REFUSED (\S+) at skill (\d+): the fit moved the landing ([\d.]+) mm / ([-+\d.]+) s")
 
 
@@ -55,7 +56,9 @@ def label_lines(lines, tag, patterns=('columns_turned',)):
         if code == 'INSTALLED':
             g['acc'] = n
         aim = aims.get(k)
-        rows.append(dict(log=tag, run=run_i, t=t, skill=k, seq=g['seq'], n=n, code=code, mm=mm, ds=ds,
+        md = RX_DIR.search(ln)
+        rows.append(dict(dx=float(md.group(1)) if md else None, dy=float(md.group(2)) if md else None,
+                         log=tag, run=run_i, t=t, skill=k, seq=g['seq'], n=n, code=code, mm=mm, ds=ds,
                          to_land=(aim[1] - t) if aim else None, apex=run['apex'], sep=run['sep'],
                          ang=run['ang'], pat=run['pat']))
     return rows

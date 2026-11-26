@@ -150,3 +150,37 @@ def test_label_lines_orders_rows_and_labels_runs():
     assert len(rows) == 4
     # group_catches keeps (log, run, skill) apart: skill 4 of run 1 and of run 2 are two Catches
     assert [len(g) for g in br.group_catches(rows)] == [3, 1]
+
+
+# Real launch-log lines (temp/logs/launch_r2gate_20260918_1325.log and a 2026-11 launch): the OLD format.
+_OLD_REFUSED = ("[skill_node-12] [INFO] [1789702122.955757938] [skill_node]: 1789702122.909 RESEND-REFUSED LIMIT_ACC at skill 2: "
+                "the fit moved the landing 78.9 mm / -0.038 s — REJECTED_CYCLE_INFEASIBLE(LIMIT_ACC: peak leg acceleration 6462.9 mm/s² > 5000.0)")
+_OLD_OK = ("[skill_node-12] [INFO] [1790083594.784561046] [skill_node]: 1790083594.720 RESEND skill 2: the fit moved the landing "
+           "0.0 mm / +0.025 s (re-aim 1 of 2) — spliced CATCH at knot 44 (1.100 s on the plan clock)")
+# The NEW format appends ` dx=<mm> dy=<mm>` (Robot frame, new landing minus installed) at the end of the same lines.
+_NEW_REFUSED = _OLD_REFUSED + "; no further re-aim for this catch dx=-30.0 dy=+14.0"
+_NEW_OK = _OLD_OK + " dx=+12.0 dy=-7.0"
+
+
+def test_label_rows_and_parse_resends_read_old_and_new_lines(tmp_path):
+    # mutations: anchor the old regexes at end of line (new lines stop matching), drop the dx/dy read (new rows give None),
+    # or give old lines a number (old rows must be None, not 0)
+    import json
+    import subprocess
+    # label_lines skips rows outside a Juggle run, so feed it the run header lines first
+    hdr = ["1.0 [skill_node-10] skills/nominate 'columns_turned,apex_m=0.95,separation_mm=125,dwell_s=0.27,num_cycles=20,"
+           "columns_angle_deg=45': nomination OK",
+           "2.0 [orchestrator_node-3] Juggle requested via jugglebot/juggle_request — goal dispatched (pattern='columns_turned', "
+           "apex_m=0.95, dwell_s=0.27, num_cycles=20)."]
+    rows = lr.label_lines(hdr + [_OLD_REFUSED, _OLD_OK, _NEW_REFUSED, _NEW_OK], 'd')
+    assert [(r['dx'], r['dy']) for r in rows] == [(None, None), (None, None), (-30.0, 14.0), (12.0, -7.0)]
+    assert [r['mm'] for r in rows] == [78.9, 0.0, 78.9, 0.0]
+    d = tmp_path / 'log'
+    d.mkdir()
+    (d / 'launch.log').write_text('\n'.join([_OLD_REFUSED, _OLD_OK, _NEW_REFUSED, _NEW_OK]) + '\n')
+    out = tmp_path / 'out.json'
+    subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'probes', 'late_reaim', 'parse_resends.py'),
+                    str(out), 'd=%s' % d], check=True, capture_output=True)
+    got = json.loads(out.read_text())
+    assert [(r['dx'], r['dy']) for r in got] == [(None, None), (None, None), (-30.0, 14.0), (12.0, -7.0)]
+    assert [r['code'] for r in got] == ['LIMIT_ACC', 'INSTALLED', 'LIMIT_ACC', 'INSTALLED']

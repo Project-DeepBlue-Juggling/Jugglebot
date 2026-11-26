@@ -1195,6 +1195,48 @@ def test_a_moved_landing_is_re_sent_and_a_refused_re_send_does_not_end_the_attem
     assert [c[0] for c in inst.calls][-1] == sg.REST
 
 
+def test_re_aim_lines_carry_the_signed_robot_frame_direction_of_the_ask(sites):
+    """BUG-75 observability: every RESEND line ends in `` dx=<mm> dy=<mm>``,
+    the new landing minus the installed one in the Robot frame, signed, one
+    decimal -- on the accepted line, the refused line and the pre-declined
+    (WITHIN-TOLERANCE) line.  Mutation: drop the `_reaim_dir_suffix(...)`
+    from any of the three formats (or swap dx/dy, or flip the subtraction)
+    and the matching assertion fails."""
+    sch = _schedule(sites)
+    site = sites[1].catch_site_mm()
+    t_land = sch.skills[1].t_abs_s
+    land0 = _fit_landing(pos_mm=site, vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
+    box = {'landing': land0}
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: box['landing'])
+    x.tick(sch.skills[0].dispatch_s())
+    t_catch = sch.skills[1].dispatch_s()
+    x.tick(t_catch)
+
+    # Within tolerance: the ask is +1.0 / -1.5 mm.
+    box['landing'] = _fit_landing(pos_mm=site + np.array([1.0, -1.5, 0.0]),
+                                  vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
+    lines = x.tick(t_catch + 0.05)
+    assert 'RESEND-SKIPPED WITHIN-TOLERANCE' in lines[0]
+    assert lines[0].endswith(' dx=+1.0 dy=-1.5'), lines[0]
+
+    # Accepted: +12 / -7 from the installed (schedule-aimed) landing.
+    moved = site + np.array([12.0, -7.0, 0.0])
+    box['landing'] = _fit_landing(pos_mm=moved, vel_mm_s=LAND_VEL,
+                                  t_land_abs_s=t_land)
+    lines = x.tick(t_catch + 0.10)
+    assert 'RESEND skill' in lines[0] and 'RESEND-' not in lines[0]
+    assert lines[0].endswith(' dx=+12.0 dy=-7.0'), lines[0]
+
+    # Refused: the next ask is -30 / +14 from the NOW-installed landing.
+    inst.verdicts.append(ex.InstallResult(False, 'LIMIT_JERK', 'nope', 0.0))
+    box['landing'] = _fit_landing(pos_mm=moved + np.array([-30.0, 14.0, 0.0]),
+                                  vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
+    lines = x.tick(t_catch + 0.15)
+    assert 'RESEND-REFUSED LIMIT_JERK' in lines[0]
+    assert lines[0].endswith(' dx=-30.0 dy=+14.0'), lines[0]
+
+
 def test_nothing_is_re_sent_inside_the_catch_freeze(sites):
     """Inside ``catch_freeze_s`` of touch-down the hand is already decelerating
     into the ball; a re-solve there is a change nothing can execute."""
