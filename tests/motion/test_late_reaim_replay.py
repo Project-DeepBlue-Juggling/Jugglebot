@@ -12,9 +12,21 @@ import numpy as np
 import pytest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+# The probes prepend their own directory needs to sys.path at import, including
+# the repo's `sim/` directory. Left there, `sim/` makes the legacy spellings
+# (`ball_butler.sim`, `viz.telemetry`) importable for every later test in this
+# worker, which tests/sim/test_sim_import_style.py forbids. Import the probes,
+# then put sys.path back exactly as it was.
+_SYS_PATH_BEFORE = list(sys.path)
 sys.path.insert(0, os.path.join(ROOT, 'tools', 'probes', 'late_reaim'))
 import bump_replay as br  # noqa: E402
 import label_rows as lr  # noqa: E402
+sys.path[:] = _SYS_PATH_BEFORE
+
+
+def test_importing_the_probes_leaves_sys_path_as_it_was():
+    assert os.path.join(ROOT, 'sim') not in sys.path
+    assert os.path.join(ROOT, 'tools', 'probes', 'late_reaim') not in sys.path
 
 
 def _row(seq, code='INSTALLED', mm=10.0, ds=0.01, skill=1, log='d1', ang=45, apex=0.95, sep=125.0, to_land=0.5):
