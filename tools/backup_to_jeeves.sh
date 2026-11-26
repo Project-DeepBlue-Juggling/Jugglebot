@@ -5,8 +5,8 @@
 #   sudo tools/backup_to_jeeves.sh system  # the OS: /usr /etc /opt /var /boot (root, to read every file)
 #   add --dry-run to list what would be sent; add --now to skip the live-Sitting wait
 #
-# Everything lands under ONE directory on the Pi, $DEST_ROOT (default
-# jetson-backup/ in the jeeves home), so the Jetson's files never mix with the
+# Everything lands under ONE directory on the Pi, /home/jeeves/jetson-backup/ (fixed by the
+# Pi-side gate, tools/backup_jeeves_gate.sh, which is all the backup key may run), so the Jetson's files never mix with the
 # Pi's own content:
 #
 #   jetson-backup/README.txt
@@ -32,7 +32,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKUP_HOST="${BACKUP_HOST:-jeeves@jeeves.local}"
 BACKUP_KEY="${BACKUP_KEY:-/home/jetson/.ssh/id_backup_jeeves}"
-DEST_ROOT="${DEST_ROOT:-jetson-backup}"
+DEST_ROOT="${DEST_ROOT:-jetson-backup}"   # display only: the Pi-side gate fixes the real directory
 KEEP_DAILY="${KEEP_DAILY:-7}"
 KEEP_WEEKLY="${KEEP_WEEKLY:-4}"
 LIVE_WAIT_S="${LIVE_WAIT_S:-14400}"
@@ -95,35 +95,29 @@ exec 9>"/tmp/jugglebot-backup-$SET.lock"
 flock -n 9 || { say "another $SET backup is running"; exit 0; }
 
 TODAY="$(date +%F)"
-BASE="$DEST_ROOT/$SET"
-remote "mkdir -p '$BASE/.incomplete' && cd '$DEST_ROOT' && { [ -e README.txt ] || printf '%s\n' \
-  'Backups of the Jugglebot Jetson (hostname jetson), written by tools/backup_to_jeeves.sh in the Jugglebot repo.' \
-  'home/<date>/   = /home/jetson (user data, bags, repo).   system/<date>/ = the OS root, stored with rsync --fake-super.' \
-  'Each dated directory is a full snapshot; unchanged files are hard links shared between snapshots.' \
-  'Nothing outside this directory belongs to the Jetson. Do not edit files in place: snapshots share them.' > README.txt; }"
+# The backup key is confined on the Pi by tools/backup_jeeves_gate.sh: it may run rsync
+# inside the backup directory (paths below are relative to that directory) and the three
+# backup-* verbs, nothing else. So no shell commands are sent, only verbs.
+remote backup-prepare "$SET"
 
 OPTS=(-aHAX --numeric-ids --delete --delete-excluded --partial --one-file-system
       --info=stats2 --human-readable -e "${SSH[*]}")
 for e in "${EXCLUDES[@]}"; do OPTS+=(--exclude "$e"); done
-(( FAKE_SUPER )) && OPTS+=(--rsync-path "rsync --fake-super")
-remote "[ -d '$BASE/latest/' ]" && OPTS+=(--link-dest "../latest/")
+(( FAKE_SUPER )) && OPTS+=(-M--fake-super)
+# An absolute --link-dest is resolved by the gate (rrsync) inside the backup directory.
+remote backup-has-latest "$SET" && OPTS+=(--link-dest "/$SET/latest/")
 (( DRY )) && OPTS+=(--dry-run)
 
-say "backup $SET -> $BACKUP_HOST:$BASE/$TODAY$( (( DRY )) && echo ' [DRY RUN]')"
+say "backup $SET -> $BACKUP_HOST:$DEST_ROOT/$SET/$TODAY$( (( DRY )) && echo " [DRY RUN]")"
 rc=0
-nice -n 15 ionice -c3 rsync "${OPTS[@]}" "$SRC" "$BACKUP_HOST:$BASE/.incomplete/" || rc=$?
+nice -n 15 ionice -c3 rsync "${OPTS[@]}" "$SRC" "$BACKUP_HOST:$SET/.incomplete/" || rc=$?
 # 24 = files vanished while copying (a live system always has some): a good snapshot.
 if (( rc != 0 && rc != 24 )); then
   say "FAILED: rsync exit $rc; the previous snapshot is untouched"; status RED "rsync-exit-$rc"; exit 1
 fi
 (( DRY )) && { say "dry run complete"; exit 0; }
 
-# Publish: today's run replaces a same-day snapshot, then prune.
-remote "set -e; cd '$BASE'; if [ -d '$TODAY' ]; then mv '$TODAY' '.old-$TODAY'; fi; mv .incomplete '$TODAY'; \
-  ln -sfn '$TODAY' latest; rm -rf '.old-$TODAY'; \
-  keep=\$( { ls -d 20??-??-?? | sort -r | head -n $KEEP_DAILY; \
-            for d in \$(ls -d 20??-??-?? | sort -r); do [ \"\$(date -d \"\$d\" +%u)\" = 7 ] && echo \"\$d\"; done | head -n $KEEP_WEEKLY; } | sort -u ); \
-  for d in \$(ls -d 20??-??-??); do echo \"\$keep\" | grep -qx \"\$d\" || rm -rf \"\$d\"; done; \
-  du -sh . | cut -f1"
+# Publish: .incomplete becomes today (replacing a same-day snapshot), then prune.
+remote backup-publish "$SET" "$TODAY" "$KEEP_DAILY" "$KEEP_WEEKLY"
 say "OK: $SET snapshot $TODAY published"
 status GREEN "$TODAY"

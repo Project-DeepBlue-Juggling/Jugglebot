@@ -249,8 +249,20 @@ unchanged files are hard links into the previous one; seven dailies and four Sun
 A run waits for a live Sitting to end, and writes one status line per set to
 `temp/reports/backup/status-{home,system}` (`GREEN|RED|DEFERRED <detail> <iso-date>`).
 
-It logs in with the passphrase-free key `~/.ssh/id_backup_jeeves`, which must be in the
-`authorized_keys` of the `jeeves` account. The bags the logbook cites have no other second copy,
+It logs in with the passphrase-free key `~/.ssh/id_backup_jeeves`. On the Pi that key is
+confined to a forced command, [`tools/backup_jeeves_gate.sh`](../backup_jeeves_gate.sh), installed
+as `/home/jeeves/.local/bin/jetson-backup-gate` and named in `~/.ssh/authorized_keys`:
+
+```
+command="/home/jeeves/.local/bin/jetson-backup-gate",restrict ssh-ed25519 AAAA... jetson-backup-to-jeeves
+```
+
+Through it the key can run rsync inside `/home/jeeves/jetson-backup/` (via `rrsync`, so rsync
+paths are relative to that directory) and three pattern-checked `backup-*` verbs, and nothing
+else: no shell, no forwarding, no path outside the backup directory. A passphrase-free key on a
+box that runs unattended agents would otherwise be a login to the whole Pi. The gate is kept
+outside the backup directory because the key can write inside it. Updating the gate therefore
+needs a normal login to the Pi (`scp tools/backup_jeeves_gate.sh` to that path, mode 755). The bags the logbook cites have no other second copy,
 so re-arm this on any rebuilt Jetson.
 
 ### Install
@@ -271,11 +283,12 @@ onto a fresh flash, never a bootable image.
 
 1. Fit the new NVMe and flash the same JetPack release with SDK Manager from another computer;
    create the `jetson` user.
-2. On the Jetson, make a new key and add it on jeeves, then restore the home set as `jetson`:
+2. On the Jetson, restore the home set as `jetson`, logging in to jeeves with its password
+   (or any unrestricted key; the paths below are for a normal login, not the gated backup key):
    `rsync -aHAX --numeric-ids -e ssh jeeves@jeeves.local:jetson-backup/home/latest/ /home/jetson/`
 3. Restore the system set as root, with the SAME `--fake-super` on the Pi side so owners and
    modes come back, and without touching the freshly flashed boot files:
-   `sudo rsync -aHAX --numeric-ids --rsync-path "rsync --fake-super" --exclude /boot/ --exclude /etc/fstab -e "ssh -i /home/jetson/.ssh/id_backup_jeeves" jeeves@jeeves.local:jetson-backup/system/latest/ /`
+   `sudo rsync -aHAX --numeric-ids --rsync-path "rsync --fake-super" --exclude /boot/ --exclude /etc/fstab -e ssh jeeves@jeeves.local:jetson-backup/system/latest/ /`
    then reboot. For a lighter restore, copy back only `/etc`, `/opt` and `/usr/local` and
    reinstall packages from `system/latest/var/lib/dpkg/status`.
 4. Re-arm every unit in this file, `colcon build`, and run `./run_tests.sh`.
