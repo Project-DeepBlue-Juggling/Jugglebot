@@ -4,7 +4,7 @@ kind: pathway
 title: Human-partner juggling
 status: active
 created: '2026-11-18'
-updated: '2026-11-18T04:59:51Z'
+updated: '2026-11-26T01:40:09Z'
 owners: []
 priority: high
 effort: xl
@@ -17,6 +17,7 @@ links:
 - idea-jp-17-three-ball-cascade-with-the-owner-as-the-second-hand
 - plans/active/human-partner-juggling.md
 destination: 'A three-ball cascade shared by the owner and the robot (JP-17): 30 consecutive Throws in one Attempt, the robot catching and throwing back every third, Platform held tilted toward the owner.'
+branch: main
 ---
 
 Plan: plans/active/human-partner-juggling.md (eight steps, four offline). Physics and bench history: IDEA-16.
@@ -39,3 +40,7 @@ Plan: plans/active/human-partner-juggling.md (eight steps, four offline). Physic
 ## Out of scope
 
 - Any change to Columns, the oval or the Ball Butler Feed path.
+
+## Progress
+
+- 2026-11-26: P4 designed offline: an aimed Throw from a level rest reaches 250, 400, 550 mm at Apex 1.5, 1.8, 2.1 m. Proposed Pattern: Catch, carry to the wait Site, Throw to a partner point 300 mm toward the owner at 1.0 m height. Five build units wait on the owner's choices. Design: temp/probes/pway11-p4/design.md.
