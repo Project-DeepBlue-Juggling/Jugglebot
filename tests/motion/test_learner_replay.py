@@ -88,8 +88,10 @@ def test_steady_state_no_worse_than_the_old_law(replay):
     st = h['steady_state']['production_rms_mm']
     # FEAT-65 (2026-11-27, owner option 1): x, y are the shrinkage over ALL in-kernel rows, Apex
     # the production recent-16 law. On THIS replay (v1 corpus, 2-throw delay, steady state = 6th+
-    # throw at a Site) the shrinkage is 1.5 / 1.0 mm WORSE than the old law on x / y (21.43 /
-    # 20.54 vs 19.9 / 19.7): lateral allowance 2.0 mm; Apex is unchanged, so it keeps 1.0 mm.
+    # throw at a Site), against OLD_STEADY (19.9 / 19.7 / 14.4), the new steady state 21.43 / 20.54 /
+    # 13.90 is x +1.53, y +0.84, Apex -0.50 mm (Apex is 0.5 mm BETTER than OLD_STEADY). The widened
+    # lateral allowance (2.0 mm) is a regression fence on the new law, NOT the owner's gate: the gate
+    # (no worse than production on every axis) is NOT met; an open audit finding asks the owner what to do.
     allow = (2.0, 2.0, 1.0)
     for got, old, a, name in zip((st['ax0'], st['ax1'], st['apex']), OLD_STEADY, allow,
                                  ('axis 0', 'axis 1', 'apex')):

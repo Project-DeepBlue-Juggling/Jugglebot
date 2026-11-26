@@ -291,6 +291,7 @@ class Learner(object):
         n_eff = sw_all * sw_all / float((w_all * w_all).sum())      # Kish effective sample size
         g_xy = n_eff / (n_eff + cfg.sigma_noise_xy_m ** 2 / cfg.sigma_prior_m ** 2)
         # Apex and the cap's evidence: the production law over the k most RECENT in-kernel rows
+        # (equal to production within floating-point rounding: the sum order differs from production's)
         sup = sup_all[-cfg.k:]
         w = w_all[-cfg.k:]
         sw = float(w.sum())
