@@ -227,7 +227,8 @@ def test_a_far_site_gets_no_axis0_correction_until_a_second_site_fixes_the_line(
 
 @pytest.mark.parametrize('n', [60, 150, 300, 1500])
 def test_bug137_a_long_single_site_memory_never_applies_an_offset_at_a_far_site(n):
-    """BUG-137: b was forgotten by lambda 0.99 (a random walk since BUG-139) and s is not, so in the forgetting filter's
+    """BUG-137: b is now a random walk (it was forgotten by lambda 0.99 before
+    BUG-139) and s is not forgotten, so in the forgetting filter's
     covariance I_ss keeps growing at one Site while I_bb saturates: s's sd fell from 0.24 (30 rows)
     to 0.096 (150) and 0.008 (1500) with no excitation, and from ~150 rows on an invented slope was
     applied at a far Site (orchestrator probe 2026-11-25, 10 seeds: 10/10 applied, -53..+60 mm

@@ -18,6 +18,8 @@ files_changed:
 
 # Plant model: process noise on b in place of per-parameter forgetting (BUG-139)
 
+**Status.** Held on branch `night-shift/2026-11-27-BUG-139` for a day Session, as the owner's TKT-95 answer ordered: it moves the commanded u at flown Sites by up to 1.62 mm (outermost Sites), so a day Session merges it after its own replay of the live Memory.
+
 **What.** The owner chose option 1 on TKT-95. `_Filter` used to forget the lateral filters' b by `P <- P / sqrt(outer(lam, lam))`, with lambda 0.99 on b and 1 on s and Delta. It now does `P <- P / lam + diag(q)`. The lambda is a scalar used only by the 1-parameter apex filter (K). The lateral filters use lam = 1 with q = [q_b, 0, ...] on b_x (axis 0) and on b_y (axis 1). `PlantModelConfig.q_b_m2` derives q_b from `forgetting`. The new field `process_noise_b_m2` (default None) overrides it. `_Filter` refuses a lambda other than 1 on a filter with more than one parameter, so the old form cannot come back. `P_unforgotten` and the at-prior guard from BUG-137 are unchanged. `learner.py` is untouched. The probe's `Filt`/`run_rls` gained a `+pn` rule suffix with the same law, so the production-equals-prototype pin still compares like with like.
 
 ## Discussion
