@@ -419,6 +419,33 @@ def test_link_status_surfaces_guard_deviation_diagnostics(bridge):
     assert kv['guard_fault_leg'] == '2'
 
 
+def test_link_status_surfaces_promotion_continuity_fields(bridge):
+    """BUG-99 row 2: the eight scheduled-promotion discontinuity fields of the
+    heartbeat (armed-session maxima in rev, rev/s, rev/s^2; cumulative over
+    counts) ride /link_status under the wire names, so a rosbag holds them."""
+    teensy, node = bridge
+    vals = dict(hand_promo_dp_max=0.015625, hand_promo_dv_max=0.5,
+                hand_promo_da_max=12.25, leg_promo_dp_max=0.03125,
+                leg_promo_dv_max=0.75, leg_promo_da_max=40.5,
+                hand_promo_over=3, leg_promo_over=7)
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.NONE), flags=0, uptime_ms=1,
+                      **vals)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['hand_promo_dp_max'] == '0.015625'
+    assert kv['hand_promo_dv_max'] == '0.500000'
+    assert kv['hand_promo_da_max'] == '12.250000'
+    assert kv['leg_promo_dp_max'] == '0.031250'
+    assert kv['leg_promo_dv_max'] == '0.750000'
+    assert kv['leg_promo_da_max'] == '40.500000'
+    assert kv['hand_promo_over'] == '3'
+    assert kv['leg_promo_over'] == '7'
+
+
 def test_link_status_max_dev_leg_none_when_unset(bridge):
     """max_dev_leg == 0xFF (no MAX_DEVIATION latch since boot) renders as 'none'."""
     teensy, node = bridge

@@ -878,6 +878,12 @@ _SP_DROP_WINDOW_S = 1.0         # a :5557 drain drop this recent is named by the
 _DN_FW_COUNTERS = ('dn_rx_setpoints', 'dn_queue_dropped', 'dn_seq_gaps',
                    'dn_crc_errors', 'sched_frames', 'sp_seq_drops',
                    'sp_no_hand', 'sp_no_sched')
+# BUG-99 row 2: promotion-continuity fields of HeartbeatT2J (units in the
+# /link_status build comment); the max fields are floats, the over fields u32.
+_PROMO_MAX_FIELDS = ('hand_promo_dp_max', 'hand_promo_dv_max',
+                     'hand_promo_da_max', 'leg_promo_dp_max',
+                     'leg_promo_dv_max', 'leg_promo_da_max')
+_PROMO_OVER_FIELDS = ('hand_promo_over', 'leg_promo_over')
 _DN_SETTLE_HEARTBEATS = 5       # after streaming ends, before the summary line
 # BUG-119: a Hand-only STOP while frames without a Hand arrived in the last this
 # many heartbeat windows (~300 ms, the STOP's report latency plus margin) is the
@@ -7730,6 +7736,18 @@ class TeensyBridgeNode(Node):
                       for k in _DN_FW_COUNTERS],
                     KeyValue(key='setpoints_lost',
                              value=str(self._dn_loss.lost)),
+                    # BUG-99 row 2: the scheduled-promotion discontinuity
+                    # fields, uplinked since FW 22 and recorded nowhere. The
+                    # *_dp_max / dv_max / da_max floats are armed-session
+                    # maxima of |dp| (rev), |dv| (rev/s) and |da| (rev/s^2)
+                    # at a scheduled promotion (Hand, and the max over Legs);
+                    # *_promo_over are cumulative-since-boot counts of
+                    # promotions over the firmware's continuity tolerance.
+                    # Names are the wire fields'. Report-only.
+                    *[KeyValue(key=k, value=f'{float(getattr(hb, k)):.6f}')
+                      for k in _PROMO_MAX_FIELDS],
+                    *[KeyValue(key=k, value=str(int(getattr(hb, k))))
+                      for k in _PROMO_OVER_FIELDS],
                     # /recover_lane's progress (2026-10-13): idle|in_progress|
                     # done|failed, and the stage last entered (none|converge|
                     # rest|disarm|arm|confirm). trajectory_node and skill_node
