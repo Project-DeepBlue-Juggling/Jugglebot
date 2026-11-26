@@ -2,10 +2,11 @@
 id: BUG-139
 kind: bug
 title: 'Plant model slope value stays corrupted after a long single-Site Memory: one row at a second Site applies a line up to 59 mm off'
-status: inbox
+status: in_progress
 created: '2026-11-25'
-updated: '2026-11-24T16:52:15Z'
-owners: []
+updated: '2026-11-26T17:23:39Z'
+owners:
+- night-shift
 priority: medium
 effort: s
 hardware: none
@@ -44,3 +45,7 @@ The fix changes the forgetting itself, so it moves the P1 probe's pin (`learner_
 4. Leave it. The guard now holds the far Site at the identity, so the residue matters only in the first rows after a long single-Site run.
 
 Logbook: `logbook/2026-11-25-plant-model-far-site-guard-unforgotten-information.md`. Plan step E2 of `learner-efficacy.md`.
+
+## Progress
+
+- 2026-11-27: Night Shift 2026-11-27: held on night-shift/2026-11-27-BUG-139: process noise on b (TKT-95 option 1), xfail passes, 0 audit findings open; unblocked by a day Session merge
