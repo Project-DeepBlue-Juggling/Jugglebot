@@ -4,7 +4,7 @@ kind: bug
 title: can-bridge firmware accepts four discontinuities on rare paths and has no armed interlock on reconfiguration RPCs (to confirm)
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-14T17:54:09Z'
+updated: '2026-11-26T01:17:11Z'
 owners: []
 priority: medium
 effort: m
@@ -45,3 +45,4 @@ Confirm each row against the code and the native tests, then decide per row: fix
 ## Progress
 
 - 2026-11-25: FW 52 flashed 20:54 (BridgeIdentity 52/14, unpowered launch check clean). It carries the stamp bound, the lead-clamp assert and the pins (FW 50) and the owner decisions D1 to D5: Armed refusals, per-axis clear scope, held clock offset, Jetson-only UDP. Contract row I-FW-18. Open until a powered Sitting confirms nothing regressed.
+- 2026-11-26: row 2 measured from 9 bags (clock_diag): the offset slews at most 1.25 ms once per 30 s; worst applied 0.77 ms, about 1.3 mm at the Hand at 50 rev/s (computed). Accepted with that bound, no rate limit. /link_status now carries the eight promo fields so a powered Sitting records the counters. Steps over 20 ms were seen only at bag start.

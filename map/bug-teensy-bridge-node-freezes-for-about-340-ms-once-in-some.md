@@ -4,7 +4,7 @@ kind: bug
 title: teensy_bridge_node freezes for about 340 ms once in some launches; Armed, that latches SETPOINT_STALE
 status: in_progress
 created: '2026-11-22'
-updated: '2026-11-25T00:35:00Z'
+updated: '2026-11-26T01:17:16Z'
 owners: []
 priority: high
 effort: m
@@ -53,3 +53,4 @@ Do not change the 250 ms limit or the 70/80 ms lane covers for this. Next step: 
 - 2026-11-25: series runner and parser landed (tools/probes/bug129_launch_series.sh, bug129_series_report.py), real series not yet run. Synthetic reproduction on a quiet idle node: 218 cycles on default transports and 216 on the UDP-only profile, no publish over 100 ms (max 15.8 and 20.4 ms); uninformative about the real stack. Next: 12+12 unpowered launches.
 - 2026-11-25: unpowered series, 12 launches on default transports and 12 with bridge_shm:=false, with discovery churn: no confirmed bridge stall in either arm, so the A/B is uninformative. One 365 ms stall at node start in a default-transport launch. bridge_shm:=false verified to remove every shared-memory segment from the bridge. Report temp/reports/bug129_series_2026-11-25.md.
 - 2026-11-25: the series' shutdown observations (every launch needing SIGKILL) are invalid: the runner backgrounded the launch, so SIGINT was ignored by the whole launch. The stall counts are unaffected. Fix the runner's launch line before any rerun (tools/probes/bug47_sigint_ignored_probe.py shows the effect).
+- 2026-11-26: series runner fixed: the 2026-11-25 series SIGINT was a no-op (the ignored signal was inherited through exec) and all 24 launches ended by SIGKILL. The runner now sends one SIGINT to the launch only and records stop_signal; one real unpowered launch ended clean. The freeze measurements before the stop are unaffected.

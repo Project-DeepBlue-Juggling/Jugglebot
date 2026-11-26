@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (17 Items, 639 min)
+## Robot  (18 Items, 654 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -20,6 +20,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-68 Launch baseline on the robot's Hand: launch scatter of a settled ball and of running Throws at Dwell 0.27, 0.50 and 1.00 (learner-efficacy E1) | 60 | level, armed | - | - |
 | FEAT-69 can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19) | 90 | level, bridge-cycled | - | - |
 | BUG-132 Platform IMU capture timestamps run 23 to 55 ms early against Mocap and the encoders | 10 | level, armed, bb-fed | - | - |
+| BUG-133 Ball Butler firmware builds against the unpatched FlexCAN_T4 and stamps the sync at dispatch | 15 | bridge-cycled | - | - |
 | BUG-144 Juggle action feedback and status topics are in the bag record list but have never been recorded | 5 | level, armed, bridge-cycled | `night-shift/2026-11-26-BUG-144` | - |
 | BUG-95 A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads | 35 | level, bb-fed | - | - |
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
@@ -45,7 +46,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-125 [Robot] Hand drive MISSING_ESTIMATE at rest lost exactly five turns, ten minutes after a SPINOUT top-stop impact: no ## Sitting section
 - BUG-13 [Robot] Wave camera: CLIP_MISSING on the first start after a camera power-cycle: no ## Sitting section
 - BUG-130 [Robot] Held Active pose is 0.6 degrees off Level: the levelling correction reaches Jog targets but not the hold: no ## Sitting section
-- BUG-133 [Robot] Ball Butler firmware builds against the unpatched FlexCAN_T4 and stamps the sync at dispatch: no ## Sitting section
 - BUG-135 [Robot] Platform CAN receive queue overflows during the inclinometer re-probe stall: no ## Sitting section
 - BUG-136 [Robot] Catching cone catch stamps could run 10 ms early per stranded receive frame: no ## Sitting section
 - BUG-140 [Robot] Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid: no ## Sitting section
