@@ -2009,8 +2009,9 @@ def _rebase_fresh_rest(seg, seed: uc.CycleState, t0_before_solve: float,
     The ORIGIN is the same for both seeds (BUG-140, owner answer to TKT-96:
     option 2, snap only, 2026-11-27): ``t0 = t0_before_solve + k·dt`` with
     ``k = ceil((t0_wire_s - t0_before_solve)/dt)``, the first knot of the
-    solve's own grid at or after ``t0_wire_s``, so never before the wire-read
-    margin and never more than one knot after it.  On the live path
+    solve's own grid at or after ``t0_wire_s`` (to within the 1e-9 knot
+    guard), so not before the wire-read margin and never more than one knot
+    after it.  On the live path
     ``t0_before_solve`` is the node's ``_snap_t0_to_grid(t_now)``, a node of
     the emitter's absolute knot grid, so the origin is on that grid and the
     40 Hz emitter samples the plan ON its knots for the whole REST (it sampled

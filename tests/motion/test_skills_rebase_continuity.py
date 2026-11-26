@@ -314,8 +314,9 @@ def test_an_in_motion_rebase_cuts_on_a_knot_and_reports_its_slide(
     k*dt`` on the grid, and knot 0 is the zero-latency plan's knot ``k``, so
     the I-PLAN-12 check passes (no new refusal).  The in-motion origin was
     already on the solve's grid before BUG-140; only the appended ``slide N
-    knots`` clause is new, so this test fails on the old code by its message
-    assert alone."""
+    knots`` clause and the ``rebase_slide_knots`` helper are new, so on the old
+    code this test fails on the missing helper (before its message assert);
+    its grid asserts cannot fail there."""
     seed = _seed(**_MOVING)
     _r, _res0, seg0 = _install(limits, geom, seed, 0.0)
     rec, res, seg = _install(limits, geom, seed, solve_s)
