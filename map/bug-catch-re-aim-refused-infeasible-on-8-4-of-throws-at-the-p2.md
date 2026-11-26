@@ -4,7 +4,7 @@ kind: bug
 title: Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair
 status: backlog
 created: '2026-11-06'
-updated: '2026-11-26T03:44:43Z'
+updated: '2026-11-26T05:49:00Z'
 owners: []
 priority: medium
 effort: s
@@ -208,3 +208,6 @@ From TKT-59. You chose option 1 and will run it yourself: a day Session runs the
 - 2026-11-26: Control diagnosis: 57 of 72 columns_turned refusals (2026-11-06 and 11-07) are second re-aims, 0.1 to 0.3 s after an accepted first one. First re-aims were accepted 213 of 228; second re-aims 13 of 70. By angle: 90 deg first 140 of 142, second 7 of 51; 45 deg first 73 of 86, second 6 of 19.
 - 2026-11-26: The 2026-11-25 replay applied each row once to a pristine record and ignored the timing shift, so its control did not discriminate (it accepted 74 % of flown-refused rows) and its lead 0 and lead 1 accept rates are not validated. Chained with the timing shift, on the 45 deg record: flown-refused second re-aims refuse 73 % in replay, flown-accepted accept 89 %.
 - 2026-11-26: Next: give bump_replay.py chaining, the timing shift and per-row angle and Apex (rows come from Apex 1.0 with separation 120 and 0.95 with 125), then re-run lead 0 and 1 with the bump applied after a first re-aim. The re-aim direction is not logged, so four are tried. Prototypes: temp/probes/bug75-raw/.
+- 2026-11-26: Replay tooling on main: bump_replay.py chains a Catch's re-aims with the timing shift and picks the record per row (label_rows.py). Control on second re-aims: flown-refused refuse 77, 86, 77 % in replay; flown-accepted accept 75, 88, 67 %. The 2026-11-25 default-mode command still gives 81.3 %.
+- 2026-11-26: Bump applied after a first re-aim, all three groups (n 108, 80, 96): second re-aims accept 41 to 57 % diagonal and 79 to 83 % axis at emit lead 0, against the 94.7 % axis bar. Emit lead 1 costs 0 to 3.8 points. Refusals are only the 50 mm/s BUMP-LAUNCH bound and LIMIT_VEL in the ramp. Files: temp/probes/late_reaim/chain_bump_*.
+- 2026-11-26: What-if, not proposed: at 80 mm/s the 2026-11-06 90 deg diagonal case goes 56.5 to 81.5 % (one group only). Flown second re-aims are small: median 12 mm, p90 about 20 mm. Options for the owner: enable the bump for second re-aims, send no second re-aim, or revisit the bound. The re-aim direction is not logged; logging it would settle which row applies.
