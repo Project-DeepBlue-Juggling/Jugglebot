@@ -25,7 +25,9 @@ New law (prototype, plan sections 2.2-2.4):
   (K = 1, rest 0) with a diagonal prior covariance P0; a parameter whose posterior sd exceeds
   ``FALLBACK_FRAC`` x its prior sd REPORTS its prior (empty memory -> the identity command).
   Forgetting is either plain exponential (P <- P/lambda) or BOUNDED (the same, then each
-  diagonal capped at P0: no covariance wind-up in unexcited directions).
+  diagonal capped at P0: no covariance wind-up in unexcited directions). A '+pn' rule suffix
+  (BUG-139, 2026-11-27, the production ``plant_model`` since) forgets b by a random walk instead:
+  P_bb += (1 - lambda)^2 R / lambda per row, b's lambda 1 (K keeps lambda).
   L2: over the k most recent available rows with the same ball_id and release_kind inside the
   support d2 <= 9, w = exp(-d2), d2 = |dp|^2/h_p^2 + |dv|^2/h_v^2 + ddwell^2/h_d^2; the residual
   of each row is taken against the CURRENT f0; r_hat = weighted mean; alpha = sum w/(sum w + w0);
@@ -312,7 +314,7 @@ def _med(x):
 class Filt(object):
     """One RLS filter (Kalman form, forgetting lambda), identity prior, fallback to prior."""
 
-    def __init__(self, prior, sd0, R, lam, bounded):
+    def __init__(self, prior, sd0, R, lam, bounded, q=0.0):
         self.th = np.array(prior, dtype=float)
         self.prior = np.array(prior, dtype=float)
         self.P0 = np.diag(np.asarray(sd0, dtype=float) ** 2)
@@ -320,6 +322,8 @@ class Filt(object):
         self.R, self.bounded = R, bounded
         self.lam = np.sqrt(np.outer(np.broadcast_to(np.asarray(lam, dtype=float), self.th.shape),
                                     np.broadcast_to(np.asarray(lam, dtype=float), self.th.shape)))
+        # '+pn' (BUG-139, 2026-11-27): a per-parameter random walk added after the lambda step
+        self.Q = np.diag(np.broadcast_to(np.asarray(q, dtype=float), self.th.shape))
         self.sd0 = np.asarray(sd0, dtype=float)
 
     def innov(self, phi, z):
@@ -332,7 +336,7 @@ class Filt(object):
         if self.bounded:
             r = np.sqrt(np.minimum(1.0, np.diag(self.P0) / np.diag(P)))
             P = P * np.outer(r, r)
-        return P
+        return P + self.Q
 
     def update(self, phi, z):
         P = self._fp()
@@ -353,6 +357,11 @@ class Filt(object):
 def run_rls(d, lam, bounded, rule, gate=4.0):
     # '<rule>+struct': the STRUCTURAL parameters (s, Delta) are not forgotten (lambda 1); K and b are
     lam_s = lam
+    # '+pn' (BUG-139, 2026-11-27; production plant_model since then): b is forgotten by a random
+    # walk q = (1 - lam)^2 R_LAT / lam per row instead of lambda (K keeps lambda: its filter is 1-D)
+    pn = rule.endswith('+pn')
+    if pn:
+        rule = rule[:-len('+pn')]
     sy = rule.endswith('+sy')          # '+sy': an axis-1 slope s_y on the Site's y (radial-pull test)
     if sy:
         rule = rule[:-len('+sy')]
@@ -361,9 +370,12 @@ def run_rls(d, lam, bounded, rule, gate=4.0):
     """Replay every row in file order. Returns theta_hist (n+1, 6) of REPORTED params after rows
     0..j-1 (cols K, b_x, s, D1x, b_y, D1y), sd_hist, raw_hist and the accepted mask."""
     n = len(d)
+    lam_b, q_b = (1.0, (1.0 - lam) ** 2 * R_LAT / lam) if pn else (lam, 0.0)
     fa = Filt([1.0], [PRIOR_SD['K']], R_APEX, lam, bounded)
-    f0 = Filt([0.0, 0.0, 0.0], [PRIOR_SD['b'], PRIOR_SD['s'], PRIOR_SD['D']], R_LAT, [lam, lam_s, lam_s], bounded)
-    f1 = Filt([0.0, 0.0, 0.0], [PRIOR_SD['b'], PRIOR_SD['s'], PRIOR_SD['D']], R_LAT, [lam, lam_s, lam_s], bounded)
+    f0 = Filt([0.0, 0.0, 0.0], [PRIOR_SD['b'], PRIOR_SD['s'], PRIOR_SD['D']], R_LAT, [lam_b, lam_s, lam_s], bounded,
+              q=[q_b, 0.0, 0.0])
+    f1 = Filt([0.0, 0.0, 0.0], [PRIOR_SD['b'], PRIOR_SD['s'], PRIOR_SD['D']], R_LAT, [lam_b, lam_s, lam_s], bounded,
+              q=[q_b, 0.0, 0.0])
     hist = np.zeros((n + 1, 7))
     sdh = np.zeros((n + 1, 7))
     raw = np.zeros((n + 1, 7))

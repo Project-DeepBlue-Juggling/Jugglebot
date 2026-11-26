@@ -2,9 +2,9 @@
 id: BUG-139
 kind: bug
 title: 'Plant model slope value stays corrupted after a long single-Site Memory: one row at a second Site applies a line up to 59 mm off'
-status: inbox
+status: complete
 created: '2026-11-25'
-updated: '2026-11-24T16:52:15Z'
+updated: '2026-11-26T16:19:35Z'
 owners: []
 priority: medium
 effort: s
@@ -16,12 +16,9 @@ area: learner
 blocked_by: []
 links:
 - bug-learner-far-site-guard-fails-on-long-single-site-memories
+- logbook/2026-11-27-plant-model-process-noise-on-b.md
 parent: learner-generalisation
 filed_by: claude
-night_skip: input-decision
-night_skip_on: '2026-11-26'
-night_skip_note: Builds the fix you choose with the xfail turned passing and the P1 pin moved, replays the Memory copy, then holds it for a day Session.
-night_skip_input: 'Pick option 1-4 in TKT-95: process noise on b, directional forgetting, one forgetting factor for every parameter, or leave it.'
 ---
 
 The residue of BUG-137, found by the Night Shift unit on 2026-11-25. The fix makes every at-prior decision read a no-forgetting covariance, so a single-Site Memory now applies 0 at a far Site. The forgetting filter's VALUE of s is still corrupted by the information its per-parameter forgetting manufactures. That was already so before the fix.

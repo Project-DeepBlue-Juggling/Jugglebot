@@ -23,14 +23,18 @@ measurement filters: apex [K]; axis 0 [b_x, s, Delta_x...]; axis 1 [b_y, Delta_y
 probe's prototype (``learner_replay.Filt`` / ``run_rls``) is the reference; this module ports it.
 Three rules the probe decided:
 
-* **Forget K and b only** (lambda per ACCEPTED row; s and Delta are never forgotten). One lambda
+* **Forget K and b only** (per ACCEPTED row; s and Delta are never forgotten). One lambda
   for every parameter winds ``s`` up during a single-Site stretch (its direction is unexcited, so
   its variance grows by 1/lambda per row) until it falls back to its prior: on the corpus after
-  410-1958 rows. Covariance cross-terms are divided by sqrt(lambda_i lambda_j), as the probe does.
-  That forgetting sets the VALUE (theta) only, never a decision: forgetting b but not s is
-  I <- diag(sqrt lam) I diag(sqrt lam) in information form, which MANUFACTURES information in a
-  direction no row excited (at one Site I_ss grows with every row while I_bb saturates, so the
-  forgetting covariance calls s known after ~150 single-Site rows; BUG-137).
+  410-1958 rows. K is forgotten by lambda (P <- P / lambda, its filter is 1-D). b is forgotten by
+  a random walk, P_bb += q per row, q = (1 - lambda)^2 R / lambda (the same steady gain 1 - lambda
+  and steady sd as lambda; ``PlantModelConfig.q_b_m2``), since BUG-139 (2026-11-27). Until then b
+  had a per-parameter lambda with the probe's sqrt(lambda_i lambda_j) cross-terms, which is
+  I <- diag(sqrt lam) I diag(sqrt lam) in information form and MANUFACTURES information in a
+  direction no row excited: at one Site I_ss grew with every row while I_bb saturated, so that
+  filter called s known after ~150 single-Site rows (BUG-137) and its VALUE of s went wrong
+  with it (BUG-139). A random walk only removes information. Forgetting sets the VALUE (theta)
+  only, never a decision.
 * **Report the prior while uncertain, judged on the information received.** Every decision below
   reads a companion covariance of the same accepted rows with NO forgetting (lambda = 1, same
   prior and R; ``sd_unforgotten``), never the forgetting filter's (BUG-137, 2026-11-25). A
@@ -91,9 +95,14 @@ class PlantModelConfig:
     noise_sd_apex_m: float = 0.010
     #: Measurement sd of each lateral axis [m] (probe: lateral shot noise ~20 mm per axis).
     noise_sd_lateral_m: float = 0.020
-    #: Forgetting factor per ACCEPTED row, applied to K and b only (probe: lambda 0.99 with s and
-    #: Delta unforgotten, 'band+struct', was the best variant; ~100-row memory for K and b).
+    #: Forgetting factor per ACCEPTED row (probe: lambda 0.99 with s and Delta unforgotten,
+    #: 'band+struct', was the best variant; ~100-row memory for K and b). Applied AS lambda to K
+    #: only (the 1-parameter apex filter, P <- P / lambda). b is forgotten by a random walk whose
+    #: variance per row is :attr:`q_b_m2`, derived from this lambda (BUG-139, 2026-11-27).
     forgetting: float = 0.99
+    #: Process-noise variance added to each lateral offset b per ACCEPTED row [m^2] (BUG-139).
+    #: None = derived from ``forgetting`` (:attr:`q_b_m2`); an explicit value overrides it.
+    process_noise_b_m2: Optional[float] = None
     #: A parameter reports its prior mean while its posterior sd > this x its prior sd (probe).
     fallback_frac: float = 0.5
     #: Inlier rule, lateral: |innovation| on each axis must be under this [m] (the 2026-10-18
@@ -126,41 +135,81 @@ class PlantModelConfig:
                 and 0.0 < self.forgetting <= 1.0):
             raise ValueError('PlantModelConfig.forgetting must be in (0, 1], got %r'
                              % (self.forgetting,))
+        q = self.process_noise_b_m2
+        if q is not None and not (isinstance(q, (int, float)) and not isinstance(q, bool)
+                                  and math.isfinite(q) and q >= 0):
+            raise ValueError('PlantModelConfig.process_noise_b_m2 must be None or finite and >= 0, '
+                             'got %r' % (q,))
         if not isinstance(self.n_balls, int) or isinstance(self.n_balls, bool) or self.n_balls < 1:
             raise ValueError('PlantModelConfig.n_balls must be an int >= 1, got %r' % (self.n_balls,))
 
+    @property
+    def q_b_m2(self) -> float:
+        """The random-walk variance added to P_bb per accepted row [m^2] (BUG-139).
+
+        Derived so the random walk forgets b exactly as lambda did, in steady state, for a scalar
+        filter observing b directly with variance R (one Site at x = 0, or b_y):
+
+        * lambda:  P- = P / lam, gain k = P- / (P- + R), P = (1 - k) P-. Fixed point: 1/P = lam/P
+          + 1/R, so P = (1 - lam) R and k = 1 - lam.
+        * process noise: P- = P + q, same update. Fixed point: k P- = q with P- = k R / (1 - k),
+          so q = k^2 R / (1 - k).
+
+        Matching the gain k = 1 - lam gives q = (1 - lam)^2 R / lam, and then the steady posterior
+        P = k R = (1 - lam) R matches too: the same steady gain, the same exponential weight lam per
+        row on old data (a 1/(1 - lam) = 100-row memory at 0.99), the same steady sd. At lambda 0.99
+        and R = (20 mm)^2: q = 4.04e-8 m^2, a 0.20 mm random-walk step per row. ``forgetting`` = 1
+        gives q = 0 (no forgetting)."""
+        if self.process_noise_b_m2 is not None:
+            return float(self.process_noise_b_m2)
+        lam = float(self.forgetting)
+        return (1.0 - lam) ** 2 * self.noise_sd_lateral_m ** 2 / lam
+
 
 class _Filter(object):
-    """One RLS filter (Kalman form) with per-parameter forgetting and fallback to the prior.
+    """One RLS filter (Kalman form) with forgetting and fallback to the prior.
 
-    A port of the probe's ``Filt`` (unbounded form): ``P <- P / sqrt(outer(lam, lam))`` before
-    each update, then the scalar-measurement Kalman update with variance ``R``. ``th`` and ``P``
-    are the forgetting filter: ``th`` is the value applied, ``P`` its own covariance.
+    Before each update ``P <- P / lam + diag(q)``, then the scalar-measurement Kalman update with
+    variance ``R``. ``lam`` is a SCALAR forgetting factor, used only where the filter has one
+    parameter (the apex filter's K: in 1-D, P / lam is P + P (1/lam - 1), a process noise, and
+    there is no second direction to manufacture information in); ``q`` is a per-parameter
+    process-noise variance (a random walk), used for b in the lateral filters (BUG-139). ``th`` and
+    ``P`` are the forgetting filter: ``th`` is the value applied, ``P`` its own covariance.
+
+    Why not per-parameter lambda (the probe's ``Filt``, ``P <- P / sqrt(outer(lam, lam))``, live
+    until 2026-11-27): in information form that step is I <- diag(sqrt lam) I diag(sqrt lam), which
+    is not <= I (PSD order), so with b forgotten and s not, I_ss kept growing at one Site while I_bb
+    saturated: the filter called s known although only b + s x0 was observed (BUG-137), and its
+    VALUE of s was corrupted with it (BUG-139: one second-Site row then applied a line up to ~54 mm
+    off at a far Site). Adding q >= 0 to the predicted covariance can only REMOVE information
+    (P + Q >= P), and s is a constant of the random-walk model, so its posterior variance never
+    falls below what the rows determine: a single-Site stretch leaves s as uncertain as the data
+    leave it, and a second Site moves it at once.
 
     ``P_unforgotten`` (BUG-137) is the covariance of the SAME accepted rows under the same prior and
-    ``R`` with NO forgetting (lambda = 1 for every parameter): the information actually received.
-    Every "is this determined?" decision reads it, never ``P``. Per-parameter forgetting in
-    non-orthogonal coordinates manufactures information: in information form the forgetting step is
-    I <- diag(sqrt lam) I diag(sqrt lam), which is not <= I (PSD order), so with b forgotten and s
-    not, I_ss keeps growing at one Site while I_bb saturates and ``P`` reports s (and b + s x at a
-    far Site) as known although only b + s x0 was ever observed."""
+    ``R`` with NO forgetting (lambda = 1, q = 0): the information actually received. Every "is this
+    determined?" decision reads it, never ``P`` (kept although the random walk manufactures no
+    information: the decision stays on the information received, never on a tuning constant)."""
 
-    def __init__(self, prior, sd0, R: float, lam) -> None:
+    def __init__(self, prior, sd0, R: float, lam: float = 1.0, q=0.0) -> None:
         self.prior = np.array(prior, dtype=float)
         self.th = self.prior.copy()
         self.sd0 = np.asarray(sd0, dtype=float)
         self.P = np.diag(self.sd0 ** 2)
         self.P_unforgotten = self.P.copy()
         self.R = float(R)
-        lam = np.broadcast_to(np.asarray(lam, dtype=float), self.th.shape)
-        self.lam = np.sqrt(np.outer(lam, lam))
+        self.lam = float(lam)
+        if self.lam != 1.0 and self.th.size != 1:
+            # a lambda on a multi-parameter filter is the per-parameter forgetting BUG-139 removed
+            raise ValueError('_Filter: lambda forgetting is for a 1-parameter filter only; use q')
+        self.Q = np.diag(np.broadcast_to(np.asarray(q, dtype=float), self.th.shape))
 
     def innov(self, phi: np.ndarray, z: float) -> float:
         return z - float(phi @ self.th)
 
     def proposed(self, phi: np.ndarray, z: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """The (theta, P, P_unforgotten) one update would produce; nothing is committed."""
-        P = self.P / self.lam
+        P = self.P / self.lam + self.Q
         S = float(phi @ P @ phi) + self.R
         g = P @ phi / S
         th = self.th + g * (z - float(phi @ self.th))
@@ -221,15 +270,16 @@ class PlantModel(object):
         if not isinstance(cfg, PlantModelConfig):
             raise ValueError('config must be a PlantModelConfig, got %r' % (cfg,))
         self.config = cfg
-        lam = cfg.forgetting
+        q = cfg.q_b_m2
         nd = cfg.n_balls - 1 if cfg.ball_offsets else 0
         self._nd = nd
-        self._fa = _Filter([1.0], [cfg.prior_sd_K], cfg.noise_sd_apex_m ** 2, lam)
+        # K: lambda (1-D, manufactures nothing). b: a random walk q (BUG-139). s, Delta: neither.
+        self._fa = _Filter([1.0], [cfg.prior_sd_K], cfg.noise_sd_apex_m ** 2, lam=cfg.forgetting)
         self._fx = _Filter([0.0] * (2 + nd), [cfg.prior_sd_b_m, cfg.prior_sd_s_per_m]
                            + [cfg.prior_sd_delta_m] * nd,
-                           cfg.noise_sd_lateral_m ** 2, [lam, 1.0] + [1.0] * nd)
+                           cfg.noise_sd_lateral_m ** 2, q=[q, 0.0] + [0.0] * nd)
         self._fy = _Filter([0.0] * (1 + nd), [cfg.prior_sd_b_m] + [cfg.prior_sd_delta_m] * nd,
-                           cfg.noise_sd_lateral_m ** 2, [lam] + [1.0] * nd)
+                           cfg.noise_sd_lateral_m ** 2, q=[q] + [0.0] * nd)
         names = ['K', 'b_x', 'b_y', 's']
         for b in range(1, nd + 1):
             names += ['delta%d_x' % b, 'delta%d_y' % b]
