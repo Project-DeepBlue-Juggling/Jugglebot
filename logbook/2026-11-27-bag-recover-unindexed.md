@@ -2,7 +2,7 @@
 title: "Bags: bag_compress.py --recover rebuilds the index of recordings whose recorder was killed, so the 35 'no index' bags open in the GUI replay"
 type: feature
 date: 2026-11-27
-status: in-progress
+status: resolved
 phase: ""
 related_plan: ""
 related_issues: []
@@ -35,4 +35,4 @@ tags: [testing]
 
 - 2026-11-27, `python -m pytest tests/sim/test_bag_compress.py -q -p no:cacheprovider`: **29 passed** (8 existing, 21 new: seven cut points with CRCs on and off, nothing-to-recover cases, verify failures leaving the directory unchanged, metadata.yaml shape).
 - 2026-11-27, on copies of six real files (942 MB 2026-06-08_22-43-14, 2026-10-25_16-06-52, 2026-11-23_18-42-55 and three from 2026-11-25): all messages recovered (3,871,851 in the largest), the GUI's `openRecording` plus a CRC-validated `readMessages` pass in node returned the Statistics count, and `ros2 bag info -s mcap` agreed.
-- The corpus run's result is appended below when it has run.
+- Corpus run, 2026-11-27, `nice -n 15 ionice -c3 python tools/bag_compress.py /home/jetson/Desktop/rosbags --recover --replace --write-metadata --report temp/reports/bag_recover_2026-11-27.json`: **35 recovered, 0 failed, 3.44 GB to 0.41 GB in 342 s**; 35 originals kept as `.unindexed-orig` (3.3 GB). Afterwards `curl -s http://localhost:8081/api/replay/recordings` lists 618 recordings, none unindexed; `2026-11-25_09-01-37` reports `indexed: true`, 295.6 s, 143,882 messages.
