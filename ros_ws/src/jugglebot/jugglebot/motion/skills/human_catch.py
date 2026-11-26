@@ -51,6 +51,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+import jugglebot.hardware_config as hw
+
 # -- phases --------------------------------------------------------------
 
 OPENING = 'OPENING'
@@ -317,7 +319,7 @@ class HumanCatchPolicy:
     def nominal_arrival_vel_mm_s(self) -> np.ndarray:
         """The vertical arrival the nomination plans (D9)."""
         rise = self.nominal_apex_m * 1000.0 - self._plane_z_mm
-        return np.array([0.0, 0.0, -math.sqrt(2.0 * 9810.0 * rise)])
+        return np.array([0.0, 0.0, -math.sqrt(2.0 * hw.GRAVITY_MMPS2 * rise)])
 
     def _decline(self, evt, reason, now_s, lead, dist, text) -> Decision:
         first = (evt.key, reason) not in self._logged

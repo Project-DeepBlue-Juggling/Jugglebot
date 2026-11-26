@@ -500,7 +500,7 @@ def test_plant_landing_bias_release_adds_the_lateral_speed_for_the_bias():
     v = np.array([0.0, 0.0, 4000.0])
     base = sg._measured_release_bias(v)
     out = sg._plant_landing_bias_release((30.0, 0.0))(v)
-    assert out[0] - base[0] == pytest.approx(30.0 * 9810.0 / (2.0 * base[2]))
+    assert out[0] - base[0] == pytest.approx(30.0 * sg._GRAVITY_MMS2 / (2.0 * base[2]))
     # (36.8 mm/s would be the figure at the UNBIASED vz = 4000; the hook
     # runs after the +11 % speed bias, so the ball's real vz is ~4440.)
     assert out[0] - base[0] == pytest.approx(33.1, abs=0.1)

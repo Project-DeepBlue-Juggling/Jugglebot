@@ -3,7 +3,8 @@
 Each test reads two copies from SOURCE TEXT (AST, never an import of a ROS node or a mujoco
 module) and fails with a message naming both files and both values. Nothing here changes a
 copy: where the copies are supposed to be one number, the test says so; where the owner has
-not decided (the sim's 9810), the test pins today's value as a tripwire and says that too.
+not decided, the test pins today's value as a tripwire and says that too (the sim's and
+human_catch's 9810 were moved to the config's value 2026-11-26 and are pinned equal).
 
 Already pinned elsewhere, not repeated here:
   * ``executor.REBASE_TOL_*`` and ``schedule.REST_RETURN_ONSET_BUDGET_REV`` against the firmware
@@ -41,7 +42,7 @@ def _const(rel, name):
                 isinstance(t, ast.Name) and t.id == name for t in node.targets):
             expr = ast.Expression(node.value)
             ast.fix_missing_locations(expr)
-            return eval(compile(expr, rel, "eval"), {"np": np, "math": math, "float": float})
+            return eval(compile(expr, rel, "eval"), {"np": np, "math": math, "float": float, "hw": _hw()})
     raise AssertionError("%s: no module-level assignment of %s" % (rel, name))
 
 
@@ -85,14 +86,14 @@ def test_generated_gravity_units_agree():
           "generated gravity in two units", tol=1e-9)
 
 
-def test_sim_skills_gate_gravity_is_pinned_as_it_is_today():
-    """OWNER HAS NOT DECIDED whether 9810 was deliberate (FEAT-56 'Wanted'): it moves the sim's
-    numbers by 0.04 %. This pins today's value so a change is a conscious one; it is NOT a claim
-    that 9810 is right. If the owner decides to follow the config, change this test with the code."""
+def test_sim_skills_gate_gravity_follows_the_config():
+    """Owner decision 2026-11-26: ``sim/skills_gate.py`` takes the generated gravity (it was a typed
+    9810.0, 0.04 % high). The module reads ``hw.GRAVITY_MMPS2``; this checks the source says so and
+    the evaluated value equals the config, so a typed literal coming back fails here."""
     rel = os.path.join("sim", "skills_gate.py")
-    assert float(_const(rel, "_GRAVITY_MMS2")) == 9810.0, (
-        "%s _GRAVITY_MMS2 changed from the pinned 9810.0; generated config is %r"
-        % (rel, _hw().GRAVITY_MMPS2))
+    assert "hw.GRAVITY_MMPS2" in _text(rel), "%s: _GRAVITY_MMS2 no longer reads the config" % rel
+    _same(rel + " _GRAVITY_MMS2", _const(rel, "_GRAVITY_MMS2"), "GRAVITY_MMPS2", _hw().GRAVITY_MMPS2,
+          "sim skills gate gravity")
 
 
 def test_probe_gravity_literals_are_pinned_as_they_are_today():
@@ -112,12 +113,15 @@ def test_probe_gravity_literals_are_pinned_as_they_are_today():
         assert float(m.group(1)) == want, "%s gravity %s, pinned %s" % (rel, m.group(1), want)
 
 
-def test_human_catch_gravity_is_pinned_as_it_is_today():
-    """``motion/skills/human_catch.py`` types 9810.0 inline in a rise-to-speed formula (a
-    production copy the FEAT-56 table does not list). Pinned as found, owner decision pending."""
+def test_human_catch_gravity_follows_the_config():
+    """``motion/skills/human_catch.py`` computes the nominal arrival speed from a rise with the
+    generated gravity (owner decision 2026-11-26; it was an inline 9810.0). No gravity literal may
+    sit in the formula."""
     rel = os.path.join(_SKILLS, "human_catch.py")
-    assert "math.sqrt(2.0 * 9810.0 * rise)" in _text(rel), (
-        "%s: the 9810.0 literal moved or changed; generated config is %r" % (rel, _hw().GRAVITY_MMPS2))
+    text = _text(rel)
+    assert "math.sqrt(2.0 * hw.GRAVITY_MMPS2 * rise)" in text, (
+        "%s: the rise-to-speed formula no longer reads hw.GRAVITY_MMPS2" % rel)
+    assert not re.search(r"\b98(06|10)(\.\d*)?\b", text), "%s: a typed gravity literal is back" % rel
 
 
 # ── 2. Capture bound ─────────────────────────────────────────────────────────
