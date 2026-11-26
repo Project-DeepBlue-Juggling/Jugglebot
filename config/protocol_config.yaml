@@ -224,6 +224,19 @@ ball_butler:
     CALIBRATE:    2
     HOME:         3
     CANCEL:       4   # throw cancel (CANCEL_CMD 0x7D9); detail1 = ms to release at receipt
+    # Unsolicited receive-path status (BB FW 10, BUG-133), every 500 ms, answers no
+    # command. Its own byte layout, NOT outcome/detail0/detail1:
+    #   byte1 = rx_ring_depth_min (frames, 255 sat): smallest TRUE FlexCAN RX ring
+    #           occupancy (head/tail) seen before a loop() drain in the window. Above 0
+    #           means a standing queue the whole window: the BUG-133 delay line.
+    #   byte2 = rx_ring_depth_max (frames, 255 sat): largest, same probe
+    #   byte3 = rx_ring_leak_max (frames, 255 sat): largest occupancy minus
+    #           `_available` (the stranded count; 0 with the patched FlexCAN_T4)
+    #   bytes4-6 = uptime_s (uint24 LE, seconds since boot, wraps at 194 days)
+    #   byte7 = fifo_overflows (hardware RX FIFO overruns since boot, 255 sat)
+    # An image older than FW 10 never sends it; the host drops command types it
+    # does not consume, so a host older than this ignores it.
+    STATUS:       5
 
   # command_outcome — CMD_RESULT byte 1. A shared base enum (0x00-0x0F) reused by
   # every command, plus per-command extension values (>=0x20) carrying the specific

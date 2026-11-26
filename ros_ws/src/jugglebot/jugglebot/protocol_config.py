@@ -167,6 +167,7 @@ class BallButlerCommandType(IntEnum):
     CALIBRATE = 2
     HOME = 3
     CANCEL = 4
+    STATUS = 5
 
 # Command outcomes — CMD_RESULT byte 1 (shared base + per-command extensions)
 class BallButlerCommandOutcome(IntEnum):
