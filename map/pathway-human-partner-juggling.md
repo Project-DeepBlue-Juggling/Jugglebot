@@ -4,7 +4,7 @@ kind: pathway
 title: Human-partner juggling
 status: active
 created: '2026-11-18'
-updated: '2026-11-26T01:40:09Z'
+updated: '2026-11-26T03:18:37Z'
 owners: []
 priority: high
 effort: xl
@@ -44,3 +44,4 @@ Plan: plans/active/human-partner-juggling.md (eight steps, four offline). Physic
 ## Progress
 
 - 2026-11-26: P4 designed offline: an aimed Throw from a level rest reaches 250, 400, 550 mm at Apex 1.5, 1.8, 2.1 m. Proposed Pattern: Catch, carry to the wait Site, Throw to a partner point 300 mm toward the owner at 1.0 m height. Five build units wait on the owner's choices. Design: temp/probes/pway11-p4/design.md.
+- 2026-11-26: P4 build on held branch offline/pway11-p4: the human_return Schedule compiles (Catch, carry, handed Throw) and the executor runs it: the Catch verdict is taken before the handed Throw can dispatch, an empty Cup is refused before motion, and the handed Throw books no Memory row. Policy, records, node and sim units remain.

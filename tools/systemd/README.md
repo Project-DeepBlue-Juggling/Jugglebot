@@ -230,7 +230,7 @@ Until that reboot the unit is already disabled and removed, but the running
 slice keeps the budget it was given, so a worker that is FIFO now stays FIFO
 until the next launch. To turn RT off without touching the system at all, start
 the launch with the trajectory node's parameter at 0 (`trajectory_node`
-declares `solver_rt_priority`, default 10):
+declares `solver_rt_priority`; its default has been 0, real-time off, since the owner decision of 2026-10-28):
 
 ```bash
 ros2 launch jugglebot jugglebot_launch.py   # then, or in the launch file's trajectory_node parameters:

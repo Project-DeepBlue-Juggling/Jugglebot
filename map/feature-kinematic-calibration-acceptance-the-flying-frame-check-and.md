@@ -4,7 +4,7 @@ kind: feature
 title: 'Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z'
 status: inbox
 created: '2026-10-28'
-updated: '2026-11-26T01:40:05Z'
+updated: '2026-11-26T03:18:10Z'
 owners: []
 priority: medium
 effort: l
@@ -45,16 +45,21 @@ Offline, 1,139 free flights from six Sittings (2026-09-29 to 2026-11-22). Output
 
 ## Sitting
 
-- setup: level
-- why: confirm with a plumb line, with no ball dynamics, that the Mocap z axis is 0.55 deg from gravity before the Fit takes a measured gravity vector.
+- setup: level, armed
+- why: confirm with a plumb line that the Mocap z axis is 0.55 deg from gravity, then A/B the Fit's measured gravity vector on the robot's own Throws and Catches.
 - do:
   - Hang a weighted line with two Mocap markers at least 800 mm apart near the Cup; record 10 s of `/mocap_data` once the swing has damped.
   - Repeat about 500 mm away, near the Ball Butler.
   - Put a digital level on the floor where the Mocap L-frame was placed and read both axes.
-- pass: both lines lean toward +x by 4.4 mrad and toward +y by 8.5 mrad, each within 1.5 mrad.
-- record: the bag name, both line directions in mrad, the floor level in two axes, and whether the Mocap system was recalibrated since 2026-11-13.
-- minutes: 10
+  - If both lines pass, fly one Attempt of the usual Pattern with the vector off (the tracker's start-up line shows `gravity_world_xy=(0.0, 0.0)`).
+  - Between Attempts run `ros2 param set /ball_tracker_node gravity_world_xy_mmps2 "[43.0, 83.0]"` and fly at least 40 Throws on the same Pattern. Keep the Memory.
+  - If the recorded landing error of the robot's own Throws is still above 5 mm after 50 Throws, set `"[0.0, 0.0]"` and stop.
+- pass: both lines lean toward +x by 4.4 mrad and toward +y by 8.5 mrad, each within 1.5 mrad. With the vector on, Catches are no worse than with it off, re-aims per Catch fall, and the robot's own recorded landing error returns below 2 mm by Throw 40.
+- record: the bag name, both line directions in mrad, the floor level in two axes, whether Mocap was recalibrated since 2026-11-13, the time of the param switch, Catches and re-aims per arm, and the landing error over Throws 1-10, 11-30 and 31-50 after the switch.
+- minutes: 30
 
 ## Progress
 
 - 2026-11-26: Offline gravity fit done: the Mocap frame is tilted 0.55 deg from gravity and the Fit lands (-8, -21) mm off early, (-3, -11) mm at the end. Fix proposed as a config gravity vector, waiting on the owner (detail below).
+- 2026-11-26: Built and on main: config ball_tracking.gravity_world_xy_mmps2, default [0, 0], which is today's Fit bit for bit; switched live by a parameter on the tracker node. The Fit, its landing, the human Throw event and the Kalman fallback use it.
+- 2026-11-26: Learner check: Memory rows hold the final-Fit landing, so the learned command absorbed the (-3, -11) mm bias. At the switch the true landings do not move; the recorded error jumps about +11 mm in y and the Learner walks it back in about 30 Throws (model, not flown). Keep the Memory. Ball Butler's aim correction was fitted on measured crossings and is unaffected.

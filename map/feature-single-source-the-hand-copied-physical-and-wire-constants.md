@@ -4,7 +4,7 @@ kind: feature
 title: Single-source the hand-copied physical and wire constants
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-26T01:17:07Z'
+updated: '2026-11-26T03:18:19Z'
 owners: []
 priority: medium
 effort: m
@@ -42,3 +42,4 @@ Physical and wire constants that are typed by hand in more than one place, with 
 ## Progress
 
 - 2026-11-26: tests/firmware/test_hand_copied_constants.py (20 tests) pins every family in the table; no copies disagree today. Corrections: only three heartbeat bits are retyped copies, the Ball Butler bits and two Diagnostic bits have no schema constant; motion/skills/human_catch.py types 9810 too. The single-sourcing code change is still open; the two 9810 values wait for the owner.
+- 2026-11-26: Owner decision applied: the sim skills gate and human_catch read the generated gravity (9806), not a typed 9810. It moves the sim's biased-plant release 0.04 % and the human-Catch arrival speed 0.02 %. Five probes keep 9810 or 9806.65, pinned as found.
