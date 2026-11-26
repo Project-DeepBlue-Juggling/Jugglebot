@@ -17,6 +17,10 @@ Recipe (2026-11-06, Jetson, worktree Jugglebot-p3):
     OPENBLAS_NUM_THREADS=1 python -m pytest tests/motion/test_learner_replay.py -q \
         -p no:cacheprovider -m nightly   (2026-11-06: see the unit report for the result).
 
+FEAT-65 (2026-11-27): the pins below follow the mixed law (x, y shrinkage over all in-kernel rows,
+Apex the production recent-16 law): `-m nightly` run 2026-11-27, steady state 21.43 / 20.54 / 13.90 mm,
+cold start apex 12.9 mm (identity 74.5), 1.42 % at the cap.
+
 The old-law steady-state RMS literals (19.9 / 19.7 / 14.4 mm, axis 0 / axis 1 / apex) are the
 probe's: ``OPENBLAS_NUM_THREADS=1 python tools/probes/learner_replay.py --csv
 temp/probes/learner_replay/corpus_3276.csv --tag 3276 --rule band+struct --lam 0.99``
@@ -82,8 +86,14 @@ def test_cold_start_lateral_no_worse_than_identity(replay):
 def test_steady_state_no_worse_than_the_old_law(replay):
     h, _ = replay
     st = h['steady_state']['production_rms_mm']
-    for got, old, name in zip((st['ax0'], st['ax1'], st['apex']), OLD_STEADY, ('axis 0', 'axis 1', 'apex')):
-        assert got <= old + 1.0, (name, got, old)
+    # FEAT-65 (2026-11-27, owner option 1): x, y are the shrinkage over ALL in-kernel rows, Apex
+    # the production recent-16 law. On THIS replay (v1 corpus, 2-throw delay, steady state = 6th+
+    # throw at a Site) the shrinkage is 1.5 / 1.0 mm WORSE than the old law on x / y (21.43 /
+    # 20.54 vs 19.9 / 19.7): lateral allowance 2.0 mm; Apex is unchanged, so it keeps 1.0 mm.
+    allow = (2.0, 2.0, 1.0)
+    for got, old, a, name in zip((st['ax0'], st['ax1'], st['apex']), OLD_STEADY, allow,
+                                 ('axis 0', 'axis 1', 'apex')):
+        assert got <= old + a, (name, got, old)
 
 
 def test_share_at_the_cap_is_small(replay):
@@ -101,12 +111,15 @@ def test_model_accepts_nearly_every_row_and_k_is_plausible(replay):
 def test_headline_values_are_pinned(replay):
     h, _ = replay
     st = h['steady_state']['production_rms_mm']
-    assert st['ax0'] == pytest.approx(19.8, abs=0.5)
-    assert st['ax1'] == pytest.approx(19.5, abs=0.5)
+    # FEAT-65 (2026-11-27): x, y re-pinned for the shrinkage law (production was 19.8 / 19.5);
+    # Apex is the production law and keeps its 13.9 pin.
+    assert st['ax0'] == pytest.approx(21.43, abs=0.5)
+    assert st['ax1'] == pytest.approx(20.54, abs=0.5)
     assert st['apex'] == pytest.approx(13.9, abs=0.5)
     c = h['cold_start_with_earlier_accepted']
     assert c['production']['apex_mean_abs_mm'] == pytest.approx(12.9, abs=2.0)
     assert c['identity']['apex_mean_abs_mm'] == pytest.approx(74.5, abs=2.0)
-    assert 100 * h['share_at_cap_inliers'] == pytest.approx(0.49, abs=0.5)
+    # FEAT-65: 1.42 % at the cap (production 0.49 %): the all-rows x/y correction is larger
+    assert 100 * h['share_at_cap_inliers'] == pytest.approx(1.42, abs=0.5)
     assert h['model_accepted'] == pytest.approx(3244, abs=15)
     assert h['K'] == pytest.approx(1.0792, abs=0.003)

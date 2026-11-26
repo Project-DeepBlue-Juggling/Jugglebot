@@ -88,17 +88,17 @@ def test_t_u3_alpha_is_monotone_in_the_evidence_and_zero_at_empty_support():
     rng = np.random.default_rng(1)
     prev_sw, prev_step = 0.0, 0.0
     cfg = L.config
-    for n in range(1, 21):
+    for n in range(1, cfg.k + 5):
         u = np.array([0.0, 0.0, 0.9])
         L.observe(_exp(ctx, u, _plant(u, ctx.site_xy_m[0], (0.010, 0.0, 0.0)) + rng.normal(0, 1e-4, 3)))
         sw, used = L.evidence(ctx)
-        assert used == n                         # FEAT-65: every in-kernel row, no recency cut
+        assert used == min(n, cfg.k)             # evidence (cap, Apex): the k most recent rows
         assert sw >= prev_sw - 1e-12
         step = abs(L.command(ctx, Y_D)[0] - L.model_command(ctx, Y_D)[0])
         assert step >= prev_step - 2e-4          # monotone up to the 0.1 mm row noise
-        assert 0.0 < step
+        assert step > 1e-3                       # the 10 mm bias is being corrected (g 0.23 at n = 1)
         prev_sw, prev_step = sw, step
-    assert prev_sw == pytest.approx(20, rel=1e-9)      # 20 rows exactly at the query: w = 1 each
+    assert prev_sw == pytest.approx(cfg.k, rel=1e-9)   # k rows exactly at the query: w = 1 each
 
 
 @pytest.mark.parametrize('other', [dict(ball=1), dict(kind='free_cup')])
@@ -115,14 +115,17 @@ def test_t_u3_rows_of_another_ball_or_release_kind_contribute_nothing(other):
         L.observe(_exp(c_other, u, _plant(u, ctx.site_xy_m[0], (0.050, -0.050, 0.02))))
     assert L.evidence(ctx) == (0.0, 0)
     np.testing.assert_allclose(L.command(ctx, Y_D), L.model_command(ctx, Y_D), rtol=0, atol=0)
-    assert L.evidence(c_other)[1] >= 20                # every in-kernel row, no recency cut
+    assert L.evidence(c_other)[1] == L.config.k
     del base
 
 
 def test_t_u3_rows_beyond_the_support_gate_contribute_nothing():
     """Rows just outside the gate (d^2 = (0.155 / 0.05)^2 = 9.61 > 9), interleaved with the
     query's rows and carrying a 50 mm residual, do not enter: the Learner's correction equals
-    g r_hat computed by hand over ALL rows AT the query only."""
+    the mixed law computed by hand over the rows AT the query only (x, y: shrinkage over ALL;
+    Apex: alpha over the k most recent). NB the ``far`` context is a different SITE (x = 0.155),
+    so its rows are beyond the kernel; the pre-FEAT-65 test kept the same Site x and moved only
+    the release position, which f0's site_x term made it pass for the wrong reason (FEAT-65 audit)."""
     def build(with_far):
         L = Learner()
         rng = np.random.default_rng(3)
@@ -142,17 +145,18 @@ def test_t_u3_rows_beyond_the_support_gate_contribute_nothing():
     rb = Lb.command(q, Y_D) - Lb.model_command(q, Y_D)
     # the far rows moved f0's b (they are real rows), so compare the residual layer through the
     # rows it used: same count, and the correction equals alpha r_hat recomputed by hand
-    k = 30
+    k = 30                                    # rows at the query
     cfg = La.config
-    assert La.evidence(q)[1] == Lb.evidence(q)[1] == k
+    assert La.evidence(q)[1] == Lb.evidence(q)[1] == cfg.k
     for L, r in ((La, ra), (Lb, rb)):
         n = L._rows.n
         idx = [i for i in range(n) if L._rows.rel[i][0] == 0.0]
         res = np.array([L._rows.y[i] - L.model.forward(L._rows.u[i], 0.0, 0) for i in idx])
-        # equal weights (all rows at the query): n_eff = k
-        g = k / (k + np.array([cfg.sigma_noise_xy_m, cfg.sigma_noise_xy_m, cfg.sigma_noise_apex_m]) ** 2
-                 / cfg.sigma_prior_m ** 2)
-        corr = g * res.mean(0)
+        # equal weights (all rows at the query): n_eff = k for x, y over ALL 30 rows
+        g = k / (k + cfg.sigma_noise_xy_m ** 2 / cfg.sigma_prior_m ** 2)
+        alpha = cfg.k / (cfg.k + cfg.w0)          # Apex: the 16 most recent, w = 1 each
+        corr = np.array([g * res[:, 0].mean(), g * res[:, 1].mean(),
+                         alpha * res[-cfg.k:, 2].mean()])
         expect = -np.array([corr[0], corr[1], corr[2] / L.model.theta()[0]])
         np.testing.assert_allclose(r, expect, rtol=0, atol=1e-12)
 
@@ -191,12 +195,12 @@ def _opposed(cfg, n):
 
 
 def test_t_u4_a_large_residual_is_held_at_the_cap_and_dense_evidence_reaches_c_max():
-    """At the DEFAULT config (16 rows, w0 2) full evidence gives the cap factor 1 - e^-8 = 0.9997:
+    """At the DEFAULT config (k 16, w0 2) full evidence gives the cap factor 1 - e^-8 = 0.9997:
     the cap reaches c_max (to 0.01 mm), in the direction that opposes the residual."""
     cfg = LearnerConfig()
-    L, ctx = _opposed(cfg, 16)
+    L, ctx = _opposed(cfg, cfg.k)
     sw = L.evidence(ctx)[0]
-    assert sw == pytest.approx(16, rel=1e-12)
+    assert sw == pytest.approx(cfg.k, rel=1e-12)
     f = 1.0 - math.exp(-sw / cfg.w0)
     c_max = np.array([cfg.c_max_xy_m, cfg.c_max_xy_m, cfg.c_max_apex_m])
     dlt = L.command(ctx, Y_D) - L.model_command(ctx, Y_D)
@@ -221,33 +225,67 @@ def _biased(n, bias_x, noise=0.0, seed=0, ctx_kind='carried'):
     return L, ctx
 
 
-def test_feat65_empty_memory_is_exactly_the_identity_and_one_row_moves_u_by_a_bounded_step():
+def test_feat65_empty_memory_is_exactly_the_identity_and_one_row_moves_u_by_the_gain_not_the_cap():
+    """One row, a 20 mm residual: gain g = 1 / (1 + 3.24) = 0.236 gives 4.72 mm; the cap
+    c_max (1 - exp(-1 / w0)) = 30 mm * 0.393 = 11.8 mm would give 11.8 mm only if the residual were
+    larger. At a 20 mm residual the two differ, so the assertion tells the gain from the cap.
+    (At 50 mm both gave 11.8 mm: the FEAT-65 audit's finding.)"""
     L, ctx = Learner(), _ctx()
     y_d = np.array([0.004, -0.003, 0.95])
     assert np.array_equal(L.command(ctx, y_d), y_d)
-    u0 = L.command(ctx, y_d).copy()
     u = np.array([0.0, 0.0, 0.9])
-    L.observe(_exp(ctx, u, _plant(u, ctx.site_xy_m[0], (0.05, 0.0, 0.0))))
-    step = np.abs(L.command(ctx, y_d) - u0)
-    # one row: n_eff 1, g = 1 / (1 + 3.24) = 0.236; the 50 mm residual (less what f0 absorbed)
-    # moves x by at most g * 50 mm = 11.8 mm, never the whole residual
-    assert 0.0 < step[0] < 0.0125
+    L.observe(_exp(ctx, u, _plant(u, ctx.site_xy_m[0], (0.02, 0.0, 0.0))))
+    resid = float(L._rows.y[0, 0] - L.model.forward(u, ctx.site_xy_m[0], 0)[0])                 # the residual f0 left after one row
+    g = 1.0 / (1.0 + L.config.sigma_noise_xy_m ** 2 / L.config.sigma_prior_m ** 2)
+    cap = L.config.c_max_xy_m * (1.0 - math.exp(-1.0 / L.config.w0))
+    step = abs(L.command(ctx, y_d)[0] - L.model_command(ctx, y_d)[0])
+    assert abs(g * resid) < 0.9 * cap                      # the gain, not the cap, is binding
+    assert step == pytest.approx(g * abs(resid), rel=1e-9, abs=1e-9)
 
 
 def test_feat65_no_step_in_u_when_the_support_count_crosses_the_old_k_of_16():
     """The failure the recency cut had: the 17th row displaced the 1st, a jump in r_hat of
-    (r_17 - r_1) / 16. Now every row stays, so consecutive commands differ by a smooth, shrinking
-    amount: the largest step across the old k is no larger than the median step before it."""
+    (r_17 - r_1) / 16. Constructed rows (no RNG): row 1 lands +40 mm off at the query context,
+    every later row 0 (the opposite release kind lands -40 mm so f0's pooled b cancels). Under
+    the old law the command's x jumps at row 17 when row 1 leaves (by 40 mm / 16 * alpha, about
+    2 mm); under the shrinkage x/y law every row stays and the step at row 17 is smaller than
+    the step at row 2 (the smooth 1/n decay)."""
     L, ctx = _trained(n=0)
-    rng = np.random.default_rng(11)
+    other = _ctx(ctx.site_xy_m[0], rel=ctx.release_m, vel=ctx.release_vel_mps,
+                 kind='free_cup' if ctx.release_kind == 'carried' else 'carried')
     u = np.array([0.0, 0.0, 0.9])
-    us = []
+    xs = []
     for n in range(1, 31):
-        L.observe(_exp(ctx, u, _plant(u, ctx.site_xy_m[0], (0.0, 0.0, 0.0)) + rng.normal(0, 0.018, 3)))
-        us.append(L.command(ctx, Y_D)[0])
-    steps = np.abs(np.diff(us))
-    assert steps[15:20].max() <= np.median(steps[:15]) * 1.5 + 1e-9
-    assert np.all(steps[20:] < steps[:5].max())
+        bias = 0.04 if n == 1 else 0.0
+        L.observe(_exp(other, u, _plant(u, ctx.site_xy_m[0], (-bias, 0.0, 0.0))))
+        L.observe(_exp(ctx, u, _plant(u, ctx.site_xy_m[0], (bias, 0.0, 0.0))))
+        xs.append(L.command(ctx, Y_D)[0])
+    steps = np.abs(np.diff(xs))                           # steps[i] = row i+2's change
+    # the old law's recency cut (row 1 dropping out at row 17) made steps[15] a jump of its own
+    # size; the new law's x decays monotonically past row 2
+    assert steps[15] < steps[0]
+    assert np.all(np.diff(steps[1:]) <= 1e-12)
+
+
+def test_feat65_apex_keeps_the_production_most_recent_k_rows_law():
+    """Option 1 (owner, TKT-97): Apex is alpha * the mean of the k = 16 most RECENT support rows,
+    so the first of 17 rows (a 40 mm apex outlier at row 1) leaves the Apex correction at row 17,
+    while the x/y shrinkage keeps every row."""
+    L, ctx = _trained(n=0)
+    other = _ctx(ctx.site_xy_m[0], rel=ctx.release_m, vel=ctx.release_vel_mps,
+                 kind='free_cup' if ctx.release_kind == 'carried' else 'carried')
+    u = np.array([0.0, 0.0, 0.9])
+    cfg = L.config
+    for n in range(1, cfg.k + 2):
+        b = 0.04 if n == 1 else 0.0
+        L.observe(_exp(other, u, _plant(u, ctx.site_xy_m[0], (-b, 0.0, -b))))
+        L.observe(_exp(ctx, u, _plant(u, ctx.site_xy_m[0], (b, 0.0, b))))
+        if n == cfg.k:
+            ap16, x16 = (L._residual(ctx)[0][2], L._residual(ctx)[0][0])
+    ap17, x17 = (L._residual(ctx)[0][2], L._residual(ctx)[0][0])
+    assert abs(ap16) > 1e-3                          # row 1 is in the recent 16
+    assert abs(ap17) < abs(ap16) / 10                # row 1 left at row 17 (f0 leaves ~0.1 mm)
+    assert abs(x17) > 1e-3                           # x keeps it: 40 mm over 17 rows, shrunk
 
 
 def test_feat65_pure_noise_is_shrunk_toward_zero_and_a_real_bias_is_kept():
@@ -279,7 +317,7 @@ def test_feat65_the_gain_uses_the_kish_size_a_lone_near_row_does_not_get_full_tr
     for _ in range(6):
         L2.observe(_exp(near, u, _plant(u, x0 + 0.13, (-0.02, 0.0, 0.0))))
     sw, n = L2.evidence(ctx)
-    assert n == 7
+    assert n == 7                                  # 7 <= k: the recent-k evidence holds them all
     w = np.array([1.0] + [math.exp(-6.76)] * 6)
     assert sw == pytest.approx(w.sum(), rel=1e-9)
     n_eff = w.sum() ** 2 / (w * w).sum()
@@ -291,7 +329,7 @@ def test_feat65_the_gain_uses_the_kish_size_a_lone_near_row_does_not_get_full_tr
     cfg = L2.config
     g = n_eff / (n_eff + cfg.sigma_noise_xy_m ** 2 / cfg.sigma_prior_m ** 2)
     assert L2._residual(ctx)[0][0] == pytest.approx(g * r_hat, rel=1e-9)
-    assert g < 0.25                                # not the old alpha = sw / (sw + w0) = 0.33+
+    assert g < 0.25                                # not the Apex-style alpha = sw / (sw + w0) = 0.33+
 
 
 def test_t_u4_zero_evidence_gives_exactly_the_model_command():
@@ -425,8 +463,8 @@ def test_a_dwell_of_nan_is_unknown_and_accepted():
 
 
 def test_learner_config_rejects_bad_values():
-    for kw in (dict(sigma_prior_m=0.0), dict(sigma_noise_xy_m=-0.01), dict(sigma_noise_apex_m=math.nan),
-                   dict(h_p=0.0), dict(h_v=math.nan), dict(w0=-1.0),
+    for kw in (dict(k=0), dict(k=2.0), dict(sigma_prior_m=0.0), dict(sigma_noise_xy_m=-0.01),
+               dict(sigma_noise_xy_m=math.nan), dict(h_p=0.0), dict(h_v=math.nan), dict(w0=-1.0),
                dict(h_d=0.0), dict(h_d=math.nan), dict(c_max_xy_m=-0.01), dict(c_max_apex_m=math.inf)):
         with pytest.raises(ValueError):
             LearnerConfig(**kw)

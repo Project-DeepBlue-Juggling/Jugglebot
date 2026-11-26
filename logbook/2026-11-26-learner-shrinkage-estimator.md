@@ -14,6 +14,8 @@ files_changed:
 
 # The Learner's shrinkage estimator (FEAT-65, held)
 
+**Superseded in part by 2026-11-27-learner-shrinkage-x-y-only** (owner's TKT-97 answer: shrinkage on x and y only, the production most-recent-16 law back on Apex, `LearnerConfig.k` restored for Apex, `sigma_noise_apex_m` removed, the cap's evidence is the recent-16 `sw` again).
+
 Night Shift 2026-11-26, owner's TKT-94 option 1: build, replay, HOLD for a day Session to re-run the replay on the live Memory and decide. Nothing is merged by the night.
 
 ## What changed

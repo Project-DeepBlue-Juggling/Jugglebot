@@ -2,9 +2,9 @@
 id: FEAT-65
 kind: feature
 title: 'Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows'
-status: in_progress
+status: complete
 created: '2026-11-24'
-updated: '2026-11-25T17:40:29Z'
+updated: '2026-11-26T16:18:22Z'
 owners:
 - night-shift
 priority: medium
@@ -14,7 +14,8 @@ owner: decision
 radius: subsystem
 area: learner
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-27-learner-shrinkage-x-y-only.md
 parent: learner-generalisation
 filed_by: claude
 ---

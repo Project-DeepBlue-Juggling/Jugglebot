@@ -5,11 +5,13 @@ Given a target landing ``y_d`` and a :class:`ThrowContext` (the physics of the T
 commanded), :meth:`Learner.command` returns the command ``u``::
 
     model command   u_m = f0^-1(y_d)                                  (plant_model.PlantModel)
-    residual        r_hat = sum w_i (y_i - f0(u_i)) / sum w_i         (L2, over ALL support rows
+    residual        r_hat = sum w_i (y_i - f0(u_i)) / sum w_i         (L2; x, y over ALL support rows
                     w_i = exp(-d_i^2),                                 with the SAME ball_id and
                     d^2 = |dp|^2/h_p^2 + |dv|^2/h_v^2 (+ ddwell^2/h_d^2)   release_kind)
-    shrinkage       g = n_eff / (n_eff + s_noise^2 / s_prior^2), per axis, n_eff the Kish
+    shrinkage       x, y: g = n_eff / (n_eff + s_noise^2 / s_prior^2), n_eff the Kish
                     effective sample size (sum w)^2 / sum w^2          (FEAT-65, 2026-11-26)
+                    Apex: the production law alpha = sw / (sw + w0) over the k = 16 most
+                    RECENT support rows (FEAT-65 option 1, 2026-11-27)
     command         u = f0^-1(y_d - g r_hat), then |u - u_m| <= c_max (1 - exp(-sum w / w0))
                     per lateral axis and in apex                       (L3, the cap about the MODEL)
 
@@ -129,17 +131,22 @@ class LearnerConfig:
     #: Dwell bandwidth [s]; inf = the term is inert (probe: no effect on the corpus, which cannot
     #: size it; the field stays so a later Sitting can).
     h_d: float = math.inf
-    #: Evidence scale of the CAP only: cap factor 1 - exp(-sum w / w0), ``sum w`` over all in-kernel
-    #: rows (the trust alpha = sum w / (sum w + w0) is retired; the correction's gain is the
-    #: shrinkage ``n_eff / (n_eff + sigma_noise^2 / sigma_prior^2)``). The plan's start value 2.
+    #: Most recent support rows used by the APEX law ONLY (FEAT-65 option 1, owner 2026-11-27):
+    #: the apex correction is the production law, the mean of the ``k`` most RECENT support rows
+    #: scaled by ``alpha = sw / (sw + w0)``. x and y use the shrinkage over ALL in-kernel rows and
+    #: do not read ``k``. The cap's evidence ``sw`` is also the recent-``k`` sum, on every axis (as
+    #: in production). The plan's start value (§ 2.3), NOT the probe's k = 8 (the P1 L1 synthetic
+    #: loop: k 8 / w0 4 leaves a third of a persistent offset for ever).
+    k: int = 16
+    #: Evidence scale: the cap factor 1 - exp(-sw / w0) (all axes) and the Apex trust
+    #: alpha = sw / (sw + w0), ``sw`` over the ``k`` most recent support rows. The plan's start
+    #: value 2. (The x and y gains are the shrinkage ``n_eff / (n_eff + sigma_noise^2 / sigma_prior^2)``.)
     w0: float = 2.0
     #: Per-Throw landing noise sd [m] in x and y (FEAT-65: the scatter the 2026-11-24 review
     #: measured, 17-20 mm sd lateral). A constant, not an in-kernel variance estimate: with few
     #: rows a sample variance is itself noise, and would shrink LESS exactly where shrinkage
     #: matters most.
     sigma_noise_xy_m: float = 0.018
-    #: The same for the Apex [m] (the review's apex rms about the model, 18.5 mm).
-    sigma_noise_apex_m: float = 0.018
     #: Prior sd of the true residual (the bias to be learned) [m], all axes (the Item's 10 mm).
     sigma_prior_m: float = 0.010
     #: Lateral cap about the model command [m] (the node passes ``learner_lateral_authority_mm``;
@@ -157,7 +164,9 @@ class LearnerConfig:
                 raise ValueError('LearnerConfig.%s must be finite and > 0, got %r' % (name, v))
         if not (isinstance(self.h_d, (int, float)) and not math.isnan(self.h_d) and self.h_d > 0):
             raise ValueError('LearnerConfig.h_d must be > 0 (inf = inert), got %r' % (self.h_d,))
-        for name in ('c_max_xy_m', 'c_max_apex_m', 'sigma_noise_xy_m', 'sigma_noise_apex_m'):
+        if not (isinstance(self.k, int) and not isinstance(self.k, bool) and self.k >= 1):
+            raise ValueError('LearnerConfig.k must be an int >= 1, got %r' % (self.k,))
+        for name in ('c_max_xy_m', 'c_max_apex_m', 'sigma_noise_xy_m'):
             v = getattr(self, name)
             if not (isinstance(v, (int, float)) and math.isfinite(v) and v >= 0):
                 raise ValueError('LearnerConfig.%s must be finite and >= 0, got %r' % (name, v))
@@ -250,8 +259,10 @@ class Learner(object):
         return ctx
 
     def _residual(self, ctx: ThrowContext) -> Tuple[np.ndarray, float, int]:
-        """(g * r_hat (3,), sum w, rows used) at ``ctx``: the shrunk kernel mean over ALL in-kernel
-        rows; zeros when the support is empty."""
+        """(correction (3,), sum w, rows used) at ``ctx``. x, y: g * r_hat, the shrunk kernel mean
+        over ALL in-kernel rows. Apex: alpha * r_hat over the ``k`` most RECENT in-kernel rows
+        (the production law). ``sum w`` and rows used are the recent-``k`` ones (the cap's
+        evidence on every axis, as in production). Zeros when the support is empty."""
         cfg = self.config
         R = self._rows
         n = R.n
@@ -270,17 +281,21 @@ class Learner(object):
         idx = np.flatnonzero(d2 <= cfg.support_d2)             # every in-kernel row
         if idx.size == 0:
             return np.zeros(3), 0.0, 0
-        sup = pool[idx]
-        w = np.exp(-d2[idx])
+        sup_all = pool[idx]
+        w_all = np.exp(-d2[idx])
         th = self.model.theta()
         # residual against the CURRENT reported f0 (the probe's th_q), vectorised forward map
-        r = R.y[sup] - self.model.forward_rows(R.u[sup], R.site_x[sup], ctx.ball_id)
+        r_all = R.y[sup_all] - self.model.forward_rows(R.u[sup_all], R.site_x[sup_all], ctx.ball_id)
+        sw_all = float(w_all.sum())
+        r_hat = (w_all[:, None] * r_all).sum(0) / sw_all
+        n_eff = sw_all * sw_all / float((w_all * w_all).sum())      # Kish effective sample size
+        g_xy = n_eff / (n_eff + cfg.sigma_noise_xy_m ** 2 / cfg.sigma_prior_m ** 2)
+        # Apex and the cap's evidence: the production law over the k most RECENT in-kernel rows
+        sup = sup_all[-cfg.k:]
+        w = w_all[-cfg.k:]
         sw = float(w.sum())
-        r_hat = (w[:, None] * r).sum(0) / sw
-        n_eff = sw * sw / float((w * w).sum())               # Kish effective sample size
-        ratio = np.array([cfg.sigma_noise_xy_m, cfg.sigma_noise_xy_m, cfg.sigma_noise_apex_m]) ** 2 \
-            / cfg.sigma_prior_m ** 2
-        corr = (n_eff / (n_eff + ratio)) * r_hat
+        apex = (sw / (sw + cfg.w0)) * float((w * r_all[-cfg.k:, 2]).sum()) / sw
+        corr = np.array([g_xy * r_hat[0], g_xy * r_hat[1], apex])
         if not (np.all(np.isfinite(corr)) and math.isfinite(sw)):
             raise ValueError('the learner residual is not finite (%r) over %d rows; theta %r'
                              % (corr.tolist(), sup.size, th.tolist()))
