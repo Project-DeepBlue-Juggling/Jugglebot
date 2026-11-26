@@ -2,9 +2,9 @@
 id: BUG-148
 kind: bug
 title: Columns P4 nomination returns a different rung under box load (test_columns_at_p4 fails loaded, passes quiet)
-status: inbox
+status: complete
 created: '2026-11-26'
-updated: '2026-11-26T05:49:09Z'
+updated: '2026-11-26T16:03:18Z'
 owners: []
 priority: medium
 effort: s
@@ -14,7 +14,8 @@ radius: subsystem
 diagnosis: unknown
 area: skill-stack
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-27-columns-p4-nomination-load-dependence.md
 filed_by: claude
 ---
 
