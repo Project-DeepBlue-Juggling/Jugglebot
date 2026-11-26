@@ -2,10 +2,11 @@
 id: BUG-140
 kind: bug
 title: Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid
-status: inbox
+status: in_progress
 created: '2026-11-25'
-updated: '2026-11-25T15:59:12Z'
-owners: []
+updated: '2026-11-26T17:23:22Z'
+owners:
+- night-shift
 priority: medium
 effort: s
 hardware: robot
@@ -45,3 +46,18 @@ Night Shift 2026-11-26 drafted these; TKT-96 carries them. Both changes alter fl
 4. Leave both: one Attempt in 200 rebases is known to have ended on a large slide (TILT_PIN, 2026-10-28).
 
 Recommendation: 2 now, since it removes the off-grid sampling and refuses nothing; then decide the cap from the next Sittings' slide table.
+
+## Sitting
+
+- setup: level, armed, bb-fed
+- why: offline, a REST rebased from a seed at rest outside the BUG-95 band now starts on the first Knot at or after the wire read (up to one Knot later than before), and its install line reports the slide in whole Knots. Only flown Attempts show that rebased RESTs still fly with no new refusal, and they give the slide table that the cap decision (TKT-96) waits on.
+- do:
+  - Launch from branch night-shift/2026-11-27-BUG-140 and fly the Sitting's Ball-Butler-fed Attempts as planned; no extra step: the change shows on every REBASED REST, mostly the long pre-tilt RESTs.
+- pass: every skill_node `fresh origin REBASED` line for a non-band REST ends in `; slide N knots on the knot grid, snapped +X s past the wire read` with X under 0.025; no refusal code absent from the 2026-11-20 to 11-26 launches; no TILT_PIN or LIMIT refusal in the REST that follows a REBASED install or in the Catch spliced into its tail.
+- record: the launch log path, the count of REBASED lines (band and non-band), each slide in Knots (max, median, count over 8), and the refusal codes with their counts.
+- minutes: 10
+- branch: night-shift/2026-11-27-BUG-140
+
+## Progress
+
+- 2026-11-27: Night Shift 2026-11-27: held on night-shift/2026-11-27-BUG-140: snap to the Knot grid, no cap (TKT-96 option 2); 2 audit findings open; unblocked by TKT answer, then a Sitting
