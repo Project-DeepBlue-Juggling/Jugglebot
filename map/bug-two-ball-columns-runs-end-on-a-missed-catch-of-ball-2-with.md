@@ -23,8 +23,8 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-22'
-night_skip_note: Next evidence is the 15 mm outward Catch authority trial in its Sitting section.
+night_skip_on: '2026-11-26'
+night_skip_note: 300 Hz replay 2026-11-25 found no separating feature; the 15 mm outward Catch authority trial in its Sitting section decides.
 ---
 
 Two-ball Columns runs of 2026-11-06 mostly end on a smooth missed Catch of Ball 2, not on a collision (BUG-74).

@@ -4,7 +4,7 @@ kind: bug
 title: Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair
 status: backlog
 created: '2026-11-06'
-updated: '2026-11-24T17:09:14Z'
+updated: '2026-11-26T05:49:00Z'
 owners: []
 priority: medium
 effort: s
@@ -18,8 +18,8 @@ links:
 - logbook/2026-11-06-sitting-debrief-2.md
 filed_by: claude
 night_skip: owner-session
-night_skip_on: '2026-11-22'
-night_skip_note: Your TKT-59 answer (a day Session runs the capture and replay first) stands; harmless by design per the 2026-11-07 findings.
+night_skip_on: '2026-11-26'
+night_skip_note: Offline replay steps 1 to 3 ran 2026-11-25 and did not reproduce the refusals; step 4 is your Session's (TKT-59).
 ---
 
 `RESEND-REFUSED INFEASIBLE ... QP infeasible: unbounded dual step` on 29 of 346 Throws at the Sitting of 2026-11-06 15:53, against 2.3 % at the 13:19 Sitting and 0 to 0.4 % in the endurance logs the same afternoon.
@@ -205,3 +205,11 @@ From TKT-59. You chose option 1 and will run it yourself: a day Session runs the
 - 2026-11-10: Night Shift 2026-11-10: the capture is offline (sim records, log rows, replay), then a one-line enable and a Sitting; see TKT-59
 - 2026-11-11: Night Shift 2026-11-11: TKT-59 answered (option 1); your day Session runs the capture and replay, then the night builds the enable for a Sitting; rated robot so the Runbook lists it
 - 2026-11-25: steps 1 to 3 run offline (72 refused turned re-asks, sim records): pass 81.3 to 91.6 percent at 45 deg and 86.0 to 96.2 at 90 deg against a bar of 86.9 and 94.7. A six-case control did not reproduce the flown refusals, so the replay is not validated; step 4 not built. Entry 2026-11-25-late-reaim-replay-tooling.
+- 2026-11-26: Control diagnosis: 57 of 72 columns_turned refusals (2026-11-06 and 11-07) are second re-aims, 0.1 to 0.3 s after an accepted first one. First re-aims were accepted 213 of 228; second re-aims 13 of 70. By angle: 90 deg first 140 of 142, second 7 of 51; 45 deg first 73 of 86, second 6 of 19.
+- 2026-11-26: The 2026-11-25 replay applied each row once to a pristine record and ignored the timing shift, so its control did not discriminate (it accepted 74 % of flown-refused rows) and its lead 0 and lead 1 accept rates are not validated. Chained with the timing shift, on the 45 deg record: flown-refused second re-aims refuse 73 % in replay, flown-accepted accept 89 %.
+- 2026-11-26: Next: give bump_replay.py chaining, the timing shift and per-row angle and Apex (rows come from Apex 1.0 with separation 120 and 0.95 with 125), then re-run lead 0 and 1 with the bump applied after a first re-aim. The re-aim direction is not logged, so four are tried. Prototypes: temp/probes/bug75-raw/.
+- 2026-11-26: Replay tooling on main: bump_replay.py chains a Catch's re-aims with the timing shift and picks the record per row (label_rows.py). Control on second re-aims: flown-refused refuse 77, 86, 77 % in replay; flown-accepted accept 75, 88, 67 %. The 2026-11-25 default-mode command still gives 81.3 %.
+- 2026-11-26: Bump applied after a first re-aim, all three groups (n 108, 80, 96): second re-aims accept 41 to 57 % diagonal and 79 to 83 % axis at emit lead 0, against the 94.7 % axis bar. Emit lead 1 costs 0 to 3.8 points. Refusals are only the 50 mm/s BUMP-LAUNCH bound and LIMIT_VEL in the ramp. Files: temp/probes/late_reaim/chain_bump_*.
+- 2026-11-26: What-if, not proposed: at 80 mm/s the 2026-11-06 90 deg diagonal case goes 56.5 to 81.5 % (one group only). Flown second re-aims are small: median 12 mm, p90 about 20 mm. Options for the owner: enable the bump for second re-aims, send no second re-aim, or revisit the bound. The re-aim direction is not logged; logging it would settle which row applies.
+- 2026-11-26: Re-aim log lines now end in dx and dy (new landing minus installed landing, Robot frame, signed mm) on RESEND, RESEND-REFUSED and RESEND-SKIPPED, not on the BUMP lines. parse_resends.py and label_rows.py read them; bump_replay.py still tries four directions.
+- 2026-11-26: Owner decision: no change to second re-aims for now. Read the logged direction from the next Sitting's launch log first, then choose between the bump for second re-aims, no second re-aim, or a new launch bound.

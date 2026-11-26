@@ -919,7 +919,8 @@ def _measured_release_bias(vel_mm_s: np.ndarray) -> np.ndarray:
     return v
 
 
-_GRAVITY_MMS2 = 9810.0
+#: FEAT-56 (owner 2026-11-26): the generated config's gravity, no longer a typed 9810.
+_GRAVITY_MMS2 = float(hw.GRAVITY_MMPS2)
 
 
 def _plant_landing_bias_release(bias_mm):

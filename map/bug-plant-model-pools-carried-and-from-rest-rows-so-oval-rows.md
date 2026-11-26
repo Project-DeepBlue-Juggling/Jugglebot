@@ -2,25 +2,22 @@
 id: BUG-138
 kind: bug
 title: Plant model pools carried and from-rest rows, so oval rows move the Columns offset
-status: inbox
+status: in_progress
 created: '2026-11-24'
-updated: '2026-11-24T16:53:10Z'
-owners: []
+updated: '2026-11-25T17:40:23Z'
+owners:
+- night-shift
 priority: medium
 effort: m
 hardware: none
-owner: decision
-radius: subsystem
+owner: none
+radius: normative
 diagnosis: hypothesis
 area: learner
 blocked_by: []
 links: []
 parent: learner-generalisation
 filed_by: claude
-night_skip: input-decision
-night_skip_on: '2026-11-25'
-night_skip_note: Builds the split you choose (per-kind model, a kind term, or K shared with per-kind laterals) with a leakage test, then merges if the gate says MERGE.
-night_skip_input: 'Pick option 1-4 in the BUG-138 question ticket: split the plant model by release kind, add a kind term, share K and split the laterals, or defer to E7.'
 ---
 
 The plant model's f0 pools carried and from-rest rows across release kinds, so rows from the oval move the offset applied to Columns. Found in the PWAY-2 review, `logbook/2026-11-24-learner-efficacy-review-and-scatter-decomposition.md`. Plan step E2(b) in `learner-efficacy.md`.
@@ -53,3 +50,7 @@ Night Shift 2026-11-25 drafted these; TKT-93 carries them and its answer re-open
 4. Defer to E7: Memories are siloed per plant, so no live Columns Memory holds oval rows yet.
 
 Recommendation: 3, since K held across Sittings and Sites while the oval's lateral fit differs in slope too.
+
+## Progress
+
+- 2026-11-26: Night Shift 2026-11-26: held on night-shift/2026-11-26-BUG-138: TKT-93 option 3 built (K shared, lateral law per release kind, I-LEARN-1 amended); unblocked by a day Session (2 audit findings, full gate, sim gate, merge) then a rehearsal

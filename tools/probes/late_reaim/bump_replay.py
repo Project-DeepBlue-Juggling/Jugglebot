@@ -169,27 +169,204 @@ def try_bump(rec, t_abs, t_c_abs, delta, limits, geom, lead_s, hold_s):
     return rep.code, rep
 
 
-def raw_reaim(rec, c, t_abs, delta, ds, use_ds):
-    """The live raw re-send: install_segment on ``rec`` with the moved terminal."""
+def moved_terminal(term, delta, ds, use_ds):
+    """``term`` with the landing (and the carried throw's site) moved by the platform-xy ``delta`` and,
+    with ``use_ds``, ``t_land_s`` by ``ds``."""
     import dataclasses
-    from jugglebot.motion.skills import executor as ex
-    term = c['terminal']
     d3 = np.array([delta[0], delta[1], 0.0])
     tt = term.then_throw
     if tt is not None:
         tt = dataclasses.replace(tt, site_mm=np.asarray(tt.site_mm, float) + d3)
-    new = dataclasses.replace(term, landing_mm=np.asarray(term.landing_mm, float) + d3,
-                              t_land_s=float(term.t_land_s) + (ds if use_ds else 0.0),
-                              then_throw=tt)
-    _, res, _ = ex.install_segment(rec, None, ex.CATCH, new, t_abs, cfg=c['cfg'],
-                                   limits=c['limits'], geom=c['geom'],
-                                   reserve_fresh_lead=True)
-    return ('OK' if res.accepted else str(res.code)), res
+    return dataclasses.replace(term, landing_mm=np.asarray(term.landing_mm, float) + d3,
+                               t_land_s=float(term.t_land_s) + (ds if use_ds else 0.0),
+                               then_throw=tt)
+
+
+def raw_install(rec, c, term, t_abs):
+    """The live raw re-send of ``term`` at ``t_abs``: (code, record after, result)."""
+    from jugglebot.motion.skills import executor as ex
+    new_rec, res, _ = ex.install_segment(rec, None, ex.CATCH, term, t_abs, cfg=c['cfg'],
+                                         limits=c['limits'], geom=c['geom'],
+                                         reserve_fresh_lead=True)
+    return ('OK' if res.accepted else str(res.code)), new_rec, res
+
+
+def raw_reaim(rec, c, t_abs, delta, ds, use_ds):
+    """The live raw re-send: install_segment on ``rec`` with the moved terminal."""
+    code, _, res = raw_install(rec, c, moved_terminal(c['terminal'], delta, ds, use_ds), t_abs)
+    return code, res
+
+
+# ---- chained replay (BUG-75, 2026-11-26) ---------------------------------------------------------
+DIRS_DIAG = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+DIRS_AXIS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+
+def group_catches(rows):
+    """Rows (``label_rows.py`` output) grouped per Catch ``(log, run, skill)``, each in logged order."""
+    g = {}
+    for r in rows:
+        g.setdefault((r['log'], r.get('run', 0), r['skill']), []).append(r)
+    return [sorted(v, key=lambda r: (r.get('seq', 0), r['t'])) for v in g.values()]
+
+
+def replay_chain(group, d, base_rec_at, apply_raw, apply_last=None):
+    """One Catch's re-aims in logged order, all in the direction ``d``.
+
+    ``base_rec_at(row)`` = the live record when the first row arrived; ``apply_raw(rec, state, row, d)``
+    = ``(code, new_rec, new_state)`` (state = the committed aim so far, None at the start).  An accepted
+    re-aim hands its record and state to the next row; a REFUSED one leaves both as they were (the robot
+    keeps its previous plan).  With ``apply_last`` the final row is applied through it
+    (``apply_last(rec, state, row, d) -> code``) instead, as the bump would be.  Returns one dict per row:
+    ``code`` and ``chain_ok`` (every earlier row's replay verdict matched its flown verdict, so the
+    record the row saw is the one the robot had).
+    """
+    rec, state, chain_ok, out = None, None, True, []
+    for i, row in enumerate(group):
+        if rec is None:
+            rec = base_rec_at(row)
+        if apply_last is not None and i == len(group) - 1:
+            out.append(dict(code=apply_last(rec, state, row, d), chain_ok=chain_ok))
+            break
+        code, new_rec, new_state = apply_raw(rec, state, row, d)
+        out.append(dict(code=code, chain_ok=chain_ok))
+        if code == 'OK':
+            rec, state = new_rec, new_state
+        chain_ok = chain_ok and ((code == 'OK') == (row['code'] == 'INSTALLED'))
+    return out
+
+
+class RecordSet:
+    """Per-row selection of the sim record matching the row's (angle, Apex, separation) label."""
+
+    def __init__(self, default_path=None, by_label=None):
+        self._paths = dict(by_label or {})
+        self._default = default_path
+        self._cache = {}
+
+    @staticmethod
+    def parse(specs):
+        """``['45:0.95:125=path', ...]`` -> {(45, 0.95, 125.0): path}"""
+        out = {}
+        for sp in specs or []:
+            k, path = sp.split('=', 1)
+            ang, apex, sep = k.split(':')
+            out[(int(ang), float(apex), float(sep))] = path
+        return out
+
+    def key(self, row):
+        return (int(row['ang']), float(row['apex']), float(row['sep'])) if 'ang' in row else None
+
+    def has(self, row):
+        return self.key(row) in self._paths or (not self._paths and self._default is not None)
+
+    def get(self, row):
+        path = self._paths.get(self.key(row), self._default if not self._paths else None)
+        if path is None:
+            raise KeyError('no record for row label %r' % (self.key(row),))
+        if path not in self._cache:
+            with open(path, 'rb') as f:
+                L = pickle.load(f)
+            self._cache[path] = L
+        return self._cache[path]
+
+
+def run_chain_replay(rows, records, max_catches, lead_s, hold_s, dirs, use_ds, bump_last, chain):
+    """Replay ``rows`` (grouped per Catch when ``chain``, else each row alone) on the matching records.
+    Returns a list of case dicts: label, seq, n, flown, code, chain_ok, dir."""
+    groups = group_catches(rows) if chain else [[r] for r in rows]
+    cases = []
+    for grp in groups:
+        if not records.has(grp[0]):
+            continue
+        L = records.get(grp[0])
+        acc = [x for x in L if x['accepted']]
+        for c in [x for x in L if x['kind'] == 'CATCH' and x['accepted']][1:-1][:max_catches]:
+            t_c = c['event_abs_s']
+
+            def base_rec_at(row, acc=acc, c=c):
+                live = [x for x in acc if x['t_now_s'] <= t_c - row['to_land'] - 0.05]
+                return live[-1]['record'] if live else c['record']
+
+            def apply_raw(rec, state, row, d, c=c):
+                term = (state if state is not None else c['terminal'])
+                new = moved_terminal(term, np.array(d, float) * row['mm'], row['ds'], use_ds)
+                code, nrec, _ = raw_install(rec, c, new, t_c - row['to_land'])
+                return code, nrec, new
+
+            def apply_last(rec, state, row, d, c=c):
+                shift = 0.0 if state is None else float(state.t_land_s) - float(c['terminal'].t_land_s)
+                code, _ = try_bump(rec, t_c - row['to_land'], t_c + shift, np.array(d, float) * row['mm'],
+                                   c['limits'], c['geom'], lead_s, hold_s)
+                return code
+
+            for d in dirs:
+                res = replay_chain(grp, d, base_rec_at, apply_raw, apply_last if bump_last else None)
+                pairs = list(zip(grp, res))
+                for row, r in (pairs[-1:] if bump_last else pairs):
+                    cases.append(dict(label=(row['log'], row['ang'], row['apex'], row['sep']), seq=row['seq'],
+                                      n=row['n'], flown=row['code'], rowkey=(row['log'], row.get('run', 0), row['skill'], row['t']), code=r['code'], chain_ok=r['chain_ok'],
+                                      dir=d))
+    return cases
+
+
+def chain_tables(cases):
+    """Text confusion tables: per label, first (seq 1) and later (seq >= 2) re-aims, flown x replay."""
+    import collections
+    out, by = [], collections.defaultdict(list)
+    for c in cases:
+        by[(c['label'], 'first' if c['seq'] == 1 else 'second+')].append(c)
+    for key in sorted(by, key=str):
+        cs = by[key]
+        out.append('%s %s: cases %d' % (key[0], key[1], len(cs)))
+        for fl_name, fl in (('flown accepted', True), ('flown refused', False)):
+            sel = [c for c in cs if (c['flown'] == 'INSTALLED') == fl]
+            for tag, sub in (('chain intact', [c for c in sel if c['chain_ok']]),
+                             ('chain broken (an earlier replay verdict differs from flown)',
+                              [c for c in sel if not c['chain_ok']])):
+                if not sub:
+                    continue
+                mix = collections.Counter(c['code'] for c in sub)
+                ok = mix.get('OK', 0)
+                out.append('  %-15s %-12s n=%4d  replay OK %4d (%5.1f %%)  refused %4d  | %s'
+                           % (fl_name, tag[:12], len(sub), ok, 100.0 * ok / len(sub), len(sub) - ok,
+                              ' '.join('%s=%d' % kv for kv in mix.most_common())))
+        flown_mix = collections.Counter(c['flown'] for c in cs if c['dir'] == cs[0]['dir'])
+        out.append('  flown mix (per row): ' + ' '.join('%s=%d' % kv for kv in flown_mix.most_common()))
+        rowv = collections.defaultdict(list)
+        for c in cs:
+            if c['chain_ok']:
+                rowv[c['rowkey']].append(c)
+        verdicts = collections.Counter(
+            ('flown acc' if v[0]['flown'] == 'INSTALLED' else 'flown ref',
+             'all dirs OK' if all(x['code'] == 'OK' for x in v)
+             else 'no dir OK' if not any(x['code'] == 'OK' for x in v) else 'dirs differ')
+            for v in rowv.values())
+        out.append('  per row, direction-resolved (chain intact): '
+                   + ' | '.join('%s: %s=%d' % (k[0], k[1], n) for k, n in sorted(verdicts.items())))
+    return '\n'.join(out)
+
+
+def _main_chain(a):
+    rows = [r for r in json.load(open(a.rows)) if r['pat'] in a.patterns.split(',') and r['to_land']]
+    if a.bump_last:
+        rows = [r for g in group_catches(rows) if len(g) >= 2 for r in g]
+        a.retarget = True
+    global RETARGET
+    RETARGET = a.retarget
+    recs = RecordSet(a.records, RecordSet.parse(a.record))
+    dirs = DIRS_DIAG if a.dirs == 'diag' else DIRS_AXIS
+    cases = run_chain_replay(rows, recs, a.max_catches, a.lead_knots * 0.025, a.hold_s, dirs, a.raw_ds,
+                             a.bump_last, a.chain)
+    print('mode: chain=%s raw_ds=%s bump_last=%s lead_knots=%d dirs=%s cases=%d'
+          % (a.chain, a.raw_ds, a.bump_last, a.lead_knots, a.dirs, len(cases)))
+    print(chain_tables(cases))
+    return cases
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument('--records', required=True)
+    ap.add_argument('--records', default=None)
     ap.add_argument('--rows', required=True, help='parsed live re-sends (json)')
     ap.add_argument('--patterns', default='columns,columns_1ball_fed')
     ap.add_argument('--lead-knots', type=int, default=5)
@@ -202,20 +379,29 @@ def main(argv=None):
     ap.add_argument('--retarget', action='store_true', help='hold through release and retarget the carried throw by a lateral launch velocity -delta/flight')
     ap.add_argument('--raw', action='store_true', help='control: replay the raw re-send (no bump); see the docstring')
     ap.add_argument('--raw-ds', action='store_true', help='with --raw, also move t_land_s by the row ds')
+    ap.add_argument('--chain', action='store_true', help='with --raw: apply each Catch\'s re-aims in logged order, each on the record the previous accepted one produced (a refused one leaves it); rows need the label_rows.py fields. Use with --raw-ds for the timing shift')
+    ap.add_argument('--bump-last', action='store_true', help='with --chain: apply every re-aim but the last of a Catch raw, the last through the bump (--retarget), on the chained record; only Catches with 2+ re-aims')
+    ap.add_argument('--record', action='append', default=[], metavar='ANG:APEX:SEP=PKL', help='select the record per row label (repeat); without it --records serves every row')
     ap.add_argument('--check', action='store_true', help='print b(t_rel), the landing offset and b(t_end) for the first retarget case')
     ap.add_argument('--no-launch-bound', action='store_true', help='disable the 50 mm/s retarget launch bound (reproduces the pre-decision design row)')
+    ap.add_argument('--launch-bound', type=float, default=None, metavar='MM_S', help='override the retarget launch bound (default the production 50 mm/s); a probe-local what-if, the planner constant is untouched')
     ap.add_argument('--legacy-start', action='store_true', help='ramp from the pre-production continuous t + lead (reproduces the design row) instead of the knot-aligned k_b')
     a = ap.parse_args(argv)
     global LEAD_KNOTS, LAUNCH_BOUND, LEGACY_START
     LEGACY_START = a.legacy_start
     LEAD_KNOTS = a.lead_knots
-    LAUNCH_BOUND = float('inf') if a.no_launch_bound else bump.BUMP_MAX_LAUNCH_LATERAL_MM_S
+    LAUNCH_BOUND = (float('inf') if a.no_launch_bound else a.launch_bound if a.launch_bound is not None
+                    else bump.BUMP_MAX_LAUNCH_LATERAL_MM_S)
     global HOLD_THROUGH
     HOLD_THROUGH = a.hold_through
     global RETARGET
     RETARGET = a.retarget
     if a.check:
         CHECK.append(None)
+    if a.chain or a.record:
+        return _main_chain(a)
+    if not a.records:
+        ap.error('--records is required without --chain/--record')
     L = pickle.load(open(a.records, 'rb'))
     rows = [r for r in json.load(open(a.rows)) if r['pat'] in a.patterns.split(',')
             and r['to_land'] and r['code'] not in ('CATCH_AXIS',)

@@ -29,7 +29,11 @@ active pose (``ACTIVATE_POSITION_REVS`` ≈ 2.19 rev). So:
     for that axis, so a bit left over from an earlier run (the host's cache can
     hold the old frame for a tick after the new ACTIVATE starts) never fails a new
     one. Failing at once, with the reason ``STALL``, beats waiting out the timeout
-    with a de-energised axis.
+    with a de-energised axis. From FW 53 an aborted activate is also failed at
+    once, by outcome: ``RETURNED`` (the firmware lowered the Platform back to Stow
+    and IDLEd the Legs there, or IDLEd them before the rise), ``HELD`` (the
+    firmware holds the Leg Closed-loop, ``DIAG_FLAG_LEG_HELD``) or ``DROPPED``
+    (IDLE above Stow); see ``RETURN_DETECT_REV`` below.
 
 Convention. Both ``ACTIVATE_POSITION_REVS`` and the telemetry ``pos_rev`` are in
 the Jugglebot convention (positive = extension), so the target and the reading
@@ -49,6 +53,7 @@ from typing import Dict, Iterable, List
 # ODrive axis state (DIAGNOSTIC.axis_state). Stable ODrive value; duplicated here
 # to keep this module free of the ROS/codegen import graph (same pattern as
 # homing.py / encoder_search.py).
+AXIS_STATE_IDLE = 1
 AXIS_STATE_CLOSED_LOOP = 8
 
 # DIAGNOSTIC.flags bit2 (can-bridge FW 36, BUG-56): the cold-start ladder's stall
@@ -60,6 +65,15 @@ DIAG_FLAG_ACTIVATE_STALL = 0x4
 # streamed lane / a latched hold IDLEd this axis (only ever the Hand). Mirrors
 # leg_activate.h DIAG_FLAG_LANE_STALL (pinned by the same xref test).
 DIAG_FLAG_LANE_STALL = 0x8
+
+# DIAGNOSTIC.flags bits 4 and 5 (can-bridge FW 53, I-FW-19), additive in the existing
+# flags byte (a host that does not name them masks them off). LEG_HELD: the Leg is held
+# Closed-loop above Stow by an aborted ladder or a refused de-energise (sticky until the
+# next accepted ACTIVATE/DEACTIVATE/HOME of that Leg or an AXIS_ALL CLEAR_ERRORS).
+# RIG_BENCH: the bridge infers the one-Leg bench, where the Stow gate is exempt (set on
+# every axis). Mirror leg_stow_gate.h (pinned by tests/firmware/test_stow_gate_xref.py).
+DIAG_FLAG_LEG_HELD = 0x10
+DIAG_FLAG_RIG_BENCH = 0x20
 
 # The FW 48 lane stall guard's thresholds (canbridge_config.h HAND_LANE_STALL_*,
 # owner decision 2026-11-20), mirrored for the operator's reason line only; the
@@ -96,6 +110,31 @@ DEFAULT_TIMEOUT_S = 20.0
 DEFAULT_POS_TOL_REV = 0.05
 DEFAULT_VEL_TOL_RPS = 0.1
 
+# FW 53 (I-FW-19) abort outcomes, read from the telemetry (the firmware result is
+# not uplinked, fw53-u3 Finding 2):
+#   * a mid-rise abort RETURNS the Platform to Stow under profile and IDLEs the Legs
+#     there; the ladder stays busy up to 10 s more (leg_activate.cpp RETURN). A Leg
+#     whose Closed-loop position falls RETURN_DETECT_REV below the highest it reached
+#     is read as returning, and its budget is extended to RETURN_TIMEOUT_S from that
+#     moment so a late abort's return is never cut by the rise's own timeout;
+#   * a pre-rise abort at Stow IDLEs the Legs at the bottom;
+#   * a frozen rise, or a pre-rise abort from a posed Platform, HOLDS the Legs
+#     Closed-loop with DIAG_FLAG_LEG_HELD.
+# Any axis that reaches IDLE after having been seen Closed-loop in this run, or that
+# shows LEG_HELD (honoured only after a clear bit, as the stall bit), FAILS at once
+# with a reason that names the outcome (REASON_RETURNED / REASON_HELD /
+# REASON_DROPPED prefixes), instead of a generic timeout.
+RETURN_DETECT_REV = 0.10
+RETURN_TIMEOUT_S = 15.0
+# A Leg's last Closed-loop sample before its IDLE lies within this of Stow when the
+# firmware IDLEd it there (its Stow gate needs encoder-confirmed Stow). Same band as
+# DeactivateMonitor's arrival latch (a 20 Hz poll at 2.5 rev/s moves <= 0.125 rev).
+STOW_BAND_REV = 0.15
+STOW_REV = 0.0
+REASON_RETURNED = "RETURNED"
+REASON_HELD = "HELD"
+REASON_DROPPED = "DROPPED"
+
 
 @dataclass(frozen=True)
 class AxisStatus:
@@ -108,12 +147,15 @@ class AxisStatus:
         active_errors: ODrive ``active_errors`` bitmask (``DIAGNOSTIC.active_errors``).
         stalled: ``DIAGNOSTIC.flags & DIAG_FLAG_ACTIVATE_STALL`` (FW 36; always
             False against an older board).
+        held: ``DIAGNOSTIC.flags & DIAG_FLAG_LEG_HELD`` (FW 53; always False
+            against an older board).
     """
     axis_state: int
     pos_rev: float
     vel_rps: float
     active_errors: int = 0
     stalled: bool = False
+    held: bool = False
 
 
 class Phase(str, Enum):
@@ -135,6 +177,12 @@ class _Prog:
     phase: Phase = Phase.ACTIVE
     reason: str = ""
     saw_unstalled: bool = False   # the stall bit is honoured only after a clear one
+    saw_unheld: bool = False      # the HELD bit likewise (FW 53, sticky per Leg)
+    seen_cl: bool = False         # observed Closed-loop in this run
+    max_cl_pos: float = float("-inf")   # highest Closed-loop position this run
+    last_cl_pos: float = float("nan")   # latest Closed-loop position
+    returning: bool = False       # fell RETURN_DETECT_REV below max_cl_pos in CL
+    deadline: float | None = None  # per-axis budget end (extended on a return)
 
 
 class ActivateMonitor:
@@ -174,6 +222,14 @@ class ActivateMonitor:
         self._t_started: float | None = None
 
     @property
+    def deadline_s(self) -> float | None:
+        """The latest per-axis budget end (monotonic s), None before the first
+        step. A caller's own hard deadline must track this: a detected return
+        extends it past ``timeout_s``."""
+        ds = [pr.deadline for pr in self._prog.values() if pr.deadline is not None]
+        return max(ds) if ds else None
+
+    @property
     def done(self) -> bool:
         return all(pr.phase in (Phase.DONE, Phase.FAILED)
                    for pr in self._prog.values())
@@ -198,6 +254,8 @@ class ActivateMonitor:
         """
         if self._t_started is None:
             self._t_started = now_s
+            for pr in self._prog.values():
+                pr.deadline = now_s + self.timeout_s
 
         for axis in self.axes:
             pr = self._prog[axis]
@@ -206,6 +264,16 @@ class ActivateMonitor:
 
             st = status.get(axis)
             if st is not None:
+                if not st.held:
+                    pr.saw_unheld = True
+                elif pr.saw_unheld:
+                    pr.phase = Phase.FAILED
+                    pr.reason = (f"{REASON_HELD}: activate aborted; the can-bridge holds "
+                                 f"this Leg Closed-loop at pos {st.pos_rev:+.3f} rev "
+                                 f"(FW 53 LEG_HELD, target "
+                                 f"{self.targets_rev[axis]:+.3f} rev); the FAULT exit "
+                                 f"lowers the Platform once all six are Closed-loop")
+                    continue
                 if not st.stalled:
                     pr.saw_unstalled = True
                 elif pr.saw_unstalled:
@@ -230,12 +298,31 @@ class ActivateMonitor:
                         and abs(st.vel_rps) <= self.vel_tol_rps):
                     pr.phase = Phase.DONE
                     continue
+                if st.axis_state == AXIS_STATE_CLOSED_LOOP:
+                    pr.seen_cl = True
+                    pr.last_cl_pos = st.pos_rev
+                    if st.pos_rev > pr.max_cl_pos:
+                        pr.max_cl_pos = st.pos_rev
+                    if (not pr.returning
+                            and pr.max_cl_pos - st.pos_rev > RETURN_DETECT_REV):
+                        pr.returning = True
+                        pr.deadline = max(pr.deadline, now_s + RETURN_TIMEOUT_S)
+                elif st.axis_state == AXIS_STATE_IDLE and pr.seen_cl:
+                    pr.phase = Phase.FAILED
+                    pr.reason = self._idle_reason(pr)
+                    continue
 
-            if now_s - self._t_started > self.timeout_s:
+            if now_s > pr.deadline:
                 pr.phase = Phase.FAILED
                 last = "" if st is None else f" (pos {st.pos_rev:+.3f}, vel {st.vel_rps:+.3f})"
-                pr.reason = (f"timed out after {self.timeout_s:.1f}s — did not reach "
-                             f"active pose {self.targets_rev[axis]:+.3f} rev{last}")
+                if pr.returning:
+                    pr.reason = (f"timed out: the activate was aborted and the "
+                                 f"return to Stow did not finish within "
+                                 f"{RETURN_TIMEOUT_S:.0f} s{last}")
+                else:
+                    pr.reason = (f"timed out after {self.timeout_s:.1f}s — did not "
+                                 f"reach active pose {self.targets_rev[axis]:+.3f} "
+                                 f"rev{last}")
 
         res = StepResult()
         for axis in self.axes:
@@ -246,3 +333,18 @@ class ActivateMonitor:
                 res.failed[axis] = pr.reason
         res.done = self.done
         return res
+
+    @staticmethod
+    def _idle_reason(pr: _Prog) -> str:
+        """Name an IDLE seen after Closed-loop: the firmware's return to Stow (or
+        its pre-rise IDLE at Stow), or a drop above Stow (the Leg disarmed itself,
+        or a pre-FW-53 abort)."""
+        last = pr.last_cl_pos
+        if abs(last - STOW_REV) <= STOW_BAND_REV:
+            where = ("mid-rise: the can-bridge returned the Platform to Stow"
+                     if pr.returning else "before the rise")
+            return (f"{REASON_RETURNED}: activate aborted {where} and IDLEd this axis "
+                    f"there (FW 53; last Closed-loop pos {last:+.3f} rev); clear the "
+                    f"cause and retry activate")
+        return (f"{REASON_DROPPED}: dropped to IDLE at {last:+.3f} rev, above Stow, "
+                f"during activate (the drive disarmed itself, or a pre-FW-53 abort)")

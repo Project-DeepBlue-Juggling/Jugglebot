@@ -1,0 +1,990 @@
+schema: 1
+date: '2026-11-27'
+rig: robot
+omitted:
+- item: BUG-111
+  reason: needs the paired emit-lead Sitting on sitting/emit-lead-1 (150 min); not chosen for this Sitting
+- item: BUG-122
+  reason: its fix is still on a held branch and its section names no branch; not chosen for this Sitting
+- item: BUG-58
+  reason: not chosen for this Sitting (40 min, two extra launches)
+- item: BUG-78
+  reason: not chosen for this Sitting
+- item: BUG-89
+  reason: not chosen for this Sitting (40 min, two extra launches)
+- item: FEAT-32
+  reason: not chosen for this Sitting
+- item: FEAT-39
+  reason: not chosen for this Sitting
+- item: FEAT-68
+  reason: not chosen for this Sitting (60 min)
+- item: BUG-144
+  reason: its fix is on a Night Shift branch that this sheet does not build
+- item: BUG-95
+  reason: not chosen for this Sitting
+- item: FEAT-49
+  reason: waits on FEAT-45 rungs B and C
+- item: FEAT-50
+  reason: its WARN is on an unmerged branch; not chosen for this Sitting
+steps:
+- n: 1
+  kind: setup
+  title: Check the checkout is on main and in sync
+  from: []
+  to: []
+  actions:
+  - where: Terminal 2
+    command: cd ~/Desktop/Jugglebot && git fetch && git status -sb && git log --oneline -1
+  - where: Terminal 2
+    command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.zsh && cd ~/Desktop/Jugglebot
+    text: Build main, so the launch runs what the checkout holds.
+  see: '''## main...origin/main'' with nothing ahead or behind. temp/ entries showing as untracked are expected. The build ends ''Summary: 2 packages finished''.'
+  stop_if: The branch is not main, or it is ahead of or behind origin/main. Do not go on; tell a Session.
+  serves: []
+- n: 2
+  kind: run
+  title: 'Launch 1 (main, can-bridge v53): the first powered launch on this firmware'
+  new_launch: true
+  from: []
+  to:
+  - launched
+  - bridge-cycled
+  actions:
+  - where: Hands
+    text: 'Platform down on its stops, Cup empty, Ball Butler off. Power-cycle the can-bridge. Then drive power ON (48 V) and the E-stop button released. Keep a hand near the E-stop button for this whole launch: this firmware has never run with motor power.'
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && source install/setup.zsh && ros2 launch jugglebot jugglebot_launch.py cpu_partition:=false 2>&1 | tee -i ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_1.log
+  - where: Hands
+    text: Wait for Homing to finish before the next step.
+  - where: Terminal 2
+    command: source /opt/ros/foxy/setup.zsh && source ~/Desktop/Jugglebot/ros_ws/install/setup.zsh && cd ~/Desktop/Jugglebot
+    text: 'Terminal 2 for every later command: source it once now.'
+  - where: Terminal 2
+    command: grep -n "BRIDGE_FW_CHECK\|PLATFORM_FW_CHECK" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_1.log
+  - where: Terminal 2
+    command: timeout 5 ros2 topic echo /link_status | grep -A1 -E "legs_held|rig_bench"
+    text: Foxy has no echo --once; the timeout ends it. Each key prints with its value on the next line.
+  - where: Terminal 2
+    command: timeout 3 ros2 topic echo /robot_state | grep pos_estimate | head -7
+    text: 'Seven lines: the six Legs on their stops after Homing, then the Hand (rev).'
+  see: 'BRIDGE_FW_CHECK: OK - can-bridge v53. PLATFORM_FW_CHECK: OK - Platform Teensy v15. homing: 7 axes homed. legs_held reads none and rig_bench reads 0. The first six positions (the Legs) read about -0.10 rev; the seventh is the Hand and is not judged.'
+  stop_if: 'Either firmware check is not OK, fewer than 7 axes homed, rig_bench reads 1, legs_held is not none, or a node dies or logs a start-up error you have not seen before: Ctrl-C the launch and tell a Session. A Leg position below -0.11 rev is a result, not a stop: note it.'
+  record: The bag directory (the newest folder under ~/Desktop/rosbags) and the pos_estimate values printed.
+  serves:
+  - item: FEAT-69
+    do:
+    - 0
+- n: 3
+  kind: run
+  title: 'Level the Platform: the first rise and descent on can-bridge v53'
+  from:
+  - launched
+  - bridge-cycled
+  to:
+  - launched
+  - level
+  - bridge-cycled
+  actions:
+  - where: Hands
+    text: Stand clear of the Platform with a hand on the E-stop button.
+  - where: GUI
+    text: 'State minimap: hold LEVELLING to confirm. The Platform rises to full Active height.'
+  - where: Terminal 2
+    command: grep -n "levelled:" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_1.log
+  see: 'The rise starts a fraction of a second after the hold (the firmware now waits for every Leg to confirm Closed-loop before it moves any). LEVELLING finishes with no Fault and the grep prints one ''levelled: ...'' line.'
+  stop_if: 'A refused or failed rise or descent is the result this step exists to find: note the notice and the launch log text word for word, hold IDLE if the Platform is up and holding, then go to step 8. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session.'
+  serves:
+  - item: FEAT-69
+    do:
+    - 1
+- n: 4
+  kind: run
+  title: Activate (this arms) and hold the Active pose
+  from:
+  - launched
+  - level
+  - bridge-cycled
+  to:
+  - launched
+  - level
+  - armed
+  - bridge-cycled
+  actions:
+  - where: GUI
+    text: 'State minimap: hold ACTIVE:TRAJECTORY to confirm. The launch''s auto_arm arms on entry. Cup empty.'
+  - where: Terminal 2
+    command: timeout 5 ros2 topic echo /link_status | grep -A1 -E "legs_held|rig_bench"
+  see: Mode ACTIVE:TRAJECTORY, Armed, no Fault. legs_held reads none and rig_bench reads 0.
+  stop_if: 'Any refusal or Fault on activation: note the text word for word, hold IDLE if the Platform is up and holding, then go to step 8. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session.'
+  serves:
+  - item: FEAT-69
+    do:
+    - 1
+- n: 5
+  kind: run
+  title: 'Ask for a drive reboot at the Active pose: it must be refused'
+  from:
+  - launched
+  - level
+  - armed
+  - bridge-cycled
+  to:
+  - launched
+  - level
+  - armed
+  - bridge-cycled
+  actions:
+  - where: Terminal 2
+    command: ros2 service call /reboot_odrives std_srvs/srv/Trigger
+    text: One call only. Do not disarm first.
+  see: 'The reply reads success=False and its message starts ''reboot_odrives REFUSED: the robot is Armed''. Nothing moves and the Platform keeps holding the Active pose.'
+  stop_if: 'The reply reads success=True, or any Leg goes limp: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session. This is the failure the firmware exists to prevent.'
+  record: The refusal text.
+  serves:
+  - item: FEAT-69
+    do:
+    - 3
+- n: 6
+  kind: run
+  title: Deactivate, then read the Legs
+  from:
+  - launched
+  - level
+  - armed
+  - bridge-cycled
+  to:
+  - launched
+  - level
+  - bridge-cycled
+  actions:
+  - where: GUI
+    text: 'State minimap: hold IDLE to confirm (safe teardown, disarms). Wait until the Platform is down and the Mode reads IDLE before the reads below.'
+  - where: Terminal 2
+    command: timeout 3 ros2 topic echo /robot_state | grep disarm_reason | head -7
+  - where: Terminal 2
+    command: timeout 3 ros2 topic echo /robot_state | grep current_state | head -7
+    text: 1 is Idle, 8 is Closed-loop.
+  - where: Terminal 2
+    command: timeout 5 ros2 topic echo /link_status | grep -A1 -E "legs_held|rig_bench"
+  see: The Platform descends to Stow under profile and only then do the Legs go Idle. disarm_reason reads 0 on every line, current_state reads 1, legs_held reads none.
+  stop_if: 'A refused or failed deactivate, or a Leg left holding (legs_held names it): note the text, hold IDLE once more; if the Platform stays up, support it and press the E-stop button, then go to step 8. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session.'
+  record: The disarm_reason and current_state values printed, and any Leg named by legs_held.
+  serves:
+  - item: FEAT-69
+    do:
+    - 1
+    - 2
+    reorder: the reboot step asks for its refusal at the Active pose, before this deactivate
+- n: 7
+  kind: run
+  title: 'Ask for the drive reboot again at Stow: it must be accepted (last act of this launch)'
+  from:
+  - launched
+  - level
+  - bridge-cycled
+  to:
+  - launched
+  - bridge-cycled
+  actions:
+  - where: Hands
+    text: Platform down at Stow, Mode IDLE. Do not hold any mode button during this step.
+  - where: Terminal 2
+    command: ros2 service call /reboot_odrives std_srvs/srv/Trigger
+  - where: GUI
+    text: Watch the state minimap for one minute and write down each state it shows.
+  see: The reply reads success=True. The drives reboot, which clears the homed flag and the levelling. The robot may show FAULT, then BOOT, and may start Homing by itself with the Platform down; that is allowed.
+  stop_if: 'The reply is a refusal at Stow: note the text, that is a result. Never hold LEVELLING or ACTIVE after this step in this launch: the robot is no longer homed. If Homing starts, let it finish before step 8.'
+  record: 'The reply text and the states the minimap showed. Type ''pending'' if asked: the engage times are read from the bag at the debrief.'
+  serves:
+  - item: FEAT-69
+    do:
+    - 3
+    pass: true
+- n: 8
+  kind: restore
+  title: End launch 1
+  from:
+  - launched
+  - bridge-cycled
+  to: []
+  actions:
+  - where: GUI
+    text: If the Platform is up, hold IDLE to confirm and wait for Stow. If Homing is running, wait for it to end.
+  - where: Terminal 1
+    text: Ctrl-C the launch and wait for the shell prompt.
+  see: The Platform is at Stow and no Homing is running at the Ctrl-C. The bag closes.
+  stop_if: 'A Fault blocks the teardown: clear it as you usually do before the Ctrl-C. If step 3, 4 or 6 failed, stop the Sitting here and tell a Session: every later step needs a working activate and deactivate.'
+  serves: []
+- n: 9
+  kind: run
+  title: Launch 2 (main)
+  new_launch: true
+  from: []
+  to:
+  - launched
+  actions:
+  - where: Hands
+    text: Cup empty, Ball Butler off. Mocap on and tracking the robot. Drive power ON, E-stop button released.
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && source install/setup.zsh && ros2 launch jugglebot jugglebot_launch.py cpu_partition:=false 2>&1 | tee -i ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_2.log
+  - where: Hands
+    text: Wait for Homing to finish before the next step.
+  - where: Terminal 2
+    command: grep -n "BRIDGE_FW_CHECK\|PLATFORM_FW_CHECK\|Ball tracker up" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_2.log
+  see: 'BRIDGE_FW_CHECK: OK - can-bridge v53. PLATFORM_FW_CHECK: OK - Platform Teensy v15. homing: 7 axes homed. The ''Ball tracker up'' line shows gravity_world_xy=(0.0, 0.0) mm/s^2. The GUI IMU panel reads ''recording''.'
+  stop_if: 'Either firmware check is not OK, fewer than 7 axes homed, or a node dies: Ctrl-C the launch and tell a Session. The tracker line shows a gravity value other than (0.0, 0.0): note it and skip steps 18 and 19.'
+  record: The bag directory (the newest folder under ~/Desktop/rosbags).
+  serves:
+  - item: IDEA-16
+    do:
+    - 0
+- n: 10
+  kind: run
+  title: Level the Platform, then rehearse (nothing moves)
+  from:
+  - launched
+  to:
+  - launched
+  - level
+  actions:
+  - where: GUI
+    text: 'State minimap: hold LEVELLING to confirm. The Platform rises to full Active height.'
+  - where: Terminal 2
+    command: grep -n "levelled:" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_2.log
+  - where: Terminal 2
+    command: 'ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: ''oval_1ball_fed,apex_m=1.00,separation_mm=150.0,dwell_s=0.50''}"'
+    text: One-ball oval at Dwell 0.50 (step 15).
+  - where: Terminal 2
+    command: 'ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: ''oval_1ball_fed,apex_m=1.00,separation_mm=150.0,dwell_s=0.40''}"'
+    text: 'The same oval at Dwell 0.40 (step 16). A refusal here is a result for IDEA-27: write it down and skip steps 16 and 17.'
+  - where: Terminal 2
+    command: 'ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: ''columns,apex_m=0.95,separation_mm=125,dwell_s=0.27''}"'
+    text: Columns (steps 18 and 19).
+  see: 'LEVELLING finishes with no Fault and the grep prints one ''levelled: ...'' line. Each nominate reply reads success: True with no refusal line and nothing moves.'
+  stop_if: 'Any Fault, a refused or failed rise, or the Platform ends visibly not level: hold IDLE, Ctrl-C the launch and tell a Session. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session. A nominate reply with success: False is not a stop: note it word for word and skip the Attempts that use that setting.'
+  serves:
+  - item: IDEA-16
+    do:
+    - 0
+  - item: IDEA-27
+    do:
+    - 0
+- n: 11
+  kind: run
+  title: Lob about 30 single Balls at the Cup (not armed)
+  from:
+  - launched
+  - level
+  to:
+  - launched
+  - level
+  actions:
+  - where: Hands
+    text: Do NOT activate. Cup empty. The Platform stays where the Level left it.
+  - where: Terminal 2
+    command: ros2 param set /ball_tracker_node detect_human_throws true
+  - where: Hands
+    text: From where you would stand to juggle with the robot, lob one Ball at the Cup about 30 times, one Ball in the air at a time, peaking at about 1.8 m or more. Let each Ball land in or beside the Cup and pick it up by hand before the next.
+  - where: Terminal 2
+    command: ros2 param set /ball_tracker_node detect_human_throws false
+  - where: Terminal 2
+    command: ros2 param get /ball_tracker_node detect_human_throws
+  see: Each set prints 'Set parameter successful'. The final read prints False. Nothing on the robot moves.
+  stop_if: 'The final read is not False: send the set again. Anything on the robot moves: press the E-stop button, Ctrl-C the launch and tell a Session.'
+  record: 'Where you stood and the lob count. Type ''pending'' if asked: the replay runs at the debrief.'
+  serves:
+  - item: IDEA-16
+    do:
+    - 1
+    - 2
+    - 3
+    pass: true
+- n: 12
+  kind: run
+  title: Plumb line at two places, and the floor level (not armed)
+  from:
+  - launched
+  - level
+  to:
+  - launched
+  - level
+  actions:
+  - where: Hands
+    text: Hang a weighted line carrying two Mocap markers at least 800 mm apart near the Cup. Wait for the swing to stop, then leave it still for 10 s by the clock and note the clock time (the bag is already recording Mocap).
+  - where: Hands
+    text: 'Move the line about 500 mm away, near Ball Butler, and do the same: still for 10 s, note the clock time.'
+  - where: Hands
+    text: Put a digital level on the floor where the Mocap L-frame was placed and read both axes. Take the line away.
+  see: Both markers of the line show in the Mocap view at each place.
+  stop_if: 'A marker of the line is not tracked: move the line until both are, and note where it ended up. Skip this step if there is no line to hang; steps 18 and 19 can still be flown.'
+  record: The two clock times, the floor level in both axes, and whether Mocap was recalibrated since 2026-11-13.
+  serves:
+  - item: FEAT-27
+    do:
+    - 0
+    - 1
+    - 2
+- n: 13
+  kind: setup
+  title: Activate (this arms) and hold the Active pose
+  from:
+  - launched
+  - level
+  to:
+  - launched
+  - level
+  - armed
+  actions:
+  - where: Hands
+    text: Cup empty, every lobbed Ball picked up, the plumb line taken away.
+  - where: GUI
+    text: 'State minimap: hold ACTIVE:TRAJECTORY to confirm. The launch''s auto_arm arms on entry.'
+  see: Mode ACTIVE:TRAJECTORY, Armed, no Fault.
+  stop_if: 'Any refusal or Fault on activation: note the text, clear it as you usually do; if it will not clear, do the stand-down step of this launch. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do the stand-down step of this launch and go on from the step after it (the next launch re-homes).'
+  serves: []
+- n: 14
+  kind: setup
+  title: Bring up Ball Butler
+  from:
+  - launched
+  - level
+  - armed
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: Hands
+    text: Power Ball Butler, calibrate it as you usually do, and load it. Cup empty. Reach into the Cup only when the Platform holds still in the Active pose.
+  see: Ball Butler powered and holding a ball. Mode still ACTIVE:TRAJECTORY, Armed, no Fault.
+  stop_if: 'Any refusal or Fault: clear it as you usually do; if it will not clear, go to step 20. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do the stand-down step of this launch and go on from the step after it (the next launch re-homes).'
+  serves: []
+- n: 15
+  kind: run
+  title: One oval Attempt at Dwell 0.50 (8 Throws); the IMU upload starts by itself
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: Hands
+    text: Cup empty, Ball Butler loaded. Note the clock time.
+  - where: Terminal 2
+    command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 8}" --feedback'
+    text: The goal holds Terminal 2 until it reports its outcome; Ctrl-C there cancels the Attempt.
+  - where: GUI
+    text: 'IMU panel: ''uploading ...'' when the Attempt ends, then ''recording''. Wait for it.'
+  - where: Hands
+    text: Empty the Cup while the Platform holds still.
+  - where: Terminal 2
+    command: grep -n "Platform IMU upload finished" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_2.log | tail -1
+  see: The outcome reads COMPLETED. The grep line carries a fresh clock time and ends 'complete yes, crc ok'.
+  stop_if: 'An outcome other than COMPLETED: note it word for word; fly the goal once more if the Hand and Platform looked normal. A jerky Platform, a wrong-looking Hand stroke or a Leg base joint moving: Ctrl-C the goal and go to step 20. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do the stand-down step of this launch and go on from the step after it (the next launch re-homes).'
+  record: Attempt start time and caught count. Type 'pending' if asked.
+  serves:
+  - item: BUG-132
+    do:
+    - 0
+  - item: IDEA-25
+    do:
+    - 0
+    pass: true
+- n: 16
+  kind: run
+  title: One oval Attempt at Dwell 0.40 on its own plant (8 Throws)
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: Hands
+    text: Skip this step and step 17 if the Dwell 0.40 rehearsal in step 10 was refused. Load Ball Butler; Cup empty.
+  - where: Terminal 2
+    command: ros2 param set /skill_node plant_id ring-dwell040-2026-11-27
+  - where: Terminal 2
+    command: ros2 param get /skill_node plant_id
+  - where: Terminal 2
+    command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 8}" --feedback'
+  - where: GUI
+    text: 'IMU panel: wait for ''recording''.'
+  - where: Hands
+    text: Empty the Cup while the Platform holds still.
+  see: The read-back prints ring-dwell040-2026-11-27. The Attempt reports an outcome and the IMU panel returns to 'recording'.
+  stop_if: 'The read-back is not ring-dwell040-2026-11-27: do not fly; go to step 17. A jerky Platform or a Leg base joint moving: Ctrl-C the goal and go to step 17. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do the stand-down step of this launch and go on from the step after it (the next launch re-homes).'
+  record: The caught count. The upload line is in the launch log.
+  serves:
+  - item: IDEA-27
+    do:
+    - 1
+    - 2
+    pass: true
+- n: 17
+  kind: restore
+  title: Put the plant back
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: GUI
+    text: 'IMU panel: if it reads ''uploading'', wait for ''recording'' first.'
+  - where: Terminal 2
+    command: ros2 param set /skill_node plant_id jugglebot
+  - where: Terminal 2
+    command: ros2 param get /skill_node plant_id
+  see: plant_id reads jugglebot.
+  stop_if: 'It does not read jugglebot: send the set again; if it still does not, go to step 20 (every launch starts at jugglebot) and skip steps 18 and 19.'
+  serves:
+  - item: IDEA-27
+    do:
+    - 3
+- n: 18
+  kind: run
+  title: 'Columns, gravity vector off: one Attempt'
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: Hands
+    text: 'Fly this whether or not step 12 was done: the lines are judged at the debrief. Load Ball Butler for Columns as you usually do. Cup empty.'
+  - where: GUI
+    text: 'Juggle panel: Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21. Send it.'
+  - where: Hands
+    text: When the Attempt has ended, empty the Cup while the Platform holds still.
+  see: The Attempt runs as Columns has on recent Sittings.
+  stop_if: 'A jerky Platform or a Leg base joint moving: cancel the goal and go to step 20. A short Attempt is not a stop: note the caught count. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do the stand-down step of this launch and go on from the step after it (the next launch re-homes).'
+  record: Caught of thrown and the end code.
+  serves:
+  - item: FEAT-27
+    do:
+    - 3
+- n: 19
+  kind: run
+  title: 'Columns, gravity vector on: at least 40 Throws'
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: Terminal 2
+    command: ros2 param set /ball_tracker_node gravity_world_xy_mmps2 "[43.0, 83.0]"
+    text: Between Attempts only. Note the clock time.
+  - where: Terminal 2
+    command: grep -n "gravity_world_xy_mmps2 ->" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_2.log | tail -1
+  - where: GUI
+    text: 'Juggle panel: Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21. Fly Attempts until at least 40 Throws have been made with the vector on (two full Attempts, or more short ones). Keep the Memory: do not change plant_id. Before each Attempt: IMU panel reads recording, Cup empty, Ball Butler loaded as for step 18.'
+  see: The set prints 'Set parameter successful' and the grep line reads 'gravity_world_xy_mmps2 -> (43.0, 83.0)'. Catches are no worse than in step 18.
+  stop_if: 'The set is refused: note the text and go to step 20. The landing error cannot be read live, so the vector stays on until the launch ends. Catches are clearly worse than in step 18 after two Attempts: stop flying and go to step 20 (the next launch starts with the vector off again). After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do the stand-down step of this launch and go on from the step after it (the next launch re-homes).'
+  record: 'The time of the param switch, caught of thrown per Attempt. Type ''pending'' if asked: the landing error and the re-aim counts are computed at the debrief.'
+  serves:
+  - item: FEAT-27
+    do:
+    - 4
+    - 5
+    pass: true
+- n: 20
+  kind: restore
+  title: Stand down launch 2
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to: []
+  actions:
+  - where: GUI
+    text: 'State minimap: hold IDLE to confirm (safe teardown, disarms). If an IMU upload is still running, Deactivate always goes through and aborts it.'
+  - where: Terminal 1
+    text: Ctrl-C the launch and wait for the shell prompt.
+  - where: Hands
+    text: 'Empty the Cup. Leave Ball Butler powered: launches 3 to 5 use it.'
+  see: The Platform is at Stow and every axis Idle before the Ctrl-C. The bag closes. The gravity vector is off again at the next launch.
+  stop_if: 'A Fault blocks the teardown: clear it as you usually do before the Ctrl-C. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session.'
+  serves: []
+- n: 21
+  kind: setup
+  title: Switch to the warm-start branch and build
+  from: []
+  to: []
+  actions:
+  - where: Terminal 2
+    command: cd ~/Desktop/Jugglebot && git checkout offline/bug32-warm && git status -sb && git log --oneline -1
+    text: Launch down. The branch is local to this checkout; there is nothing to fetch.
+  - where: Terminal 2
+    command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.zsh && cd ~/Desktop/Jugglebot
+  see: 'git prints ''Switched to branch offline/bug32-warm'' and the log line starts 9d673052. The build ends ''Summary: 2 packages finished''.'
+  stop_if: 'The checkout is refused, the log line starts with another hash, or the build fails: run ''cd ~/Desktop/Jugglebot && git checkout main'', repeat the build line, note it for the debrief and go on at step 32.'
+  serves: []
+- n: 22
+  kind: run
+  title: Launch 3 (warm-start branch, cpu_partition:=false)
+  new_launch: true
+  from: []
+  to:
+  - launched
+  actions:
+  - where: Hands
+    text: Cup empty. Drive power ON, E-stop button released.
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && source install/setup.zsh && ros2 launch jugglebot jugglebot_launch.py cpu_partition:=false 2>&1 | tee -i ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_3.log
+  - where: Hands
+    text: Wait for Homing to finish before the next step.
+  - where: Terminal 2
+    command: grep -n "BRIDGE_FW_CHECK\|PLATFORM_FW_CHECK" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_3.log
+  see: 'BRIDGE_FW_CHECK: OK - can-bridge v53. PLATFORM_FW_CHECK: OK - Platform Teensy v15. homing: 7 axes homed.'
+  stop_if: 'Either firmware check is not OK, fewer than 7 axes homed, or a node dies: Ctrl-C the launch, go to step 39 and tell a Session.'
+  record: The bag directory.
+  serves:
+  - item: BUG-32
+    do:
+    - 0
+- n: 23
+  kind: setup
+  title: Level the Platform, then rehearse (nothing moves)
+  from:
+  - launched
+  to:
+  - launched
+  - level
+  actions:
+  - where: GUI
+    text: 'State minimap: hold LEVELLING to confirm. The Platform rises to full Active height.'
+  - where: Terminal 2
+    command: grep -n "levelled:" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_3.log
+  - where: Terminal 2
+    command: 'ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: ''oval_1ball_fed,apex_m=1.00,separation_mm=150.0,dwell_s=0.50''}"'
+    text: The oval flown in this launch.
+  see: 'LEVELLING finishes with no Fault and the grep prints one ''levelled: ...'' line. Each nominate reply reads success: True with no refusal line and nothing moves.'
+  stop_if: 'Any Fault, a refused or failed rise, or the Platform ends visibly not level: hold IDLE, Ctrl-C the launch and tell a Session. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session. A nominate reply with success: False is not a stop: note it word for word and skip the Attempts that use that setting.'
+  serves: []
+- n: 24
+  kind: setup
+  title: Activate (this arms) and load Ball Butler
+  from:
+  - launched
+  - level
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: GUI
+    text: 'State minimap: hold ACTIVE:TRAJECTORY to confirm. The launch''s auto_arm arms on entry.'
+  - where: Hands
+    text: Load Ball Butler (it is still powered; calibrate only if you usually would after this long). Cup empty.
+  see: Mode ACTIVE:TRAJECTORY, Armed, no Fault. Ball Butler powered and holding a ball.
+  stop_if: 'Any refusal or Fault on activation: note the text, clear it as you usually do; if it will not clear, do the stand-down step of this launch. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do the stand-down step of this launch and go on from the step after it (the next launch re-homes).'
+  serves: []
+- n: 25
+  kind: run
+  title: One 32-cycle oval Attempt, cpu_partition off
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: Hands
+    text: Cup empty, Ball Butler loaded.
+  - where: Terminal 2
+    command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 32}" --feedback'
+  - where: GUI
+    text: 'IMU panel: wait for ''recording'' after the Attempt ends.'
+  - where: Hands
+    text: Empty the Cup while the Platform holds still. If the Attempt ended with fewer than 20 Catches, load Ball Butler and send the same goal once more.
+  see: An Attempt with at least 20 Catches, flying as the oval did in step 15.
+  stop_if: 'A refusal you have not seen on main (note the code word for word), a jerky Platform or a Leg base joint moving: Ctrl-C the goal and go to the next step. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do the stand-down step of this launch and go on from the step after it (the next launch re-homes).'
+  record: 'Caught count per Attempt. Type ''pending'' if asked: the solve times are read from the launch log at the debrief.'
+  serves:
+  - item: BUG-32
+    do:
+    - 0
+- n: 26
+  kind: restore
+  title: Stand down launch 3
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to: []
+  actions:
+  - where: GUI
+    text: 'State minimap: hold IDLE to confirm (safe teardown, disarms). If an IMU upload is still running, Deactivate always goes through and aborts it.'
+  - where: Terminal 1
+    text: Ctrl-C the launch and wait for the shell prompt.
+  - where: Hands
+    text: Empty the Cup. Leave Ball Butler powered.
+  see: The Platform is at Stow and every axis Idle before the Ctrl-C. The bag closes.
+  stop_if: 'A Fault blocks the teardown: clear it as you usually do before the Ctrl-C. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session.'
+  serves: []
+- n: 27
+  kind: run
+  title: Launch 4 (warm-start branch, cpu_partition:=true)
+  new_launch: true
+  from: []
+  to:
+  - launched
+  actions:
+  - where: Hands
+    text: Cup empty. Drive power ON, E-stop button released.
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && source install/setup.zsh && ros2 launch jugglebot jugglebot_launch.py cpu_partition:=true 2>&1 | tee -i ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_4.log
+  - where: Hands
+    text: Wait for Homing to finish before the next step.
+  - where: Terminal 2
+    command: grep -n "BRIDGE_FW_CHECK\|PLATFORM_FW_CHECK" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_4.log
+  see: 'BRIDGE_FW_CHECK: OK - can-bridge v53. PLATFORM_FW_CHECK: OK - Platform Teensy v15. homing: 7 axes homed.'
+  stop_if: 'Either firmware check is not OK, fewer than 7 axes homed, or a node dies: Ctrl-C the launch, go to step 39 and tell a Session.'
+  record: The bag directory.
+  serves:
+  - item: BUG-32
+    do:
+    - 1
+- n: 28
+  kind: setup
+  title: Level the Platform, then rehearse (nothing moves)
+  from:
+  - launched
+  to:
+  - launched
+  - level
+  actions:
+  - where: GUI
+    text: 'State minimap: hold LEVELLING to confirm. The Platform rises to full Active height.'
+  - where: Terminal 2
+    command: grep -n "levelled:" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_4.log
+  - where: Terminal 2
+    command: 'ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: ''oval_1ball_fed,apex_m=1.00,separation_mm=150.0,dwell_s=0.50''}"'
+    text: The oval flown in this launch.
+  see: 'LEVELLING finishes with no Fault and the grep prints one ''levelled: ...'' line. Each nominate reply reads success: True with no refusal line and nothing moves.'
+  stop_if: 'Any Fault, a refused or failed rise, or the Platform ends visibly not level: hold IDLE, Ctrl-C the launch and tell a Session. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session. A nominate reply with success: False is not a stop: note it word for word and skip the Attempts that use that setting.'
+  serves: []
+- n: 29
+  kind: setup
+  title: Activate (this arms) and load Ball Butler
+  from:
+  - launched
+  - level
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: GUI
+    text: 'State minimap: hold ACTIVE:TRAJECTORY to confirm. The launch''s auto_arm arms on entry.'
+  - where: Hands
+    text: Load Ball Butler (it is still powered; calibrate only if you usually would after this long). Cup empty.
+  see: Mode ACTIVE:TRAJECTORY, Armed, no Fault. Ball Butler powered and holding a ball.
+  stop_if: 'Any refusal or Fault on activation: note the text, clear it as you usually do; if it will not clear, do the stand-down step of this launch. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do the stand-down step of this launch and go on from the step after it (the next launch re-homes).'
+  serves: []
+- n: 30
+  kind: run
+  title: One 32-cycle oval Attempt, cpu_partition on
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  actions:
+  - where: Hands
+    text: Cup empty, Ball Butler loaded.
+  - where: Terminal 2
+    command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 32}" --feedback'
+  - where: GUI
+    text: 'IMU panel: wait for ''recording'' after the Attempt ends.'
+  - where: Hands
+    text: Empty the Cup while the Platform holds still. If the Attempt ended with fewer than 20 Catches, load Ball Butler and send the same goal once more.
+  see: An Attempt with at least 20 Catches, flying as the oval did in step 15.
+  stop_if: 'A refusal you have not seen on main (note the code word for word), a jerky Platform or a Leg base joint moving: Ctrl-C the goal and go to the next step. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do the stand-down step of this launch and go on from the step after it (the next launch re-homes).'
+  record: 'Caught count per Attempt. Type ''pending'' if asked: the solve times are read from the launch log at the debrief.'
+  serves:
+  - item: BUG-32
+    do:
+    - 1
+    pass: true
+- n: 31
+  kind: restore
+  title: Stand down launch 4
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  to: []
+  actions:
+  - where: GUI
+    text: 'State minimap: hold IDLE to confirm (safe teardown, disarms). If an IMU upload is still running, Deactivate always goes through and aborts it.'
+  - where: Terminal 1
+    text: Ctrl-C the launch and wait for the shell prompt.
+  - where: Hands
+    text: Empty the Cup. Unload Ball Butler and leave it powered.
+  see: The Platform is at Stow and every axis Idle before the Ctrl-C. The bag closes.
+  stop_if: 'A Fault blocks the teardown: clear it as you usually do before the Ctrl-C. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session.'
+  serves: []
+- n: 32
+  kind: setup
+  title: Switch both checkouts to the Ball Butler FW 10 branches and build
+  from: []
+  to: []
+  actions:
+  - where: Terminal 2
+    command: cd ~/Desktop/Jugglebot && git checkout offline/bb-uptime && git status -sb && git log --oneline -1
+    text: Launch down. This branch does not carry the warm start; that is intended.
+  - where: Terminal 2
+    command: git -C ~/Desktop/BallButler status -sb
+    text: 'Read it before the next line: it must show main with no modified files.'
+  - where: Terminal 2
+    command: git -C ~/Desktop/BallButler checkout offline/bug133-flexcan && git -C ~/Desktop/BallButler log --oneline -1
+  - where: Terminal 2
+    command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.zsh && cd ~/Desktop/Jugglebot
+  see: 'Jugglebot: ''Switched to branch offline/bb-uptime'', log line starts de243bd9. BallButler: clean before the switch, then the log line starts 5128a50. The build ends ''Summary: 2 packages finished''.'
+  stop_if: 'Either checkout is refused or shows another hash, the BallButler tree is not clean, or the build fails: go to step 39 and tell a Session. Do not flash.'
+  serves:
+  - item: BUG-133
+    do:
+    - 0
+- n: 33
+  kind: run
+  title: Flash Ball Butler FW 10 over CAN
+  from: []
+  to: []
+  actions:
+  - where: Hands
+    text: Launch down. Ball Butler powered and at rest, unloaded. The can-bridge powered.
+  - where: Terminal 3
+    command: source ~/Desktop/PDJ_venv/venv/bin/activate
+    text: A new terminal, for the flash only.
+  - where: Terminal 3
+    command: cd ~/Desktop/BallButler/ball_butler_main
+  - where: Terminal 3
+    command: pio run -e teensy40_can -t upload
+    text: On its own line. It builds, then sends the image over CAN.
+  - where: Terminal 3
+    command: sha256sum .pio/build/teensy40_can/firmware.hex
+  see: 'The upload ends with a line ''fw-update: ... FW version: 9 -> 10'' and pio prints SUCCESS. The sha256 starts e49156f1 and ends cff89ffe (the build tested on 2026-11-27).'
+  stop_if: 'The build fails, the tool reports an error, or the version line does not end in 10: do not retry more than once. Note the text, go to step 39 and tell a Session; Ball Butler keeps whatever version it reports.'
+  record: The sha256 printed and the version line.
+  serves:
+  - item: BUG-133
+    do:
+    - 1
+- n: 34
+  kind: run
+  title: Launch 5 (Ball Butler FW 10 branch)
+  new_launch: true
+  from: []
+  to:
+  - launched
+  - bridge-cycled
+  actions:
+  - where: Hands
+    text: Power-cycle the can-bridge. Do NOT power-cycle Ball Butler from here to the end of step 37. Cup empty. Drive power ON, E-stop button released.
+  - where: Terminal 1
+    command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && source install/setup.zsh && ros2 launch jugglebot jugglebot_launch.py cpu_partition:=false 2>&1 | tee -i ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_5.log
+  - where: Hands
+    text: Wait for Homing to finish before the next step.
+  - where: Terminal 2
+    command: grep -n "BRIDGE_FW_CHECK\|PLATFORM_FW_CHECK\|BB_FW_CHECK\|BB_STATUS" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_5.log
+  - where: Terminal 2
+    command: timeout 5 ros2 topic echo /link_status | grep -A1 "bb_"
+  see: 'BRIDGE_FW_CHECK: OK - can-bridge v53. BB_FW_CHECK: OK - Ball Butler Teensy v10. One ''BB_STATUS: first frame'' line. On /link_status bb_fw_version reads 10, bb_uptime_s is a number that rises, bb_rx_ring_leak_max reads 0.'
+  stop_if: 'bb_uptime_s reads ''absent'' or there is no BB_STATUS line: Ball Butler is not sending its status frame; note it, Ctrl-C the launch and go to step 39. A bridge or Platform firmware check not OK, or fewer than 7 axes homed: Ctrl-C the launch and tell a Session.'
+  record: The bag directory, the BB_STATUS first-frame line and the bb_uptime_s value with its clock time.
+  serves:
+  - item: BUG-133
+    do:
+    - 2
+- n: 35
+  kind: setup
+  title: Level the Platform, then rehearse (nothing moves)
+  from:
+  - launched
+  - bridge-cycled
+  to:
+  - launched
+  - level
+  - bridge-cycled
+  actions:
+  - where: GUI
+    text: 'State minimap: hold LEVELLING to confirm. The Platform rises to full Active height.'
+  - where: Terminal 2
+    command: grep -n "levelled:" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-27_5.log
+  - where: Terminal 2
+    command: 'ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: ''oval_1ball_fed,apex_m=1.00,separation_mm=150.0,dwell_s=0.50''}"'
+    text: The oval flown in this launch.
+  see: 'LEVELLING finishes with no Fault and the grep prints one ''levelled: ...'' line. Each nominate reply reads success: True with no refusal line and nothing moves.'
+  stop_if: 'Any Fault, a refused or failed rise, or the Platform ends visibly not level: hold IDLE, Ctrl-C the launch and tell a Session. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session. A nominate reply with success: False is not a stop: note it word for word and skip the Attempts that use that setting.'
+  serves: []
+- n: 36
+  kind: setup
+  title: Activate (this arms) and load Ball Butler
+  from:
+  - launched
+  - level
+  - bridge-cycled
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  - bridge-cycled
+  actions:
+  - where: GUI
+    text: 'State minimap: hold ACTIVE:TRAJECTORY to confirm. The launch''s auto_arm arms on entry.'
+  - where: Hands
+    text: Load Ball Butler without power-cycling it; calibrate from the GUI if you usually would. Cup empty.
+  see: Mode ACTIVE:TRAJECTORY, Armed, no Fault. Ball Butler powered and holding a ball.
+  stop_if: 'Any refusal or Fault on activation: note the text, clear it as you usually do; if it will not clear, do the stand-down step of this launch. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do the stand-down step of this launch and go on from the step after it (the next launch re-homes).'
+  serves: []
+- n: 37
+  kind: run
+  title: 'Feeds on FW 10: five short ovals, two minutes at rest, one more'
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  - bridge-cycled
+  to:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  - bridge-cycled
+  actions:
+  - where: Terminal 2
+    command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 8}" --feedback'
+    text: 'Send this five times, one Feed each. Before every send: IMU panel reads recording, Cup empty, Ball Butler loaded.'
+  - where: Hands
+    text: 'After the fifth: empty the Cup, load Ball Butler, then leave it untouched for 2 minutes by the clock. Note the clock time.'
+  - where: Terminal 2
+    command: 'ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.50, num_cycles: 8}" --feedback'
+    text: One more Attempt after the rest, Cup empty.
+  - where: Terminal 2
+    command: timeout 5 ros2 topic echo /link_status | grep -A1 "bb_"
+  - where: Hands
+    text: Empty the Cup while the Platform holds still.
+  see: Each Feed lands in the Cup as it did before the flash. bb_rx_ring_leak_max still reads 0 and bb_uptime_s is larger than the value noted in step 34 by about the time that has passed.
+  stop_if: 'A Feed that misses the Cup by more than usual twice in a row, or a ''BB_STATUS: Ball Butler RX ring leak'' warning: stop the Feeds, note it, go to step 38. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): stop flying, do the stand-down step of this launch and go on from the step after it (the next launch re-homes).'
+  record: 'Feeds caught of fed, the start time of the 2 minutes, and the bb_ values printed. Type ''pending'' if asked: the ring and timing numbers are computed at the debrief.'
+  serves:
+  - item: BUG-133
+    do:
+    - 3
+    pass: true
+- n: 38
+  kind: restore
+  title: Stand down launch 5
+  from:
+  - launched
+  - level
+  - armed
+  - bb-fed
+  - bridge-cycled
+  to: []
+  actions:
+  - where: GUI
+    text: 'State minimap: hold IDLE to confirm (safe teardown, disarms). If an IMU upload is still running, Deactivate always goes through and aborts it.'
+  - where: Terminal 1
+    text: Ctrl-C the launch and wait for the shell prompt.
+  - where: Hands
+    text: Empty the Cup. Unload and power down Ball Butler. Leave the Platform Teensy and the can-bridge powered for step 40; drive power may stay on.
+  see: The Platform is at Stow and every axis Idle before the Ctrl-C. The bag closes.
+  stop_if: 'A Fault blocks the teardown: clear it as you usually do before the Ctrl-C. FW 53 never makes a Leg Idle above Stow. If a Leg goes limp or the Platform tilts or sags while it is up: support the Platform and press the E-stop button, then Ctrl-C the launch and tell a Session.'
+  serves: []
+- n: 39
+  kind: restore
+  title: Put both checkouts back on main and build
+  from: []
+  to: []
+  actions:
+  - where: Terminal 2
+    command: cd ~/Desktop/Jugglebot && git checkout main && git status -sb && git log --oneline -1
+  - where: Terminal 2
+    command: git -C ~/Desktop/BallButler checkout main && git -C ~/Desktop/BallButler status -sb
+    text: Run this even if step 32 was skipped; it then prints that it is already on main.
+  - where: Terminal 2
+    command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.zsh && cd ~/Desktop/Jugglebot
+  see: 'Both print main. The build ends ''Summary: 2 packages finished''.'
+  stop_if: 'A checkout is refused: do not force it; tell a Session. If Ball Butler was flashed, main will log ''BB_FW_CHECK: SKEW'' at its next launch until the debrief merges the branches; it is a warning only and refuses nothing.'
+  serves: []
+- n: 40
+  kind: run
+  title: Platform link probe (launch stopped)
+  from: []
+  to: []
+  actions:
+  - where: Hands
+    text: Launch stopped, Platform Teensy and can-bridge still powered.
+  - where: Terminal 3
+    command: source ~/Desktop/PDJ_venv/venv/bin/activate && cd ~/Desktop/Jugglebot
+    text: Terminal 3 again, or any terminal with no launch in it.
+  - where: Terminal 3
+    command: python tools/probes/platform_rtt_probe.py
+  see: The probe prints one summary line and exits without an error (floor excess at most 5 ms).
+  stop_if: 'The probe reports an excess above 5 ms or cannot reach the board: note the line; nothing else to do here.'
+  record: 'The probe''s printed line. Type ''pending'' if asked: the capture header is read at the debrief.'
+  serves:
+  - item: BUG-132
+    do:
+    - 1
+    pass: true
+    setup_waived: the Item runs this probe with the launch stopped, after the Attempt of step 15
+- n: 41
+  kind: restore
+  title: Power down and close out
+  from: []
+  to: []
+  actions:
+  - where: Hands
+    text: Drive power off. Cup empty, Ball Butler off.
+  - where: Claude Session
+    text: In a Session in the live checkout, run /sitting-debrief 2026-11-27. Tell it which steps were skipped and whether Ball Butler was flashed.
+  see: The debrief starts its inventory.
+  stop_if: Nothing here stops anything.
+  serves: []

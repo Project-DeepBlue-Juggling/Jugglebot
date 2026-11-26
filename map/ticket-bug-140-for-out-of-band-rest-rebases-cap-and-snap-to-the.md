@@ -2,9 +2,9 @@
 id: TKT-96
 kind: ticket
 title: 'BUG-140: for out-of-band REST rebases, cap and snap to the Knot grid, snap only, cap only at a bound you name, or leave both?'
-status: open
+status: complete
 created: '2026-11-26'
-updated: '2026-11-25T15:59:25Z'
+updated: '2026-11-25T21:20:28Z'
 owners: []
 priority: medium
 effort: xs
@@ -32,3 +32,7 @@ A fresh REST outside the BUG-95 band still rebases with no cap (30 of 185 logged
 1, 2 or 3: the next night builds it with tests (grid origin; cap and its refusal) on a branch, writes the Sitting section, and holds it for a Sitting. 4: the Item is closed as accepted.
 
 Recommendation: 2 now, then decide the cap from the next Sittings' slide table.
+
+## Answer
+
+I agree with your recommendation; go with option 2 with a decision of the cap made based on the next Sittings' slide table.

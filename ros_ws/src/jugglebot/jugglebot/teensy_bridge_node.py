@@ -151,6 +151,8 @@ from teensy_link.homing import (
 )
 from teensy_link.activate import (
     ActivateMonitor, AxisStatus as ActivateAxisStatus,
+    DIAG_FLAG_LEG_HELD, DIAG_FLAG_RIG_BENCH,
+    REASON_HELD as ACTIVATE_REASON_HELD, REASON_RETURNED as ACTIVATE_REASON_RETURNED,
 )
 from teensy_link.deactivate import (
     DeactivateMonitor, AxisStatus as DeactivateAxisStatus,
@@ -876,6 +878,12 @@ _SP_DROP_WINDOW_S = 1.0         # a :5557 drain drop this recent is named by the
 _DN_FW_COUNTERS = ('dn_rx_setpoints', 'dn_queue_dropped', 'dn_seq_gaps',
                    'dn_crc_errors', 'sched_frames', 'sp_seq_drops',
                    'sp_no_hand', 'sp_no_sched')
+# BUG-99 row 2: promotion-continuity fields of HeartbeatT2J (units in the
+# /link_status build comment); the max fields are floats, the over fields u32.
+_PROMO_MAX_FIELDS = ('hand_promo_dp_max', 'hand_promo_dv_max',
+                     'hand_promo_da_max', 'leg_promo_dp_max',
+                     'leg_promo_dv_max', 'leg_promo_da_max')
+_PROMO_OVER_FIELDS = ('hand_promo_over', 'leg_promo_over')
 _DN_SETTLE_HEARTBEATS = 5       # after streaming ends, before the summary line
 # BUG-119: a Hand-only STOP while frames without a Hand arrived in the last this
 # many heartbeat windows (~300 ms, the STOP's report latency plus margin) is the
@@ -974,6 +982,16 @@ _DIAG_FLAG_ACTIVATE_STALL = 0x4  # FW 36 (BUG-56): the cold-start ladder's stall
                                  # this axis (sticky until the next ladder targeting it)
 _DIAG_FLAG_LANE_STALL = 0x8  # FW 48 (BUG-123): the Hand stall guard on the streamed lane / a
                              # latched hold IDLEd the Hand (sticky until the next ladder)
+
+
+def _legs_held_str(diag):
+    """The Legs whose Diagnostic carries DIAG_FLAG_LEG_HELD (FW 53), as a
+    comma list in Leg order, or 'none'."""
+    held = sorted(int(a) for a, d in diag.items()
+                  if int(a) < p.NUM_LEGS and int(d.flags) & DIAG_FLAG_LEG_HELD)
+    return ','.join(str(a) for a in held) if held else 'none'
+
+
 # BB-axis liveness windows for the robot_state append. BB diag is a fixed 1 Hz
 # per axis (send_bb_diag), so 3 s = three missed frames; BB estimates ride the
 # 100 Hz telemetry tick, so 0.5 s of silence means the stream (not the bus) died.
@@ -7503,6 +7521,15 @@ class TeensyBridgeNode(Node):
                 # 'unknown (never seen)' against an older bridge, never zeros.
                 KeyValue(key='leg_clamp_diag',
                          value=self._leg_clamp_diag_str()),
+                # FW 53 (I-FW-19) Diagnostic flags: the Legs the can-bridge holds
+                # Closed-loop above Stow after an aborted ladder (LEG_HELD), and
+                # whether it reads the rig as the one-Leg bench (RIG_BENCH, Stow
+                # gate exempt). From the same diag cache; '0' / 'none' on an
+                # older board.
+                KeyValue(key='legs_held', value=_legs_held_str(diag)),
+                KeyValue(key='rig_bench', value=str(int(any(
+                    int(d.flags) & DIAG_FLAG_RIG_BENCH
+                    for a, d in diag.items() if int(a) <= _HAND_AXIS)))),
                 # Can-bridge firmware identity, beside platform_fw_version
                 # above — three Teensys share this bench and until now only one
                 # of them said which build it was running. Warn-never-refuse:
@@ -7709,6 +7736,18 @@ class TeensyBridgeNode(Node):
                       for k in _DN_FW_COUNTERS],
                     KeyValue(key='setpoints_lost',
                              value=str(self._dn_loss.lost)),
+                    # BUG-99 row 2: the scheduled-promotion discontinuity
+                    # fields, uplinked since FW 22 and recorded nowhere. The
+                    # *_dp_max / dv_max / da_max floats are armed-session
+                    # maxima of |dp| (rev), |dv| (rev/s) and |da| (rev/s^2)
+                    # at a scheduled promotion (Hand, and the max over Legs);
+                    # *_promo_over are cumulative-since-boot counts of
+                    # promotions over the firmware's continuity tolerance.
+                    # Names are the wire fields'. Report-only.
+                    *[KeyValue(key=k, value=f'{float(getattr(hb, k)):.6f}')
+                      for k in _PROMO_MAX_FIELDS],
+                    *[KeyValue(key=k, value=str(int(getattr(hb, k))))
+                      for k in _PROMO_OVER_FIELDS],
                     # /recover_lane's progress (2026-10-13): idle|in_progress|
                     # done|failed, and the stage last entered (none|converge|
                     # rest|disarm|arm|confirm). trajectory_node and skill_node
@@ -8006,7 +8045,8 @@ class TeensyBridgeNode(Node):
     # RPC service surface (Commit 4)
     # ═══════════════════════════════════════════════════════════
 
-    def _call_rpc(self, method, args=b"", *, timeout=None, retries=None):
+    def _call_rpc(self, method, args=b"", *, timeout=None, retries=None,
+                  stow_gate=None):
         """Issue an RPC; return (success, message, result_blob).
 
         Blocks on the calling thread until the response arrives (decoded on the
@@ -8014,6 +8054,12 @@ class TeensyBridgeNode(Node):
         included, as a subclass) is caught and reported as (False, message).
 
         This is the single choke point every outbound RPC passes through.
+
+        ``stow_gate``: ``(axis, requested_state)`` for the per-axis requests the
+        can-bridge FW 53 Stow gate can refuse (SET_AXIS_STATE, REBOOT_ODRIVES,
+        SDO_WRITE). An ERR_REJECTED that ``rpc_args.requires_platform_at_stow``
+        covers, and that the Armed gate does not already explain, is named as
+        "Platform not at Stow" with ``rpc_args.STOW_REFUSAL_HINT``.
         """
         try:
             result = self._rpc.call(int(method), args,
@@ -8023,9 +8069,15 @@ class TeensyBridgeNode(Node):
             msg = self._annotate_rpc_error(str(e))
             # FW 52 (BUG-99 D1): name the Armed reconfiguration gate at the point of
             # failure, so a refusal never reads as a mystery ERR_REJECTED.
-            if (int(getattr(e, 'status', -1)) == int(p.RpcStatus.ERR_REJECTED)
-                    and int(method) in _ARMED_GATED_METHODS and self._armed_anywhere()):
+            rejected = int(getattr(e, 'status', -1)) == int(p.RpcStatus.ERR_REJECTED)
+            if (rejected and int(method) in _ARMED_GATED_METHODS
+                    and self._armed_anywhere()
+                    and (stow_gate is None
+                         or rpc_args.refused_while_armed(method, *stow_gate))):
                 msg = f'{msg} — {rpc_args.ARMED_REFUSAL_HINT}'
+            elif (rejected and stow_gate is not None
+                    and rpc_args.requires_platform_at_stow(method, *stow_gate)):
+                msg = f'{msg} — Platform not at Stow: {rpc_args.STOW_REFUSAL_HINT}'
             return False, msg, b""
 
     @staticmethod
@@ -8069,7 +8121,8 @@ class TeensyBridgeNode(Node):
 
     def teensy_set_axis_state(self, axis, state):
         return self._call_rpc(RpcMethod.SET_AXIS_STATE,
-                              rpc_args.encode_set_axis_state(axis, state))
+                              rpc_args.encode_set_axis_state(axis, state),
+                              stow_gate=(axis, state))
 
     def teensy_set_controller_mode(self, axis, ctrl, input_mode):
         return self._call_rpc(RpcMethod.SET_CONTROLLER_MODE,
@@ -8177,7 +8230,8 @@ class TeensyBridgeNode(Node):
 
     def teensy_reboot(self, axis=rpc_args.AXIS_ALL):
         return self._call_rpc(RpcMethod.REBOOT_ODRIVES,
-                              rpc_args.encode_reboot(axis))
+                              rpc_args.encode_reboot(axis),
+                              stow_gate=(axis, None))
 
     def teensy_encoder_search(self, axis=rpc_args.AXIS_ALL):
         return self._call_rpc(RpcMethod.ENCODER_SEARCH,
@@ -8208,7 +8262,8 @@ class TeensyBridgeNode(Node):
 
     def teensy_sdo_write(self, axis, endpoint, value):
         return self._call_rpc(RpcMethod.SDO_WRITE,
-                              rpc_args.encode_sdo_write(axis, endpoint, value))
+                              rpc_args.encode_sdo_write(axis, endpoint, value),
+                              stow_gate=(axis, None))
 
     # ── Platform-Teensy relay ──
     # The relay reads TRIGGER a Platform-Teensy reply over CAN3 (0x7DE tilt /
@@ -8957,7 +9012,14 @@ class TeensyBridgeNode(Node):
         # stop, 2026-06-26) can fire the next axis's HOME inside that window. Retry
         # across ticks until the firmware accepts it (the principled form of the
         # post-TX delays can_node used). Bounded so a genuinely-stuck axis fails.
-        _MAX_REJECT_RETRIES = 20   # × poll_dt ≈ 1 s; busy window is ~10-20 ms
+        # FW 53 (I-FW-19) adds a second, longer expected refusal: HOME of a Leg is
+        # ERR_REJECTED until every present Leg reads IDLE and fresh, and right
+        # after Leg k's stall IDLE its last heartbeat still reads CLOSED_LOOP, so
+        # HOME(Leg k+1) is refused for up to ~100 ms (one 10 Hz heartbeat), ~210 ms
+        # with one lost heartbeat, ~310 ms with two (fw53-u4). The budget below
+        # is >= 20 × poll_dt = 1.0 s of sleeps after the first refusal (each RPC
+        # round trip only adds), so the margin over 310 ms is >= 3.2x: unchanged.
+        _MAX_REJECT_RETRIES = 20   # × poll_dt ≈ 1 s; refusal window ≤ ~310 ms
         _t_home = time.monotonic()
         self.get_logger().debug(f"homing: starting on axes {axes} (sequential)")
         for axis in axes:
@@ -8995,6 +9057,19 @@ class TeensyBridgeNode(Node):
                     if ok:
                         home_accepted = True
                     elif 'REJECTED' in msg.upper() and reject_retries < _MAX_REJECT_RETRIES:
+                        # Expected, not a fault: the previous homing finishing, or
+                        # (FW 53) the previous Leg not yet reading Idle. Say so
+                        # once per axis at INFO, each retry at DEBUG.
+                        if reject_retries == 0:
+                            self.get_logger().info(
+                                f"homing: HOME({axis}) refused for now, waiting for "
+                                f"the previous Leg to read Idle (FW 53 homing gate; "
+                                f"expected for up to ~0.3 s, retrying every "
+                                f"{poll_dt * 1000:.0f} ms)")
+                        else:
+                            self.get_logger().debug(
+                                f"homing: HOME({axis}) still refused "
+                                f"(retry {reject_retries + 1}/{_MAX_REJECT_RETRIES})")
                         reject_retries += 1   # transient busy — retry next tick
                     else:
                         # Non-transient failure (bus down / bad axis), or retries
@@ -9714,7 +9789,8 @@ class TeensyBridgeNode(Node):
                 pos_rev=float(telem.pos_rev[int(axis)]),
                 vel_rps=float(telem.vel_rps[int(axis)]),
                 active_errors=int(d.active_errors),
-                stalled=bool(int(d.flags) & _DIAG_FLAG_ACTIVATE_STALL))
+                stalled=bool(int(d.flags) & _DIAG_FLAG_ACTIVATE_STALL),
+                held=bool(int(d.flags) & DIAG_FLAG_LEG_HELD))
         return out
 
     def _deactivate_axis_status(self, axes):
@@ -9735,7 +9811,8 @@ class TeensyBridgeNode(Node):
                 axis_state=int(d.axis_state),
                 pos_rev=float(telem.pos_rev[int(axis)]),
                 vel_rps=float(telem.vel_rps[int(axis)]),
-                active_errors=int(d.active_errors))
+                active_errors=int(d.active_errors),
+                held=bool(int(d.flags) & DIAG_FLAG_LEG_HELD))
         return out
 
     def _run_activate(self, axes, *, poll_dt=0.05, leg_targets_rev=None):
@@ -9806,7 +9883,6 @@ class TeensyBridgeNode(Node):
         hand_mon = (ActivateMonitor([_HAND_AXIS], {_HAND_AXIS: float(
                         hw.JB_OP_HAND_ACTIVATE_POSITION_REV)}) if hand_watch else None)
         _t_act = time.monotonic()
-        hard_deadline = _t_act + mon.timeout_s + 5.0
         self.get_logger().debug(f"activate: TRAP_TRAJ move to active pose on axes {axes}")
         while True:
             now = time.monotonic()
@@ -9815,7 +9891,10 @@ class TeensyBridgeNode(Node):
                 hand_mon.step(now, self._activate_axis_status([_HAND_AXIS]))
             if res.done:
                 break
-            if now > hard_deadline:
+            # Tracks the monitor's own budget: an FW 53 abort mid-rise returns the
+            # Platform to Stow (up to 10 s more), and the monitor extends its
+            # deadline when it sees the return begin.
+            if now > mon.deadline_s + 5.0:
                 self.get_logger().error("activate: hard deadline exceeded")
                 break
             time.sleep(poll_dt)
@@ -9827,6 +9906,15 @@ class TeensyBridgeNode(Node):
             if hand_stall:
                 parts.append(f"axis {_HAND_AXIS}: {hand_stall}")
             msg = "activate FAILED — " + "; ".join(parts)
+            reasons = list(mon.failed.values())
+            if reasons and all(r.startswith(ACTIVATE_REASON_RETURNED) for r in reasons):
+                # FW 53: the Platform is back at Stow with the Legs Idle; the
+                # orchestrator's FAULT exit goes to BOOT -> IDLE, retry from there.
+                msg = ("activate aborted, Platform returned to Stow (Legs Idle) — "
+                       + "; ".join(parts))
+            elif any(r.startswith(ACTIVATE_REASON_HELD) for r in reasons):
+                msg = ("activate aborted, Legs held Closed-loop above Stow by the "
+                       "can-bridge (FW 53 LEG_HELD) — " + "; ".join(parts))
             if mon.succeeded:
                 msg += f" (succeeded: {mon.succeeded})"
             self.get_logger().error(msg)
@@ -10177,9 +10265,19 @@ class TeensyBridgeNode(Node):
         if refusal is not None:
             return False, refusal
         ok, msg, _ = self.teensy_reboot()
-        # Step 2: clear is_homed/levelling/pose together. Unconditional on the
-        # reboot result (parity with can_node, which always cleared) — clearing is
-        # the SAFE direction (a re-home), never the reverse.
+        # FW 53 U6b: a reboot the firmware ANSWERED with a refusal (ERR_REJECTED
+        # from the Stow gate, ERR_BUS_DOWN, ...) did not happen, so the drives kept
+        # their references and nothing is cleared: clearing would strand the
+        # operator in a re-home for nothing and, before FW 53, could not occur
+        # between the A7 check above and the RPC. With no answer (ERR_TIMEOUT, or
+        # no status at all) the reboot may have happened: clear, the SAFE
+        # direction. (A reboot that did happen is also caught by the BUG-122
+        # watch, INITIALIZING on every drive.)
+        token = self._rpc_status_token(msg)
+        if not ok and token and token != 'ERR_TIMEOUT':
+            return ok, f"{msg}; cold-start state kept (the reboot was refused)"
+        # Step 2: clear is_homed/levelling/pose together (parity with can_node) —
+        # clearing is the SAFE direction (a re-home), never the reverse.
         cs_ok, cs_msg = self._clear_cold_start_state_on_reboot()
         if not cs_ok:
             self.get_logger().error(

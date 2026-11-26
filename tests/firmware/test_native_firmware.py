@@ -241,6 +241,18 @@ def test_native_leg_homing_binary_passes(binaries):
         f"homing-ladder behaviour:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_leg_stow_gate_binary_passes(binaries):
+    """The compiled leg_stow_gate.cpp (FW 53, I-FW-19: no Leg leaves Closed-loop
+    above Stow) passes every behaviour assertion: the Stow predicate's window,
+    freshness, CL-confirmation and presence rules, the Hand exemption, the
+    HOMING_OWNER carve-out, the refusal census and HELD mask, and the hold's
+    stopping-point target."""
+    r = _run(binaries["test_leg_stow_gate"])
+    assert r.returncode == 0, (
+        "native test_leg_stow_gate FAILED — leg_stow_gate.cpp diverged from the "
+        f"I-FW-19 contract:\n{r.stdout}\n{r.stderr}")
+
+
 def test_native_udp_framing_binary_passes(binaries):
     """The compiled C++ UDP framing (crc16_ccitt / encode_frame / decode_frame in
     udp_protocol.h — the network trust boundary) passes every assertion: the

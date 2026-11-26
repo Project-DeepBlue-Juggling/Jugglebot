@@ -23,9 +23,16 @@ slow (~1 MB/s) to rewrite tens of GB, so this tool transcodes at the record leve
 Nothing is replaced until the output is verified through the installed ``mcap`` library,
 independently of the transcoder's own parsing (see ``verify``). Default mode is a dry run.
 
+``--recover`` instead rebuilds crashed recordings (``probe()`` = ``unindexed``: the recorder
+was killed before DataEnd/summary/Footer) into complete, indexed, zstd-chunked files; see
+``recover`` and ``verify_recovered``. With ``--replace`` the original is kept beside it as
+``<name>.mcap.unindexed-orig`` unless ``--discard-original``.
+
 Usage:
     python tools/bag_compress.py ~/Desktop/rosbags                      # dry run + estimates
     nice -n 15 python tools/bag_compress.py ~/Desktop/rosbags --replace --report temp/bagz.json
+    python tools/bag_compress.py ~/Desktop/rosbags --recover            # characterise crashed bags
+    nice -n 15 python tools/bag_compress.py ~/Desktop/rosbags --recover --replace --write-metadata
 """
 from __future__ import annotations
 
@@ -283,37 +290,412 @@ def _rewrite_chunk_index(body: bytes, newpos, chunk_new) -> bytes:
             + struct.pack("<I", 4) + b"zstd" + struct.pack("<QQ", ncsz, usz))
 
 
+# --------------------------------------------------------------------------- recover
+# A recorder SIGKILLed mid-write leaves Magic, Header, Chunk, MessageIndex... and then a cut
+# at an arbitrary byte (Foxy's files end on 4 KiB boundaries): no DataEnd, summary or
+# Footer, so seeking readers (the GUI) cannot open it. recover() rebuilds a complete,
+# indexed, zstd-chunked file from every complete record. It never invents data: chunk
+# payloads are copied byte for byte, MessageIndex records are regenerated from those
+# payloads (and must equal the input's where the input has them), and the summary is
+# computed from the messages actually written.
+
+ORIG_SUFFIX = ".unindexed-orig"
+OP_NAMES = {OP_HEADER: "Header", OP_FOOTER: "Footer", OP_SCHEMA: "Schema", OP_CHANNEL: "Channel",
+            OP_MESSAGE: "Message", OP_CHUNK: "Chunk", OP_MSG_INDEX: "MessageIndex",
+            OP_CHUNK_INDEX: "ChunkIndex", OP_ATTACHMENT: "Attachment", OP_ATT_INDEX: "AttachmentIndex",
+            OP_STATISTICS: "Statistics", OP_METADATA: "Metadata", OP_META_INDEX: "MetadataIndex",
+            OP_SUMMARY_OFFSET: "SummaryOffset", OP_DATA_END: "DataEnd"}
+MSG_FIXED = 2 + 4 + 8 + 8
+
+
+class NothingToRecover(Refused):
+    """The input holds no complete message; there is nothing worth rewriting."""
+
+
+def _check_schema(body: bytes) -> int:
+    sid = struct.unpack_from("<H", body, 0)[0]
+    _, p = _str(body, 2)
+    _, p = _str(body, p)
+    _, p = _str(body, p)
+    if p != len(body) or sid == 0:
+        raise Refused("malformed Schema record")
+    return sid
+
+
+def _check_channel(body: bytes, schemas) -> int:
+    cid, sid = struct.unpack_from("<HH", body, 0)
+    _, p = _str(body, 4)
+    _, p = _str(body, p)
+    mlen = struct.unpack_from("<I", body, p)[0]
+    end = p + 4 + mlen
+    p += 4
+    while p < end:
+        _, p = _str(body, p)
+        _, p = _str(body, p)
+    if p != end or end != len(body):
+        raise Refused("malformed Channel record")
+    if sid != 0 and sid not in schemas:
+        raise Refused("Channel %d names unknown schema %d" % (cid, sid))
+    return cid
+
+
+def _walk_chunk(recs: bytes, schemas: Dict, chans: Dict, strict: bool, t_lo=0, t_hi=None):
+    """Walk an uncompressed chunk payload. ``schemas``/``chans`` (id -> record body) are
+    updated in place. Returns (msgs, used): msgs = [(channel_id, log_time, offset)], used =
+    bytes of complete, accepted records. strict (a complete chunk): anything malformed
+    raises Refused. Otherwise (salvage from a cut chunk): stop at the first record that is
+    incomplete or fails a check."""
+    msgs = []
+    o = 0
+    n = len(recs)
+    while o < n:
+        try:
+            if o + 9 > n:
+                raise Refused("record header cut at %d" % o)
+            op, ln = recs[o], struct.unpack_from("<Q", recs, o + 1)[0]
+            if o + 9 + ln > n:
+                raise Refused("record 0x%02x cut at %d" % (op, o))
+            body = recs[o + 9:o + 9 + ln]
+            if op == OP_MESSAGE:
+                if ln < MSG_FIXED:
+                    raise Refused("short Message at %d" % o)
+                ch, _, lt = struct.unpack_from("<HIQ", body, 0)
+                if ch not in chans:
+                    raise Refused("Message on undeclared channel %d" % ch)
+                if lt < t_lo or (t_hi is not None and lt > t_hi):
+                    raise Refused("Message log_time outside its chunk's range")
+                msgs.append((ch, lt, o))
+            elif op == OP_SCHEMA:
+                sid = _check_schema(body)
+                if schemas.get(sid, body) != body:
+                    raise Refused("Schema %d redefined differently" % sid)
+                schemas[sid] = body
+            elif op == OP_CHANNEL:
+                cid = _check_channel(body, schemas)
+                if chans.get(cid, body) != body:
+                    raise Refused("Channel %d redefined differently" % cid)
+                chans[cid] = body
+            else:
+                raise Refused("opcode 0x%02x inside a chunk" % op)
+        except (Refused, struct.error) as e:
+            if strict:
+                raise Refused("chunk payload: %s" % e)
+            break
+        o += 9 + ln
+    return msgs, o
+
+
+def _mi_bodies(msgs) -> Dict[int, bytes]:
+    """MessageIndex bodies per channel, in first-message order (as mcap's Writer emits)."""
+    per: Dict[int, List[Tuple[int, int]]] = {}
+    for ch, lt, off in msgs:
+        per.setdefault(ch, []).append((lt, off))
+    return {ch: struct.pack("<HI", ch, 16 * len(v)) + b"".join(struct.pack("<QQ", *e) for e in v)
+            for ch, v in per.items()}
+
+
+def recover(src: str, dst: Optional[str] = None, level: int = 3, compress=None) -> Dict:
+    """Characterise a crashed recording and, when ``dst`` is given, write the recovered file.
+
+    Raises Refused for anything outside the crashed-Foxy shape (records other than Header,
+    Schema, Channel, Chunk, MessageIndex before the cut; a compressed or CRC-failing chunk;
+    an input MessageIndex that disagrees with its chunk) and NothingToRecover when no
+    complete message exists."""
+    from mcap.data_stream import RecordBuilder
+    from mcap.records import ChunkIndex, Footer, Statistics, SummaryOffset
+    from mcap.opcode import Opcode
+
+    if dst is not None and compress is None:
+        compress = zstandard.ZstdCompressor(level=level).compress
+    info: Dict = {"size": os.path.getsize(src), "chunks": 0, "messages": 0, "mi_full": 0,
+                  "mi_partial": 0, "mi_none": 0, "top_schema_channel": 0, "chunk_time_fixed": 0,
+                  "data_end": False, "end": "", "tail_bytes": 0, "salvaged_messages": 0,
+                  "salvaged_bytes": 0, "salvage": None}
+    schemas: Dict[int, bytes] = {}
+    chans: Dict[int, bytes] = {}
+    counts: Dict[int, int] = {}
+    tmin = tmax = None
+    cis: List = []
+    fo = open(dst, "wb", buffering=1 << 20) if dst else None
+    o = _Out(fo) if fo else None
+
+    def put_chunk(recs: bytes, msgs, in_crc: int, hdr_ms: int, hdr_me: int, in_mis, where: int):
+        nonlocal tmin, tmax
+        regen = _mi_bodies(msgs)
+        seen = {}
+        for b in in_mis:
+            ch = struct.unpack_from("<H", b, 0)[0]
+            if ch in seen or regen.get(ch) != b:
+                raise Refused("input MessageIndex for channel %d after chunk at %d disagrees "
+                              "with the chunk" % (ch, where))
+            seen[ch] = b
+        key = "mi_full" if len(seen) == len(regen) else ("mi_partial" if seen else "mi_none")
+        info[key] += 1
+        crc = zlib.crc32(recs)
+        if in_crc not in (0, crc):
+            raise Refused("chunk at %d fails its own uncompressed_crc" % where)
+        if msgs:
+            ms, me = min(m[1] for m in msgs), max(m[1] for m in msgs)
+            info["chunk_time_fixed"] += (ms, me) != (hdr_ms, hdr_me)
+            tmin = ms if tmin is None else min(tmin, ms)
+            tmax = me if tmax is None else max(tmax, me)
+        else:
+            ms, me = hdr_ms, hdr_me
+        for ch, _, _ in msgs:
+            counts[ch] = counts.get(ch, 0) + 1
+        info["chunks"] += 1
+        info["messages"] += len(msgs)
+        if o is None:
+            return
+        cb = compress(recs)
+        start = o.pos
+        o.record(OP_CHUNK, struct.pack("<QQQI", ms, me, len(recs), crc) + struct.pack("<I", 4)
+                 + b"zstd" + struct.pack("<Q", len(cb)) + cb)
+        clen = o.pos - start
+        mi_start = o.pos
+        offs = {}
+        for ch, b in regen.items():
+            offs[ch] = o.pos
+            o.record(OP_MSG_INDEX, b)
+        cis.append(ChunkIndex(message_start_time=ms, message_end_time=me, chunk_start_offset=start,
+                              chunk_length=clen, message_index_offsets=offs,
+                              message_index_length=o.pos - mi_start, compression="zstd",
+                              compressed_size=len(cb), uncompressed_size=len(recs)))
+
+    try:
+        with open(src, "rb", buffering=1 << 20) as f:
+            if f.read(8) != MAGIC:
+                raise Refused("bad leading magic")
+            h = f.read(9)
+            hb = f.read(struct.unpack("<Q", h[1:])[0]) if len(h) == 9 and h[0] == OP_HEADER else b""
+            if len(h) < 9 or h[0] != OP_HEADER or len(hb) != struct.unpack("<Q", h[1:])[0]:
+                info["end"] = "inside the Header"
+                raise NothingToRecover("the file ends inside its Header")
+            if o:
+                o.write(MAGIC)
+                o.record(OP_HEADER, hb)
+            pending = None
+            while True:
+                pos = f.tell()
+                h = f.read(9)
+                if not h:
+                    info["end"] = "clean record boundary"
+                    break
+                if len(h) < 9:
+                    info["end"] = "mid record header (%d of 9 bytes)" % len(h)
+                    break
+                op, ln = h[0], struct.unpack("<Q", h[1:])[0]
+                if op not in OP_NAMES or ln > MAX_RECORD:
+                    info["end"] = "unreadable record (opcode 0x%02x, length %d)" % (op, ln)
+                    break
+                body = f.read(ln)
+                if len(body) < ln:
+                    info["end"] = "mid %s (%d of %d body bytes)" % (OP_NAMES[op], len(body), ln)
+                    if op == OP_CHUNK:
+                        if pending:
+                            put_chunk(*pending)
+                            pending = None
+                        _salvage(body, pos, schemas, chans, info, put_chunk)
+                    break
+                if op == OP_MSG_INDEX:
+                    if pending is None:
+                        raise Refused("MessageIndex at %d follows no chunk" % pos)
+                    pending[5].append(body)
+                    continue
+                if pending:
+                    put_chunk(*pending)
+                    pending = None
+                if op == OP_CHUNK:
+                    ms, me, usz, crc = struct.unpack_from("<QQQI", body, 0)
+                    comp, p = _str(body, 28)
+                    if comp != b"":
+                        raise Refused("chunk at %d is compressed (%r)" % (pos, comp))
+                    rl = struct.unpack_from("<Q", body, p)[0]
+                    recs = body[p + 8:]
+                    if len(recs) != rl or rl != usz:
+                        raise Refused("chunk at %d: inconsistent lengths" % pos)
+                    msgs, _ = _walk_chunk(recs, schemas, chans, strict=True)
+                    pending = [recs, msgs, crc, ms, me, [], pos]
+                elif op == OP_SCHEMA:
+                    sid = _check_schema(body)
+                    if schemas.setdefault(sid, body) != body:
+                        raise Refused("Schema %d redefined differently" % sid)
+                    info["top_schema_channel"] += 1
+                    if o:
+                        o.record(op, body)
+                elif op == OP_CHANNEL:
+                    cid = _check_channel(body, schemas)
+                    if chans.setdefault(cid, body) != body:
+                        raise Refused("Channel %d redefined differently" % cid)
+                    info["top_schema_channel"] += 1
+                    if o:
+                        o.record(op, body)
+                elif op == OP_DATA_END:
+                    info["data_end"] = True
+                    info["end"] = "after DataEnd (summary/footer missing)"
+                    break
+                else:
+                    raise Refused("%s record at %d is not handled in a crashed recording"
+                                  % (OP_NAMES[op], pos))
+            if pending:
+                put_chunk(*pending)
+            info["tail_bytes"] = info["size"] - pos
+        info.update(schemas=len(schemas), channels=len(chans), message_start_time=tmin,
+                    message_end_time=tmax, channel_message_counts=dict(counts))
+        if not info["messages"]:
+            raise NothingToRecover("no complete message (%s)" % info["end"])
+        if o is None:
+            return info
+
+        o.record(OP_DATA_END, struct.pack("<I", o.crc))   # crc covers magic .. before DataEnd
+        ss = o.pos
+        sb = RecordBuilder()
+        offsets = []
+
+        def group(opc, write):
+            g0 = sb.count
+            write()
+            offsets.append(SummaryOffset(group_opcode=opc, group_start=ss + g0, group_length=sb.count - g0))
+
+        group(Opcode.SCHEMA, lambda: [sb.write(bytes([OP_SCHEMA]) + struct.pack("<Q", len(b)) + b)
+                                      for b in schemas.values()])
+        group(Opcode.CHANNEL, lambda: [sb.write(bytes([OP_CHANNEL]) + struct.pack("<Q", len(b)) + b)
+                                       for b in chans.values()])
+        stats = Statistics(message_count=info["messages"], schema_count=len(schemas),
+                           channel_count=len(chans), attachment_count=0, metadata_count=0,
+                           chunk_count=len(cis), message_start_time=tmin, message_end_time=tmax,
+                           channel_message_counts=dict(counts))
+        group(Opcode.STATISTICS, lambda: stats.write(sb))
+        group(Opcode.CHUNK_INDEX, lambda: [ci.write(sb) for ci in cis])
+        group(Opcode.ATTACHMENT_INDEX, lambda: None)
+        group(Opcode.METADATA_INDEX, lambda: None)
+        so = ss + sb.count
+        for x in offsets:
+            x.write(sb)
+        summary = sb.end()
+        crc = zlib.crc32(struct.pack("<BQQQ", OP_FOOTER, 20, ss, so), zlib.crc32(summary))
+        o.write(summary)
+        Footer(summary_start=ss, summary_offset_start=so, summary_crc=crc).write(sb)
+        o.write(sb.end() + MAGIC)
+        fo.flush()
+        os.fsync(fo.fileno())
+        info["out_size"] = o.pos
+        return info
+    finally:
+        if fo:
+            fo.close()
+
+
+def _salvage(body: bytes, pos: int, schemas, chans, info, put_chunk) -> None:
+    """The file ends inside a Chunk. Its payload is uncompressed and the chunk header was
+    written whole before it, so every inner record fully present in the cut payload is a
+    record the recorder wrote. Salvage them into a final chunk, after checking each one
+    (opcode, exact field layout, declared channel/schema, log_time inside the header's
+    [start, end]); stop at the first that fails. Nothing is salvaged unless at least one
+    message is; schemas/channels are only committed with it."""
+    s = {"chunk_offset": pos, "present": len(body)}
+    info["salvage"] = s
+    try:
+        ms, me, usz, crc = struct.unpack_from("<QQQI", body, 0)
+        comp, p = _str(body, 28)
+        rl = struct.unpack_from("<Q", body, p)[0]
+    except (Refused, struct.error):
+        s["why"] = "chunk header cut"
+        return
+    payload = body[p + 8:]
+    s.update(payload_offset=pos + 9 + p + 8, payload_present=len(payload), payload_total=rl)
+    if comp != b"" or rl != usz or len(payload) >= rl:
+        s["why"] = "chunk header implausible"
+        return
+    sc, cc = dict(schemas), dict(chans)
+    msgs, used = _walk_chunk(payload, sc, cc, strict=False, t_lo=ms, t_hi=me)
+    s["used"] = used
+    if not msgs:
+        s["why"] = "no complete message in the cut payload"
+        return
+    recs = payload[:used]
+    schemas.update(sc)
+    chans.update(cc)
+    put_chunk(recs, msgs, 0, min(m[1] for m in msgs), max(m[1] for m in msgs), [], pos)
+    info["salvaged_messages"] = len(msgs)
+    info["salvaged_bytes"] = used
+    s["why"] = ""
+
+
+def characterise_line(info: Dict) -> str:
+    sv = info.get("salvage") or {}
+    tail = ("cut chunk: %d of %d payload bytes, salvaged %d msgs / %d B, dropped %d B"
+            % (sv.get("payload_present", sv.get("present", 0)), sv.get("payload_total", 0),
+               info["salvaged_messages"], info["salvaged_bytes"],
+               sv.get("payload_present", 0) - sv.get("used", 0))
+            + (" (%s)" % sv["why"] if sv.get("why") else "")) if sv else "no cut chunk"
+    return ("%d msgs in %d chunks; ends %s; MI full/partial/none %d/%d/%d; %s; schemas %d channels %d"
+            " (top-level %d)%s" % (info["messages"], info["chunks"], info["end"], info["mi_full"],
+                                   info["mi_partial"], info["mi_none"], tail, info.get("schemas", 0),
+                                   info.get("channels", 0), info["top_schema_channel"],
+                                   "; chunk times fixed %d" % info["chunk_time_fixed"]
+                                   if info["chunk_time_fixed"] else ""))
+
+
 # --------------------------------------------------------------------------- verify
 # Everything below reads files through the installed ``mcap`` library (or, for the summary
 # CRC, a ten-line reader of the footer), never through transcode()'s parser.
 
-def content_digest(path: str) -> Dict:
+def content_digest(path: str, truncated_ok: bool = False, split_at: Optional[int] = None) -> Dict:
     """SHA-256 over schemas, channels and messages in file order, via mcap's StreamReader
     with CRC validation (chunk CRCs and, when non-zero, the data-section CRC). Streaming:
-    memory is bounded by one chunk."""
+    memory is bounded by one chunk.
+
+    truncated_ok: a file cut mid-record (a crashed recording) ends the stream at the cut
+    instead of raising; any other library error (a CRC failure) still raises.
+    split_at: also return ``prefix_sha256``, the digest after the first ``split_at``
+    content records, and ``tail``, the records after them (the salvaged ones)."""
+    from mcap.exceptions import EndOfFile
     from mcap.records import Channel, DataEnd, Message, Schema
     from mcap.stream_reader import StreamReader
 
     h = hashlib.sha256()
     counts: Dict[int, int] = {}
-    n = 0
+    n = n_rec = 0
+    prefix = None
+    tail: List = []
+    extra: Dict = {}
+    defs: Dict = {}
     with open(path, "rb") as f:
-        for r in StreamReader(f, validate_crcs=True).records:
-            if isinstance(r, DataEnd):
-                break
-            if isinstance(r, Message):
-                h.update(struct.pack("<BHIQQQ", 5, r.channel_id, r.sequence, r.log_time,
-                                     r.publish_time, len(r.data)))
-                h.update(r.data)
-                counts[r.channel_id] = counts.get(r.channel_id, 0) + 1
-                n += 1
-            elif isinstance(r, Schema):
-                h.update(repr((3, r.id, r.name, r.encoding, len(r.data))).encode())
-                h.update(r.data)
-            elif isinstance(r, Channel):
-                h.update(repr((4, r.id, r.schema_id, r.topic, r.message_encoding,
-                               sorted(r.metadata.items()))).encode())
-    return {"sha256": h.hexdigest(), "messages": n, "counts": counts}
+        try:
+            for r in StreamReader(f, validate_crcs=True).records:
+                if isinstance(r, DataEnd):
+                    break
+                if not isinstance(r, (Message, Schema, Channel)):
+                    continue
+                if split_at is not None:
+                    if n_rec == split_at:
+                        prefix = h.hexdigest()
+                    if n_rec >= split_at:
+                        tail.append(r)
+                n_rec += 1
+                if isinstance(r, Message):
+                    h.update(struct.pack("<BHIQQQ", 5, r.channel_id, r.sequence, r.log_time,
+                                         r.publish_time, len(r.data)))
+                    h.update(r.data)
+                    counts[r.channel_id] = counts.get(r.channel_id, 0) + 1
+                    n += 1
+                elif isinstance(r, Schema):
+                    h.update(repr((3, r.id, r.name, r.encoding, len(r.data))).encode())
+                    h.update(r.data)
+                    defs[("s", r.id)] = r
+                elif isinstance(r, Channel):
+                    defs[("c", r.id)] = r
+                    h.update(repr((4, r.id, r.schema_id, r.topic, r.message_encoding,
+                                   sorted(r.metadata.items()))).encode())
+        except (EndOfFile, struct.error) as e:
+            if not truncated_ok:
+                raise
+            extra["truncated"] = "%s: %s" % (type(e).__name__, e)
+    if split_at is not None:
+        extra.update(prefix_sha256=prefix if prefix is not None else (
+            h.hexdigest() if n_rec == split_at else None), tail=tail, defs=defs)
+    return dict({"sha256": h.hexdigest(), "messages": n, "counts": counts, "records": n_rec}, **extra)
 
 
 def summary_crc_ok(path: str) -> bool:
@@ -336,14 +718,48 @@ def _msg_key(m):
     return (m.channel_id, m.sequence, m.log_time, m.publish_time, bytes(m.data))
 
 
+def _check_chunks(fb, chunk_indexes) -> int:
+    """Every ChunkIndex -> a CRC-valid zstd Chunk of its length; every MessageIndex entry ->
+    the message it names. Returns the number of index entries checked."""
+    from mcap.data_stream import ReadDataStream
+    from mcap.records import Chunk, MessageIndex
+    from mcap.stream_reader import get_chunk_data_stream
+
+    n_idx = 0
+    for ci in chunk_indexes:
+        if ci.compression != "zstd":
+            raise VerifyError("chunk at %d is %r" % (ci.chunk_start_offset, ci.compression))
+        fb.seek(ci.chunk_start_offset)
+        h = fb.read(9)
+        if h[0] != 0x06 or struct.unpack("<Q", h[1:])[0] != ci.chunk_length - 9:
+            raise VerifyError("ChunkIndex -> %d is not a Chunk of its length" % ci.chunk_start_offset)
+        chunk = Chunk.read(ReadDataStream(fb))
+        if (chunk.compression != "zstd" or len(chunk.data) != ci.compressed_size
+                or chunk.uncompressed_size != ci.uncompressed_size or chunk.uncompressed_crc == 0
+                or chunk.message_start_time != ci.message_start_time
+                or chunk.message_end_time != ci.message_end_time):
+            raise VerifyError("chunk at %d disagrees with its index" % ci.chunk_start_offset)
+        stream, _ = get_chunk_data_stream(chunk, validate_crc=True)
+        data = stream.read(chunk.uncompressed_size)
+        for ch, off in ci.message_index_offsets.items():
+            fb.seek(off)
+            if fb.read(9)[0] != 0x07:
+                raise VerifyError("message_index_offsets -> %d is not a MessageIndex" % off)
+            mi = MessageIndex.read(ReadDataStream(fb))
+            if mi.channel_id != ch:
+                raise VerifyError("MessageIndex channel mismatch at %d" % off)
+            for lt, moff in mi.records:
+                if data[moff] != 0x05 or struct.unpack_from("<HIQ", data, moff + 9)[::2] != (ch, lt):
+                    raise VerifyError("MessageIndex entry does not hit its message")
+                n_idx += 1
+    return n_idx
+
+
 def indexed_check(orig: str, new: str) -> Dict:
     """The seeking path: summaries, every ChunkIndex -> Chunk (CRC), every MessageIndex
     entry -> a Message at that offset, first/last messages via iter_messages, attachments
     and metadata via their indexes."""
     from mcap.reader import make_reader
-    from mcap.data_stream import ReadDataStream
-    from mcap.records import Chunk, MessageIndex
-    from mcap.stream_reader import get_chunk_data_stream
 
     with open(orig, "rb") as fa, open(new, "rb") as fb:
         ra, rb = make_reader(fa, validate_crcs=True), make_reader(fb, validate_crcs=True)
@@ -364,32 +780,7 @@ def indexed_check(orig: str, new: str) -> Dict:
             raise VerifyError("attachments differ")
         if list(ra.iter_metadata()) != list(rb.iter_metadata()):
             raise VerifyError("metadata differ")
-        n_idx = 0
-        for ci in sb.chunk_indexes:
-            if ci.compression != "zstd":
-                raise VerifyError("chunk at %d is %r" % (ci.chunk_start_offset, ci.compression))
-            fb.seek(ci.chunk_start_offset)
-            h = fb.read(9)
-            if h[0] != 0x06 or struct.unpack("<Q", h[1:])[0] != ci.chunk_length - 9:
-                raise VerifyError("ChunkIndex -> %d is not a Chunk of its length" % ci.chunk_start_offset)
-            chunk = Chunk.read(ReadDataStream(fb))
-            if (chunk.compression != "zstd" or len(chunk.data) != ci.compressed_size
-                    or chunk.uncompressed_size != ci.uncompressed_size or chunk.uncompressed_crc == 0
-                    or chunk.message_start_time != ci.message_start_time):
-                raise VerifyError("chunk at %d disagrees with its index" % ci.chunk_start_offset)
-            stream, _ = get_chunk_data_stream(chunk, validate_crc=True)
-            data = stream.read(chunk.uncompressed_size)
-            for ch, off in ci.message_index_offsets.items():
-                fb.seek(off)
-                if fb.read(9)[0] != 0x07:
-                    raise VerifyError("message_index_offsets -> %d is not a MessageIndex" % off)
-                mi = MessageIndex.read(ReadDataStream(fb))
-                if mi.channel_id != ch:
-                    raise VerifyError("MessageIndex channel mismatch at %d" % off)
-                for lt, moff in mi.records:
-                    if data[moff] != 0x05 or struct.unpack_from("<HIQ", data, moff + 9)[::2] != (ch, lt):
-                        raise VerifyError("MessageIndex entry does not hit its message")
-                    n_idx += 1
+        n_idx = _check_chunks(fb, sb.chunk_indexes)
         if sb.chunk_indexes:
             last = max(sb.chunk_indexes, key=lambda c: c.message_end_time)
             for kw in ({}, {"start_time": last.message_end_time}):
@@ -427,6 +818,100 @@ def _verify(orig: str, new: str) -> Dict:
         raise VerifyError("statistics disagree with the streamed message counts")
     info.update(messages=db["messages"], sha256=db["sha256"], verify_s=time.time() - t)
     return info
+
+
+def verify_recovered(orig: str, new: str, info: Dict) -> Dict:
+    """Raise VerifyError unless ``new`` is a complete, self-consistent, indexed MCAP that
+    carries exactly the original's library-readable content, plus (only) the records
+    recover() salvaged from a cut chunk, which must equal the original's bytes."""
+    try:
+        return _verify_recovered(orig, new, info)
+    except VerifyError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise VerifyError("%s: %s" % (type(e).__name__, e))
+
+
+def _verify_recovered(orig: str, new: str, info: Dict) -> Dict:
+    from mcap.data_stream import RecordBuilder
+    from mcap.reader import make_reader
+    from mcap.records import Channel, Message, Schema
+
+    t = time.time()
+    if not summary_crc_ok(new):
+        raise VerifyError("summary_crc mismatch in output")
+    # (a) content: the original as far as the library can stream it == the output's prefix
+    da = content_digest(orig, truncated_ok=True)
+    db = content_digest(new, split_at=da["records"])
+    if "truncated" in db:
+        raise VerifyError("output is itself truncated")
+    if db["prefix_sha256"] != da["sha256"]:
+        raise VerifyError("content digest differs from the original's readable prefix")
+    tail = db.pop("tail")
+    defs = db.pop("defs")
+    sv = info.get("salvage") or {}
+    if tail:
+        if not info["salvaged_messages"] or "payload_offset" not in sv:
+            raise VerifyError("output has %d records the original's stream lacks" % len(tail))
+        rb = RecordBuilder()
+        for r in tail:
+            if not isinstance(r, (Message, Schema, Channel)):
+                raise VerifyError("unexpected salvaged record %r" % type(r))
+            r.write(rb)
+        raw = rb.end()
+        with open(orig, "rb") as f:
+            f.seek(sv["chunk_offset"])
+            hdr = f.read(9)
+            f.seek(sv["payload_offset"])
+            src = f.read(len(raw) + 1)
+        if hdr[0] != OP_CHUNK or sv["chunk_offset"] + 9 + struct.unpack("<Q", hdr[1:])[0] \
+                <= os.path.getsize(orig):
+            raise VerifyError("salvage source is not a cut Chunk in the original")
+        if src[:len(raw)] != raw:
+            raise VerifyError("salvaged records differ from the original's bytes")
+        if sum(isinstance(r, Message) for r in tail) != info["salvaged_messages"]:
+            raise VerifyError("salvaged message count mismatch")
+    elif info.get("salvaged_messages"):
+        raise VerifyError("salvaged messages missing from the output")
+    # (b) the output against itself: summary, statistics, every index, the seeking read
+    with open(new, "rb") as f:
+        r = make_reader(f, validate_crcs=True)
+        s = r.get_summary()
+        if s is None or s.statistics is None:
+            raise VerifyError("no summary/statistics")
+        st = s.statistics
+        if (st.message_count != db["messages"]
+                or {k: v for k, v in st.channel_message_counts.items() if v} != db["counts"]
+                or st.chunk_count != len(s.chunk_indexes) or st.schema_count != len(s.schemas)
+                or st.channel_count != len(s.channels)):
+            raise VerifyError("statistics disagree with the streamed content")
+        if (s.schemas != {k[1]: v for k, v in defs.items() if k[0] == "s"}
+                or s.channels != {k[1]: v for k, v in defs.items() if k[0] == "c"}):
+            raise VerifyError("summary schemas/channels differ from the data section's")
+        n_idx = _check_chunks(f, s.chunk_indexes)
+        if n_idx != db["messages"]:
+            raise VerifyError("%d message index entries for %d messages" % (n_idx, db["messages"]))
+        n = 0
+        prev = None
+        lo = hi = None
+        for _, ch, m in r.iter_messages(log_time_order=True):
+            if prev is not None and m.log_time < prev:
+                raise VerifyError("iter_messages(log_time_order=True) out of order")
+            if ch.id not in s.channels:
+                raise VerifyError("message on a channel missing from the summary")
+            prev = m.log_time
+            lo = m.log_time if lo is None else min(lo, m.log_time)
+            hi = m.log_time if hi is None else max(hi, m.log_time)
+            n += 1
+        if n != db["messages"]:
+            raise VerifyError("seeking read returned %d of %d messages" % (n, db["messages"]))
+        if (st.message_start_time, st.message_end_time) != (lo, hi):
+            raise VerifyError("statistics time range disagrees with the messages")
+    # (c) the tool's own classifier now calls it finished
+    if probe(new)["category"] != "already":
+        raise VerifyError("probe() does not classify the output as indexed")
+    return {"messages": db["messages"], "orig_readable_messages": da["messages"],
+            "sha256": db["sha256"], "chunks": len(s.chunk_indexes), "verify_s": time.time() - t}
 
 
 # --------------------------------------------------------------------------- per-file job
@@ -472,6 +957,8 @@ def process_file(path: str, opts: Dict, compress=None, corrupt_hook=None) -> Dic
         res["before"] = st.st_size
         p = probe(path)
         res["reason"] = p.get("reason", "")
+        if opts.get("recover"):
+            return _process_recover(path, opts, st, p, res, compress, corrupt_hook)
         if p["category"] == "already":
             return dict(res, action="skip-done")
         if p["category"] == "unindexed":
@@ -524,6 +1011,127 @@ def process_file(path: str, opts: Dict, compress=None, corrupt_hook=None) -> Dic
                     peak_rss_mb=_rss_mb())
     except Exception as e:  # noqa: BLE001 - a per-file failure must not stop the run
         return dict(res, action="FAILED-error", reason="%s: %s" % (type(e).__name__, e))
+
+
+def _process_recover(path: str, opts: Dict, st, p: Dict, res: Dict, compress, corrupt_hook) -> Dict:
+    """--recover: rebuild an `unindexed` (crashed) recording; skip everything else."""
+    meta = os.path.join(os.path.dirname(os.path.abspath(path)), "metadata.yaml")
+    if p["category"] != "unindexed":
+        if (p["category"] == "already" and opts.get("write_metadata") and not os.path.exists(meta)
+                and len([n for n in os.listdir(os.path.dirname(meta)) if n.endswith(".mcap")]) == 1):
+            if not opts["replace"]:
+                return dict(res, action="would-write-meta")
+            write_metadata(path)
+            return dict(res, action="wrote-meta")
+        return dict(res, action="skip-indexed" if p["category"] == "already" else "skip-not-crashed")
+    age_h = (time.time() - st.st_mtime) / 3600.0
+    if age_h < opts["min_age_hours"]:
+        return dict(res, action="skip-young", reason="age %.1f h" % age_h)
+    try:
+        info = recover(path) if not opts["replace"] else None
+    except NothingToRecover as e:
+        return dict(res, action="skip-empty", reason=str(e))
+    except Refused as e:
+        return dict(res, action="refused", reason=str(e))
+    if info is not None:
+        return dict(res, action="would-recover", reason=characterise_line(info),
+                    messages=info["messages"], salvaged=info["salvaged_messages"])
+    kept = path + ORIG_SUFFIX
+    if st.st_nlink != 1 or st.st_uid != os.getuid():
+        return dict(res, action="refused", reason="hard-linked or owned by another user")
+    if os.path.lexists(kept):
+        return dict(res, action="refused", reason="%s already exists" % kept)
+    free = shutil.disk_usage(os.path.dirname(os.path.abspath(path))).free
+    if free < st.st_size + FREE_MARGIN:
+        return dict(res, action="refused", reason="free space %.1f GB too low" % (free / GIB))
+    partial = path + PARTIAL_SUFFIX
+    linked = replaced = False
+    t0 = time.time()
+    try:
+        info = recover(path, partial, opts["level"], compress=compress)
+        t1 = time.time()
+        if corrupt_hook:
+            corrupt_hook(partial)
+        v = verify_recovered(path, partial, info)
+        st2 = os.stat(path)
+        if (st2.st_size, st2.st_mtime_ns) != (st.st_size, st.st_mtime_ns):
+            raise VerifyError("original changed during the run")
+        os.chmod(partial, st.st_mode & 0o7777)
+        os.utime(partial, ns=(st.st_atime_ns, st.st_mtime_ns))
+        fd = os.open(partial, os.O_RDONLY)
+        os.fsync(fd)
+        os.close(fd)
+        if not opts.get("discard_original"):
+            os.link(path, kept)          # atomic; fails if it exists. path never goes missing
+            linked = True
+        os.replace(partial, path)
+        replaced = True
+        _fsync_dir(os.path.dirname(os.path.abspath(path)))
+    except NothingToRecover as e:
+        _unlink(partial)
+        return dict(res, action="skip-empty", reason=str(e))
+    except Refused as e:
+        _unlink(partial)
+        return dict(res, action="refused", reason=str(e))
+    except VerifyError as e:
+        _unlink(partial)
+        if linked:
+            _unlink(kept)
+        return dict(res, action="FAILED-verify", reason=str(e))
+    except BaseException:
+        _unlink(partial)
+        if linked and not replaced:
+            _unlink(kept)
+        raise
+    out = dict(res, action="recovered", after=os.path.getsize(path), transcode_s=t1 - t0,
+               verify_s=v["verify_s"], messages=v["messages"], salvaged=info["salvaged_messages"],
+               chunks=v["chunks"], content_sha256=v["sha256"], kept=kept if linked else None,
+               reason=characterise_line(info), peak_rss_mb=_rss_mb())
+    if opts.get("write_metadata") and not os.path.exists(meta):
+        write_metadata(path)
+        out["metadata_yaml"] = meta
+    return out
+
+
+def metadata_yaml(path: str) -> str:
+    """A rosbag2 version-4 metadata.yaml (the shape Foxy's recorder writes on a clean close)
+    derived from an indexed MCAP's summary: every channel, its schema name as the type, its
+    message_encoding, the ``offered_qos_profiles`` the recorder stored in the channel
+    metadata, and the per-channel counts and time span from the Statistics record."""
+    from mcap.reader import make_reader
+    with open(path, "rb") as f:
+        s = make_reader(f).get_summary()
+    st = s.statistics
+    lines = ["rosbag2_bagfile_information:", "  version: 4", "  storage_identifier: mcap",
+             "  relative_file_paths:", "    - %s" % os.path.basename(path),
+             "  duration:", "    nanoseconds: %d" % (st.message_end_time - st.message_start_time),
+             "  starting_time:", "    nanoseconds_since_epoch: %d" % st.message_start_time,
+             "  message_count: %d" % st.message_count, "  topics_with_message_count:"]
+    for cid, ch in s.channels.items():
+        sch = s.schemas.get(ch.schema_id)
+        lines += ["    - topic_metadata:", "        name: %s" % ch.topic,
+                  "        type: %s" % (sch.name if sch else ""),
+                  "        serialization_format: %s" % ch.message_encoding,
+                  "        offered_qos_profiles: %s" % json.dumps(ch.metadata.get("offered_qos_profiles", "")),
+                  "      message_count: %d" % st.channel_message_counts.get(cid, 0)]
+    lines += ['  compression_format: ""', '  compression_mode: ""']
+    return "\n".join(lines)
+
+
+def write_metadata(path: str) -> str:
+    """Write metadata.yaml beside ``path`` (never over an existing one), atomically."""
+    meta = os.path.join(os.path.dirname(os.path.abspath(path)), "metadata.yaml")
+    tmp = meta + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(metadata_yaml(path))
+        f.flush()
+        os.fsync(f.fileno())
+    try:
+        os.link(tmp, meta)
+    finally:
+        os.unlink(tmp)
+    _fsync_dir(os.path.dirname(meta))
+    return meta
 
 
 def _unlink(p: str) -> None:
@@ -594,11 +1202,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="the default; listed for explicitness")
     ap.add_argument("--replace", action="store_true", help="transcode, verify and replace in place")
     ap.add_argument("--allow-live", action="store_true")
+    ap.add_argument("--recover", action="store_true",
+                    help="rebuild crashed (unindexed) recordings instead; skips everything else")
+    ap.add_argument("--discard-original", action="store_true",
+                    help="--recover --replace: do not keep <name>.mcap%s" % ORIG_SUFFIX)
+    ap.add_argument("--write-metadata", action="store_true",
+                    help="--recover: also write a rosbag2 metadata.yaml derived from the recovered summary")
     ap.add_argument("--report")
     ap.add_argument("--lock-file", default=DEFAULT_LOCK)
     a = ap.parse_args(argv)
     if a.dry_run and a.replace:
         ap.error("--dry-run and --replace are exclusive")
+    if (a.discard_original or a.write_metadata) and not a.recover:
+        ap.error("--discard-original and --write-metadata need --recover")
     live = live_recorder()
     if live and not a.allow_live:
         print("REFUSING: a recorder is running (%s); use --allow-live to override" % live)
@@ -614,7 +1230,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if a.replace:
             _unlink(p)
     files = find_mcaps(a.paths)
-    opts = {"level": a.level, "min_age_hours": a.min_age_hours, "replace": a.replace}
+    opts = {"level": a.level, "min_age_hours": a.min_age_hours, "replace": a.replace,
+            "recover": a.recover, "discard_original": a.discard_original,
+            "write_metadata": a.write_metadata}
     t0 = time.time()
     results = []
     ex = ProcessPoolExecutor(a.workers) if a.workers > 1 and len(files) > 1 else None
@@ -629,7 +1247,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     by: Dict[str, int] = {}
     for r in results:
         by[r["action"]] = by.get(r["action"], 0) + 1
-    done = [r for r in results if r["action"] in ("compressed", "would-compress") and r.get("after")]
+    done = [r for r in results if r["action"] in ("compressed", "would-compress", "recovered")
+            and r.get("after")]
     b = sum(r["before"] for r in done)
     af = sum(r["after"] for r in done)
     print("TOTAL %d files %s | %s: %.2f GB -> %.2f GB (%.2fx) in %.0fs%s" % (

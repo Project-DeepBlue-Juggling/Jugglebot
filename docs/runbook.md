@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (15 Items, 544 min)
+## Robot  (20 Items, 644 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -18,13 +18,18 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0) | 45 | armed, bb-fed, bridge-cycled | - | - |
 | FEAT-39 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30 | 50 | level, armed, bb-fed, bridge-cycled | - | - |
 | FEAT-68 Launch baseline on the robot's Hand: launch scatter of a settled ball and of running Throws at Dwell 0.27, 0.50 and 1.00 (learner-efficacy E1) | 60 | level, armed | - | - |
-| BUG-132 Platform IMU capture timestamps run 23 to 55 ms early against Mocap and the encoders | 10 | level, armed, bb-fed | - | - |
+| FEAT-69 can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19) | 25 | level, bridge-cycled | - | 2026-11-27-robot |
+| BUG-132 Platform IMU capture timestamps run 23 to 55 ms early against Mocap and the encoders | 10 | level, armed, bb-fed | - | 2026-11-27-robot |
+| BUG-133 Ball Butler firmware builds against the unpatched FlexCAN_T4 and stamps the sync at dispatch | 20 | bb-fed, bridge-cycled | `offline/bb-uptime` | 2026-11-27-robot |
+| BUG-144 Juggle action feedback and status topics are in the bag record list but have never been recorded | 5 | level, armed, bridge-cycled | `night-shift/2026-11-26-BUG-144` | - |
+| BUG-32 Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff | 20 | level, armed, bb-fed | `offline/bug32-warm` | 2026-11-27-robot |
 | BUG-95 A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads | 35 | level, bb-fed | - | - |
+| FEAT-27 Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | 30 | level, armed | - | 2026-11-27-robot |
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | - | - |
-| IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | - |
-| IDEA-25 Minimise the Platform IMU upload time after an Attempt | 1 | level, armed, bb-fed | - | - |
-| IDEA-27 Measure the Platform ring at Dwell 0.40 with the IMU | 8 | level, armed, bb-fed | - | - |
+| IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | 2026-11-27-robot |
+| IDEA-25 Minimise the Platform IMU upload time after an Attempt | 1 | level, armed, bb-fed | - | 2026-11-27-robot |
+| IDEA-27 Measure the Platform ring at Dwell 0.40 with the IMU | 8 | level, armed, bb-fed | - | 2026-11-27-robot |
 
 ## Bench leg  (1 Item, 30 min)
 
@@ -43,13 +48,12 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-125 [Robot] Hand drive MISSING_ESTIMATE at rest lost exactly five turns, ten minutes after a SPINOUT top-stop impact: no ## Sitting section
 - BUG-13 [Robot] Wave camera: CLIP_MISSING on the first start after a camera power-cycle: no ## Sitting section
 - BUG-130 [Robot] Held Active pose is 0.6 degrees off Level: the levelling correction reaches Jog targets but not the hold: no ## Sitting section
-- BUG-133 [Robot] Ball Butler firmware builds against the unpatched FlexCAN_T4 and stamps the sync at dispatch: no ## Sitting section
 - BUG-135 [Robot] Platform CAN receive queue overflows during the inclinometer re-probe stall: no ## Sitting section
 - BUG-136 [Robot] Catching cone catch stamps could run 10 ms early per stranded receive frame: no ## Sitting section
 - BUG-140 [Robot] Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid: no ## Sitting section
+- BUG-142 [Robot] Hand park reports already parked on a Hand that is Idle on its bottom stop: no ## Sitting section
 - BUG-27 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - BUG-29 [Robot] RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball: no ## Sitting section
-- BUG-32 [Robot] Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff: no ## Sitting section
 - BUG-42 [Robot] A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve: no ## Sitting section
 - BUG-48 [Robot] Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives): no ## Sitting section
 - BUG-5 [Robot] 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
@@ -62,7 +66,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-99 [Robot] can-bridge firmware accepts four discontinuities on rare paths and has no armed interlock on reconfiguration RPCs (to confirm): no ## Sitting section
 - FEAT-1 [Robot] Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
 - FEAT-12 [Robot] Wave camera: optical frame calibration maps the START tick to a recorded frame: no ## Sitting section
-- FEAT-27 [Robot] Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z: no ## Sitting section
 - FEAT-3 [Robot] Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware: no ## Sitting section
 - FEAT-30 [Robot] Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28): no ## Sitting section
 - FEAT-31 [Robot] Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load): no ## Sitting section
@@ -83,4 +86,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- TKT-96 BUG-140: for out-of-band REST rebases, cap and snap to the Knot grid, snap only, cap only at a bound you name, or leave both? (parent BUG-140)
+- none

@@ -44,6 +44,7 @@
 #include "canbridge_config.h"
 #include "udp_protocol.h"
 #include "fake_hal.h"
+#include "leg_stow_gate.h"   // FW 53 U4: the CONFIRM phase's gate (linked leg_stow_gate.o)
 
 // The two safety-critical TUs under test (ODR-clean: disjoint symbol names).
 #include "leg_interp.cpp"
@@ -106,6 +107,7 @@ static void seed_present_axes() {   // legs 0-5 + the hand (axis 6)
 
 static void reset_all() {
   fake_reset();
+  leg_stow_gate_init();
   clear_legs();
   fault_machine_init();
   interp_reset();
@@ -387,9 +389,16 @@ TEST_CASE("never command a dead bus + terminal IDLE on stow complete") {
   CHECK(interp_output_enabled());
 
   // Drive the descent to completion (legs already at the off pose), then the
-  // fault machine IDLEs every leg and clears the latch.
+  // fault machine IDLEs every leg and clears the latch. FW 53: the IDLE needs the
+  // ENCODERS at Stow (CONFIRM), so the six Legs report Closed-loop at 0 rev, at
+  // rest, in fresh heartbeat + encoder frames.
   interp_isr();                                 // one tick → stow_complete
   CHECK(interp_stow_complete());
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    axes[i].axis_state = ST_CL;
+    stamp_hb(i);
+    write_pos_vel(axes[i], 0.0f, 0.0f, fake_mono_us());
+  }
   fake_clear_sent();
   fault_step();
   CHECK(fake_sent_count_cmd(CMD_SETSTATE) == NUM_LEGS);   // IDLE all six
@@ -2008,4 +2017,316 @@ TEST_CASE("BUG-105 through the fault machine: a real guard E-STOP or HAND_STALL 
     fault_notify_hand_stall();
     expect_one_hold_frame(last, JbUdp::FaultState::HAND_STALL);
   }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FW 53 U4 (I-FW-19, fw53_design.md 3.3): the deferred stow's CONFIRM phase.
+// The commanded completion no longer IDLEs the Legs; the encoders must confirm
+// Stow (leg_idle_permitted), else after GENTLE_MOVE_TIMEOUT_S the Legs are frozen,
+// HELD, and the pending stow cleared.
+// ═════════════════════════════════════════════════════════════════════════════
+
+static constexpr uint8_t CMD_INPUT_POS = ODriveCmd::set_input_pos;
+static const uint64_t CONFIRM_TIMEOUT_US = (uint64_t)(JBOp::GENTLE_MOVE_TIMEOUT_S * 1.0e6f);
+
+// A present Leg reporting `st` in a fresh heartbeat, its encoder at (pos, vel) now.
+static void stage_leg(uint8_t i, uint8_t st, float pos, float vel) {
+  axes[i].heartbeat_seen = true;
+  axes[i].active_errors = 0;
+  axes[i].axis_state = st;
+  stamp_hb(i);
+  write_pos_vel(axes[i], pos, vel, fake_mono_us());
+}
+// The six Legs Closed-loop at Stow, except `lag` (0xFF: none) at (lag_pos, lag_vel).
+static void stage_six(uint8_t lag, float lag_pos, float lag_vel) {
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    if (i == lag) stage_leg(i, ST_CL, lag_pos, lag_vel);
+    else          stage_leg(i, ST_CL, 0.0f, 0.0f);
+  }
+}
+// Loss → confirmed reconnect → one ISR tick sets the COMMANDED completion (the
+// Legs read 0 rev at begin, so the profile is done in one tick). Leaves the clock
+// at the reconnect tick; the next fault_step is the completion tick.
+static void loss_reconnect_complete() {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  stage_six(0xFF, 0.0f, 0.0f);
+  fake_advance(3 * (uint64_t)CAN_AXIS_SILENCE_TIMEOUT_US);
+  fault_step();                                  // loss: armed
+  REQUIRE(s_stow_pending);
+  stage_six(0xFF, 0.0f, 0.0f);
+  fault_step();                                  // reconnect: the stow starts
+  REQUIRE(s_stowing);
+  interp_isr();
+  REQUIRE(interp_stow_complete());
+}
+
+TEST_CASE("FW 53: commanded completion does not IDLE until the encoders confirm Stow") {
+  loss_reconnect_complete();
+  // Leg 3 lags 0.5 rev behind the commanded profile, still descending.
+  stage_six(3, 0.5f, -1.0f);
+  const uint32_t refusals = leg_deenergise_refusals();
+  fake_clear_sent();
+  fault_step();                                  // completion tick: CONFIRM, refused
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == 0);
+  CHECK(leg_deenergise_refusals() == refusals);  // waiting is not a refusal: no census,
+  CHECK(leg_held_mask() == 0);                   // no HELD (the predicate is asked first)
+  CHECK(s_stowing);
+  CHECK(s_stow_pending);
+  CHECK(interp_stow_active());
+  CHECK(interp_output_enabled());
+  // The stream keeps commanding Stow (one setpoint per present Leg per ISR tick).
+  fake_clear_sent();
+  interp_isr();
+  CHECK(fake_sent_count_cmd(CMD_INPUT_POS) == NUM_LEGS);
+  // 100 ms later Leg 3 is still 0.2 rev up: nothing.
+  fake_advance(100000);
+  stage_six(3, 0.2f, -1.0f);
+  fake_clear_sent();
+  fault_step();
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == 0);
+  CHECK(s_stowing);
+  // It arrives and settles: all six IDLE'd through the gate, the stow ends.
+  fake_advance(100000);
+  stage_six(0xFF, 0.0f, 0.0f);
+  fake_clear_sent();
+  fault_step();
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == NUM_LEGS);
+  CHECK_FALSE(s_stowing);
+  CHECK_FALSE(s_stow_pending);
+  CHECK_FALSE(interp_stow_active());
+  CHECK(leg_held_mask() == 0);
+}
+
+TEST_CASE("FW 53: a Leg that never confirms: after 10 s the stream ends, freeze, no IDLE, pending cleared, HELD") {
+  // Leg 3 blocked 0.5 rev up, at rest; Leg 2 dropped out (IDLE) earlier.
+  loss_reconnect_complete();
+  const auto stage = [] { stage_six(3, 0.5f, 0.0f); stage_leg(2, ST_IDLE, 0.0f, 0.0f); };
+  stage();
+  fault_step();                                  // CONFIRM starts (t0 = this tick)
+  REQUIRE(s_stowing);
+  // Just inside the timeout: still confirming, nothing sent.
+  fake_advance(CONFIRM_TIMEOUT_US - 100000);
+  stage();
+  fake_clear_sent();
+  fault_step();
+  CHECK(s_stowing);
+  CHECK(fake_sent_count() == 0);
+  // At the timeout: no IDLE; the stream ends; every Closed-loop Leg frozen at its
+  // measured position (one set_input_pos each), HELD; the pending stow cleared.
+  // The dropped (IDLE) Leg 2 is neither frozen nor HELD.
+  // FW 53 audit follow-up: Leg 3 still creeps (-0.4 rev/s) at the timeout tick, and
+  // its hold is the MEASURED 0.5 rev exactly, with no TRAP_TRAJ stopping distance
+  // (the Legs may be in PASSTHROUGH, where that would be an unprofiled step).
+  // Mutation caught: the stopping distance kept (target 0.5 - 0.16/60 rev).
+  fake_advance(100000);
+  stage();
+  stage_leg(3, ST_CL, 0.5f, -0.4f);
+  REQUIRE(leg_freeze_target(0.5f, -0.4f, STOW_WINDOW_MIN_REV, STROKE_MAX_REV[3]) != 0.5f);
+  fake_clear_sent();
+  fault_step();
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == 0);
+  CHECK(fake_sent_count_cmd(CMD_INPUT_POS) == NUM_LEGS - 1);
+  const auto hold3 = ODrive::encode_set_input_pos(3, ODrive::leg_sign(3, 0.5f), 0, 0);
+  bool saw_hold3 = false;
+  for (size_t k = 0; k < fake_sent_count(); ++k)
+    if (fake_sent_at(k).id == hold3.id && memcmp(fake_sent_at(k).buf, hold3.buf, 8) == 0) saw_hold3 = true;
+  CHECK(saw_hold3);                              // Leg 3 held where it is, not sent to 0
+  CHECK(leg_held_mask() == 0x3B);
+  CHECK_FALSE(s_stowing);
+  CHECK_FALSE(fault_stow_pending());
+  CHECK_FALSE(interp_stow_active());
+  // Nothing more afterwards.
+  fake_advance(100000);
+  stage();
+  fake_clear_sent();
+  fault_step();
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == 0);
+}
+
+// FW 53 audit follow-up (the HELD race): the CONFIRM loop asks the predicate once
+// (true), then each Leg's IDLE through the wrapper, which asks it again. A frame
+// landing in between (staged here as Leg 4's heartbeat: fresh at the caller's `now`,
+// 510 ms old at the wrapper's micros64()) refuses the IDLEs. That refusal must be
+// silent: no HELD (the host's monitors fail on the first HELD), no census, and the
+// IDLE is asked again next tick. Mutation caught: the CONFIRM loop back on Who::STOW
+// (HELD 0x3F, census +6).
+TEST_CASE("FW 53 audit: a refusal racing the CONFIRM pre-check is silent and retried next tick") {
+  loss_reconnect_complete();
+  stage_six(3, 0.5f, -1.0f);                     // Leg 3 lagging: CONFIRM waits
+  fault_step();
+  REQUIRE(s_stow_confirming);
+  fake_advance(100000);
+  stage_six(0xFF, 0.0f, 0.0f);                   // all six at Stow, heartbeats at T
+  fake_advance(510000);                          // T + 510 ms
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {       // fresh frames, except Leg 4's heartbeat
+    write_pos_vel(axes[i], 0.0f, 0.0f, fake_mono_us());
+    if (i != 4) stamp_hb(i);
+  }
+  const uint64_t now_pre = fake_mono_us() - 100000;   // the caller's earlier `now`: Leg 4 410 ms
+  REQUIRE(leg_idle_permitted(now_pre));
+  REQUIRE_FALSE(leg_idle_permitted(fake_mono_us()));
+  const uint32_t refusals = leg_deenergise_refusals();
+  fake_clear_sent();
+  stow_confirm_step(now_pre);
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == 0);
+  CHECK(leg_held_mask() == 0);
+  CHECK(leg_deenergise_refusals() == refusals);
+  CHECK(s_stowing);
+  CHECK(s_stow_confirming);
+  // Next tick, Leg 4's heartbeat is in: all six IDLE'd, the stow ends.
+  fake_advance(10000);
+  stage_six(0xFF, 0.0f, 0.0f);
+  fake_clear_sent();
+  fault_step();
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == NUM_LEGS);
+  CHECK_FALSE(s_stowing);
+  CHECK(leg_held_mask() == 0);
+}
+
+TEST_CASE("FW 53: an already-IDLE (dropped) Leg does not block the others' IDLE") {
+  loss_reconnect_complete();
+  stage_six(0xFF, 0.0f, 0.0f);
+  stage_leg(2, ST_IDLE, 1.2f, 0.0f);             // dropped out, its encoder anywhere
+  fake_clear_sent();
+  fault_step();
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == NUM_LEGS);   // the present six, Leg 2 included
+  CHECK_FALSE(s_stowing);
+  CHECK_FALSE(s_stow_pending);
+  CHECK(leg_held_mask() == 0);
+}
+
+TEST_CASE("FW 53: an absent Leg is not sent an IDLE; the bench Leg is IDLE'd at once wherever it is") {
+  // Bench: only Leg 0 on the bus, settled as a bench. It lags 1.0 rev up at the
+  // commanded completion; the bench exemption IDLEs it in the completion tick.
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  stage_leg(0, ST_CL, 0.0f, 0.0f);
+  rig_note_axis_frame(0, fake_mono_us());
+  rig_note_bus(true, fake_mono_us());
+  fake_advance(3 * (uint64_t)CAN_AXIS_SILENCE_TIMEOUT_US);
+  fault_step();
+  REQUIRE(s_stow_pending);
+  stage_leg(0, ST_CL, 0.0f, 0.0f);
+  rig_note_bus(true, fake_mono_us());            // still transmittable (anchor unchanged)
+  fault_step();
+  REQUIRE(s_stowing);
+  interp_isr();
+  REQUIRE(interp_stow_complete());
+  stage_leg(0, ST_CL, 1.0f, 0.0f);
+  REQUIRE(rig_is_bench(fake_mono_us()));
+  fake_clear_sent();
+  fault_step();
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == 1);  // Leg 0 only: nothing to absent node ids
+  CHECK(fake_sent_at(0).id == ODrive::encode_set_state(0, ODriveState::IDLE).id);
+  CHECK_FALSE(s_stowing);
+  CHECK_FALSE(s_stow_pending);
+}
+
+TEST_CASE("FW 53: a guard E-STOP during CONFIRM does not interrupt it") {
+  loss_reconnect_complete();
+  stage_six(3, 0.5f, -1.0f);
+  fault_step();                                  // CONFIRM, waiting on Leg 3
+  REQUIRE(s_stowing);
+  fault_notify_hand_stall();                     // latches guard ESTOP
+  fake_advance(100000);
+  stage_six(3, 0.3f, -1.0f);
+  fake_clear_sent();
+  fault_step();
+  CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+  CHECK(s_stowing);
+  CHECK(interp_output_enabled());                // the stream still reaches the Legs
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == 0);
+  fake_advance(100000);
+  stage_six(0xFF, 0.0f, 0.0f);
+  fault_step();
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == NUM_LEGS);   // IDLE'd at Stow
+  CHECK_FALSE(s_stowing);
+  CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);   // and the E-STOP still holds
+}
+
+TEST_CASE("FW 53: the bus going down again during CONFIRM re-arms; the restarted stow confirms") {
+  loss_reconnect_complete();
+  stage_six(3, 0.5f, 0.0f);
+  fault_step();                                  // CONFIRM, waiting on Leg 3
+  REQUIRE(s_stowing);
+  // Re-drop: the stream ends, the latch re-arms, nothing is sent on the dead bus.
+  fake_advance(3 * (uint64_t)CAN_AXIS_SILENCE_TIMEOUT_US);
+  fake_clear_sent();
+  fault_step();
+  CHECK(fault_can_bus_down());
+  CHECK(s_stow_pending);
+  CHECK_FALSE(s_stowing);
+  CHECK_FALSE(interp_stow_active());
+  CHECK(fake_sent_count() == 0);
+  // Reconnect well past the first CONFIRM's 10 s: the stow restarts from the
+  // measured positions (Leg 3 at 0.5 rev) and descends; it is not timed out.
+  fake_advance(CONFIRM_TIMEOUT_US);
+  stage_six(3, 0.5f, 0.0f);
+  fault_step();
+  CHECK(s_stowing);
+  CHECK(interp_stow_active());
+  int guard = 0;
+  while (!interp_stow_complete() && guard++ < 5000) interp_isr();
+  REQUIRE(interp_stow_complete());
+  stage_six(0xFF, 0.0f, 0.0f);
+  fake_clear_sent();
+  fault_step();
+  CHECK(fake_sent_count_cmd(CMD_SETSTATE) == NUM_LEGS);
+  CHECK_FALSE(s_stowing);
+  CHECK_FALSE(s_stow_pending);
+  CHECK(leg_held_mask() == 0);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FW 53 U3 Finding 1: a stow blocked at the reconnect tick (a HOME, ACTIVATE or
+// DEACTIVATE still active) used to be lost: the reconnect branch cleared
+// s_fatal_can_error in that pass, so the start was never evaluated again and the
+// pending latch refused HOME / ACTIVATE / DEACTIVATE until a reboot. The start is
+// now evaluated every tick while the bus is up and the stow is pending.
+// ═════════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("FW 53: a stow blocked by a cold-start move at the reconnect tick starts once the move ends") {
+  for (int which = 0; which < 3; ++which) {
+    CAPTURE(which);
+    reset_all();
+    fake_set_clock(10'000'000, 10'000'000);
+    stage_six(0xFF, 0.0f, 0.0f);
+    fake_advance(3 * (uint64_t)CAN_AXIS_SILENCE_TIMEOUT_US);
+    fault_step();                                // loss: armed
+    REQUIRE(s_stow_pending);
+    if (which == 0) fake_set_homing(true);
+    if (which == 1) fake_set_activate(true);
+    if (which == 2) fake_set_deactivate(true);
+    stage_six(0xFF, 0.0f, 0.0f);
+    fault_step();                                // reconnect while blocked
+    CHECK_FALSE(fault_can_bus_down());
+    CHECK(s_stow_pending);
+    CHECK_FALSE(s_stowing);                      // never co-drive a Leg with the move
+    fake_advance(100000);
+    stage_six(0xFF, 0.0f, 0.0f);
+    fault_step();                                // still blocked
+    CHECK_FALSE(s_stowing);
+    fake_set_homing(false); fake_set_activate(false); fake_set_deactivate(false);
+    fake_advance(100000);
+    stage_six(0xFF, 0.0f, 0.0f);
+    fault_step();                                // the move ended: the stow starts
+    CHECK(s_stowing);
+    CHECK(interp_stow_active());
+  }
+}
+
+TEST_CASE("FW 53: an unblocked stow still starts in the reconnect tick, and never while the bus is down") {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  stage_six(0xFF, 0.0f, 0.0f);
+  fake_advance(3 * (uint64_t)CAN_AXIS_SILENCE_TIMEOUT_US);
+  fault_step();                                  // loss
+  CHECK_FALSE(s_stowing);
+  fake_advance(100000);
+  fault_step();                                  // still down: no start
+  CHECK_FALSE(s_stowing);
+  stage_six(0xFF, 0.0f, 0.0f);
+  fault_step();                                  // reconnect tick
+  CHECK(s_stowing);
 }

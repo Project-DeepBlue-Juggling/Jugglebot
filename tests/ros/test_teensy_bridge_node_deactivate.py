@@ -175,7 +175,8 @@ def test_deactivate_is_not_gated_on_the_homed_flag():
     loss). The bridge must fire the DEACTIVATE there: nothing in _run_deactivate
     reads is_homed (the firmware's deactivate_request has no homed term either:
     leg_deactivate.cpp checks bus, ESTOP guard, homing/activate/stow-pending,
-    armed stream, target presence, busy)."""
+    armed stream, a single-Leg target while another present Leg is not at Stow
+    (FW 53, I-FW-19; AXIS_ALL is not Stow-gated), target presence, busy)."""
     from jugglebot.teensy_bridge_node import RelayRobotState
     teensy, client, node = _build_paired_node()
     try:

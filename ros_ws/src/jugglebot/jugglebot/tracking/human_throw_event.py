@@ -220,7 +220,8 @@ class HumanThrowEventEmitter:
             fl.last_reason = R_NO_FIT
             self._count(R_NO_FIT)
             return False, None
-        res = predict_landing_state(fr.pos_ref, fr.vel_ref, fit.landing_z)
+        res = predict_landing_state(fr.pos_ref, fr.vel_ref, fit.landing_z,
+                                    g_xy_mmps2=fit.gravity_xy_mmps2)
         if res is None:
             fl.last_reason = R_NO_LANDING
             self._count(R_NO_LANDING)

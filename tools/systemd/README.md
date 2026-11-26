@@ -230,7 +230,7 @@ Until that reboot the unit is already disabled and removed, but the running
 slice keeps the budget it was given, so a worker that is FIFO now stays FIFO
 until the next launch. To turn RT off without touching the system at all, start
 the launch with the trajectory node's parameter at 0 (`trajectory_node`
-declares `solver_rt_priority`, default 10):
+declares `solver_rt_priority`; its default has been 0, real-time off, since the owner decision of 2026-10-28):
 
 ```bash
 ros2 launch jugglebot jugglebot_launch.py   # then, or in the launch file's trajectory_node parameters:
@@ -238,3 +238,61 @@ ros2 launch jugglebot jugglebot_launch.py   # then, or in the launch file's traj
 ```
 
 The worker then reports `sched=CFS (disabled)` in its READY line.
+
+## Backup to the Pi server `jeeves` (`jugglebot-backup-{home,system}.{service,timer}`)
+
+[`tools/backup_to_jeeves.sh`](../backup_to_jeeves.sh) copies this Jetson to `jeeves@jeeves.local`
+(192.168.20.7), into the single directory `/home/jeeves/jetson-backup/`: `home/<date>/` nightly
+at 04:15 (a user unit) and `system/<date>/` on Sundays at 05:00 (a system unit, root, because the
+OS set reads files the `jetson` user cannot). Each dated directory is a full snapshot whose
+unchanged files are hard links into the previous one; seven dailies and four Sundays are kept.
+A run waits for a live Sitting to end, and writes one status line per set to
+`temp/reports/backup/status-{home,system}` (`GREEN|RED|DEFERRED <detail> <iso-date>`).
+
+It logs in with the passphrase-free key `~/.ssh/id_backup_jeeves`. On the Pi that key is
+confined to a forced command, [`tools/backup_jeeves_gate.sh`](../backup_jeeves_gate.sh), installed
+as `/home/jeeves/.local/bin/jetson-backup-gate` and named in `~/.ssh/authorized_keys`:
+
+```
+command="/home/jeeves/.local/bin/jetson-backup-gate",restrict ssh-ed25519 AAAA... jetson-backup-to-jeeves
+```
+
+Through it the key can run rsync inside `/home/jeeves/jetson-backup/` (via `rrsync`, so rsync
+paths are relative to that directory) and three pattern-checked `backup-*` verbs, and nothing
+else: no shell, no forwarding, no path outside the backup directory. A passphrase-free key on a
+box that runs unattended agents would otherwise be a login to the whole Pi. The gate is kept
+outside the backup directory because the key can write inside it. Updating the gate therefore
+needs a normal login to the Pi (`scp tools/backup_jeeves_gate.sh` to that path, mode 755). The bags the logbook cites have no other second copy,
+so re-arm this on any rebuilt Jetson.
+
+### Install
+
+```bash
+install -Dm644 tools/systemd/jugglebot-backup-home.service ~/.config/systemd/user/jugglebot-backup-home.service
+install -Dm644 tools/systemd/jugglebot-backup-home.timer   ~/.config/systemd/user/jugglebot-backup-home.timer
+systemctl --user daemon-reload && systemctl --user enable --now jugglebot-backup-home.timer
+
+sudo install -m644 tools/systemd/jugglebot-backup-system.service tools/systemd/jugglebot-backup-system.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now jugglebot-backup-system.timer
+```
+
+### Restore after an SSD failure
+
+A Jetson's bootloader partitions are written by NVIDIA's flashing tool, so this is a restore
+onto a fresh flash, never a bootable image.
+
+1. Fit the new NVMe and flash the same JetPack release with SDK Manager from another computer;
+   create the `jetson` user.
+2. On the Jetson, restore the home set as `jetson`, logging in to jeeves with its password
+   (or any unrestricted key; the paths below are for a normal login, not the gated backup key):
+   `rsync -aHAX --numeric-ids -e ssh jeeves@jeeves.local:jetson-backup/home/latest/ /home/jetson/`
+3. Restore the system set as root, with the SAME `--fake-super` on the Pi side so owners and
+   modes come back, and without touching the freshly flashed boot files:
+   `sudo rsync -aHAX --numeric-ids --rsync-path "rsync --fake-super" --exclude /boot/ --exclude /etc/fstab -e ssh jeeves@jeeves.local:jetson-backup/system/latest/ /`
+   then reboot. For a lighter restore, copy back only `/etc`, `/opt` and `/usr/local` and
+   reinstall packages from `system/latest/var/lib/dpkg/status`.
+4. Re-arm every unit in this file, `colcon build`, and run `./run_tests.sh`.
+
+Excluded on purpose (they rebuild themselves): caches, `~/.npm`, `~/.nvm`, the VS Code servers,
+`~/.platformio`, snaps, the Trash, `/tmp`, `ros_ws/{build,install,log}`, and the Night Shift and
+map-app clones.

@@ -7641,19 +7641,22 @@ class SkillExecutor:
         clamped = self._clamp_lateral_to_schedule(idx, skill, landing)
         clamp_lines = self._pending_notes
         self._pending_notes = []
-        moved_mm = float(np.max(np.abs(
-            np.asarray(clamped.pos_mm, dtype=float) - terminal.landing_mm)))
+        delta_mm = np.asarray(clamped.pos_mm, dtype=float) - terminal.landing_mm
+        moved_mm = float(np.max(np.abs(delta_mm)))
         moved_s = float(clamped.t_land_abs_s) - float(terminal.t_land_s)
+        # Observability only (BUG-75): the ask's signed Robot-frame xy, new
+        # landing minus the installed one, appended to every RESEND* line.
+        dir_xy = (float(delta_mm[0]), float(delta_mm[1]))
         if not landing.from_fit:
             return clamp_lines + self._resend_declined(
-                t_abs_s, idx, 'NO-CONVERGED-FIT', moved_mm, moved_s)
+                t_abs_s, idx, 'NO-CONVERGED-FIT', moved_mm, moved_s, dir_xy)
         if (moved_mm <= self.resend_pos_tol_mm
                 and abs(moved_s) <= self.resend_t_tol_s):
             return clamp_lines + self._resend_declined(
-                t_abs_s, idx, 'WITHIN-TOLERANCE', moved_mm, moved_s)
+                t_abs_s, idx, 'WITHIN-TOLERANCE', moved_mm, moved_s, dir_xy)
         if self._resend_counts.get(idx, 0) >= self.resend_max_per_catch:
             return clamp_lines + self._resend_declined(
-                t_abs_s, idx, 'CAP-SPENT', moved_mm, moved_s)
+                t_abs_s, idx, 'CAP-SPENT', moved_mm, moved_s, dir_xy)
         # DECLINE BEFORE THE SOLVE (plan § 0 carry-in, R4 2026-09-23): the
         # splice this re-send would open at (its dispatch, `t_abs_s`, plus
         # this skill's own lead) must land BEFORE the cup-contact window
@@ -7666,7 +7669,7 @@ class SkillExecutor:
             idx, t_abs_s, float(clamped.t_land_abs_s))
         if t_s >= float(clamped.t_land_abs_s) - CUP_CONTACT_WINDOW_LEAD_S:
             return clamp_lines + self._resend_declined(
-                t_abs_s, idx, 'CONTACT-WINDOW', moved_mm, moved_s)
+                t_abs_s, idx, 'CONTACT-WINDOW', moved_mm, moved_s, dir_xy)
         # PINNED-BUDGET (non-terminal): a SNAPPED re-send splices at the
         # release knot, so its solve budget is the time left to the cliff
         # (the last instant an install still beats the wire to that knot),
@@ -7682,7 +7685,7 @@ class SkillExecutor:
                          - float(hw.JB_TRAJ_KNOT_DT_S) / 2.0)
             if cliff_est - t_abs_s < RESEND_PINNED_BUDGET_FLOOR_S - 1e-12:
                 return clamp_lines + self._resend_declined(
-                    t_abs_s, idx, 'PINNED-BUDGET', moved_mm, moved_s)
+                    t_abs_s, idx, 'PINNED-BUDGET', moved_mm, moved_s, dir_xy)
         saved = (self._carried_release_mm.get(idx),
                  self._carried_catch_xy_mm.get(idx))
         new_terminal = self._catch_terminal(idx, skill, landing)
@@ -7708,20 +7711,23 @@ class SkillExecutor:
             return clamp_lines + [
                     '%.3f RESEND-REFUSED %s at skill %d: the fit moved the '
                     'landing %.1f mm / %+.3f s — %s; no further re-aim for '
-                    'this catch' % (t_abs_s, res.code, idx, moved_mm, moved_s,
-                                    res.message)]
+                    'this catch%s' % (t_abs_s, res.code, idx, moved_mm, moved_s,
+                                      res.message, _reaim_dir_suffix(dir_xy))]
         self._live_catch = (idx, new_terminal, t_abs_s)
         self._refresh_pending_release(idx)
         self._note_catch_aim(skill.ball_id, idx,
                              _event_abs_s(CATCH, new_terminal), reaim=True)
         return clamp_lines + [
                 '%.3f RESEND skill %d: the fit moved the landing %.1f mm / '
-                '%+.3f s (re-aim %d of %d) — %s'
+                '%+.3f s (re-aim %d of %d) — %s%s'
                 % (t_abs_s, idx, moved_mm, moved_s, self._resend_counts[idx],
-                   self.resend_max_per_catch, res.message)]
+                   self.resend_max_per_catch, res.message,
+                   _reaim_dir_suffix(dir_xy))]
 
     def _resend_declined(self, t_abs_s: float, idx: int, reason: str,
-                         moved_mm: float, moved_s: float) -> List[str]:
+                         moved_mm: float, moved_s: float,
+                         dir_xy: Optional[Tuple[float, float]] = None
+                         ) -> List[str]:
         """One line per ``(catch, reason)`` — the tracker answers on every
         tick, so an unconditional line would repeat the same sentence at the
         re-send cadence (~40 Hz worth, gated only by
@@ -7733,8 +7739,9 @@ class SkillExecutor:
             return []
         self._resend_notes.add(key)
         return ['%.3f RESEND-SKIPPED %s skill %d: the tracker landing is '
-                '%.1f mm / %+.3f s from the committed aim'
-                % (t_abs_s, reason, idx, moved_mm, moved_s)]
+                '%.1f mm / %+.3f s from the committed aim%s'
+                % (t_abs_s, reason, idx, moved_mm, moved_s,
+                   _reaim_dir_suffix(dir_xy))]
 
 
     # ── late catch re-aim BUMP (I-CATCH-5; pure layer, G1 2026-10-16) ──────
@@ -7913,6 +7920,15 @@ class SkillExecutor:
                            decision.moved_s,
                            '; no further re-aim for this catch'
                            if decision.terminal else '', detail)]
+
+
+def _reaim_dir_suffix(dir_xy: Optional[Tuple[float, float]]) -> str:
+    """`` dx=+12.3 dy=-4.5`` (mm, Robot frame, new landing minus the installed
+    one), appended at the END of a RESEND line so every older parser regex
+    still matches; empty when no direction is given."""
+    if dir_xy is None:
+        return ''
+    return ' dx=%+.1f dy=%+.1f' % (dir_xy[0], dir_xy[1])
 
 
 @dataclasses.dataclass(frozen=True)

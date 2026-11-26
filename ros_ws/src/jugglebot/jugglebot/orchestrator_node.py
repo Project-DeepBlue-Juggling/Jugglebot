@@ -257,8 +257,9 @@ class OrchestratorNode(Node):
         # ODrive CLOSED_LOOP_CONTROL (odrive.AXIS_STATES['CLOSED_LOOP'], i.e.
         # protocol_config.ODRIVE_STATES — the constant the bridge's activate path
         # uses) with no active error, on every LEG axis. FaultHandler's
-        # real-fault exit stow (ACTIVE or LEVELLING) runs only when this is true
-        # (ARMING_CONTRACT choreography step 6). A message too short to carry
+        # real-fault exit stow runs exactly when this is true, whatever state
+        # the FAULT visit began in (ARMING_CONTRACT choreography step 6, FW 53:
+        # an aborted rise can leave the six HELD mid-air). A message too short to carry
         # every leg reads False: no evidence the legs are holding.
         states = msg.motor_states
         self.ctx.legs_closed_loop = (
@@ -281,6 +282,18 @@ class OrchestratorNode(Node):
             self.ctx.leg_states = tuple(int(states[i].current_state)
                                         for i in odrive.LEG_AXES)
             self.ctx.leg_states_time = now
+            # FW 53 U6b (R3): the per-Leg drop evidence the FAULT exit's mixed-case
+            # recovery reads (jugglebot/leg_reference.py). A gap since the last
+            # full message beyond the A6 freshness bound marks every open drop
+            # record (it could hide a drive reboot).
+            last = getattr(self, '_leg_drops_fed_t', None)
+            self.ctx.leg_drops.observe(
+                self.ctx.leg_states,
+                [int(states[i].active_errors) for i in odrive.LEG_AXES],
+                [int(states[i].disarm_reason) for i in odrive.LEG_AXES],
+                [float(states[i].pos_estimate) for i in odrive.LEG_AXES],
+                gap=last is not None and now - last > LEG_STATES_MAX_AGE_S)
+            self._leg_drops_fed_t = now
         else:
             self.ctx.leg_states = None
             self.ctx.leg_states_time = None

@@ -57,7 +57,12 @@ void homing_init();
 
 // RPC entry (net-task context). Validates `axis` (legs 0..5 + hand axis 6) + bus
 // health, then latches a non-blocking start request. Returns a JbUdp::RpcStatus
-// (OK = accepted/started). ERR_REJECTED if a homing is already active.
+// (OK = accepted/started). ERR_REJECTED if a homing is already active, and (FW 53,
+// I-FW-19, the twin of ARMING_CONTRACT A6) for a Leg unless rig_is_bench(now) or
+// every present Leg reports IDLE in a fresh, CL-confirmed heartbeat
+// (all_present_legs_idle). HOME(Hand) is not gated. An accepted Leg HOME clears
+// that Leg's HELD bit. Homing's own CLOSED_LOOP and IDLE frames go through
+// odrive_set_state_tx(..., Who::HOMING_OWNER).
 uint16_t homing_request(uint8_t axis);
 
 // Drive the homing state machine one tick. Call at HOMING_RATE_HZ from a task
@@ -65,6 +70,11 @@ uint16_t homing_request(uint8_t axis);
 void homing_step();
 
 bool    homing_active();             // a homing is pending or running
+// FW 53 (I-FW-19): the axis the homing task is driving RIGHT NOW (set at the
+// first SETUP tick, cleared to 0xFF by finish() AFTER its IDLE frame and on
+// success), 0xFF when none. leg_stow_gate.cpp reads it for the HOMING_OWNER
+// carve-out: only this Leg may be commanded IDLE outside the Stow predicate.
+uint8_t homing_axis_in_flight();
 uint8_t homing_result(uint8_t axis); // last HomingResult for an axis (legs 0..5 + hand 6)
 // FW 34 (BUG-18): the (result, per-home epoch) pair, read together under one IRQ
 // guard. The epoch is bumped on every ACCEPTED HOME; the Diagnostic uplinks both.

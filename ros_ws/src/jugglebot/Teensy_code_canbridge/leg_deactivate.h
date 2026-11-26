@@ -55,8 +55,15 @@
 //  MONITOR → IDLE ladder in a task; the Jetson observes the descent via telemetry.
 //
 //  Determinacy / safety: no unbounded loops, no blocking, no ISR work. Bounded by
-//  a hard timeout; any abort (bus down / E-STOP / timeout) leaves the targeted
-//  legs in IDLE — the move is NEVER left driving. Re-running DEACTIVATE while one
+//  a hard timeout. FW 53 (I-FW-19): no Leg is made IDLE unless the Platform is
+//  already at Stow, so an abort HOLDS the legs instead of dropping them: before
+//  the descent is commanded nothing is sent (each leg holds where it is), during
+//  it the live legs are frozen at their stopping point on their own commanded
+//  segment (leg_freeze_tx); a dead bus gets no frame at all; a guard E-STOP after
+//  the target is commanded lets the descent finish. The leg IDLEs (arrival, or an
+//  abort from an already-stowed Platform) go through the Stow gate. A single-leg
+//  DEACTIVATE is refused while any other present leg is not at Stow. See
+//  leg_deactivate.cpp's header and fw53_design.md 3.1. Re-running DEACTIVATE while one
 //  is active is rejected (idempotent); a concurrent HOME or ACTIVATE is rejected
 //  too (the cold-start moves are mutually exclusive).
 // =============================================================================
@@ -71,7 +78,7 @@ enum DeactivateResult : uint8_t {
   DEACTIVATE_NONE    = 0,   // never deactivated this boot
   DEACTIVATE_RUNNING = 1,   // the descent ladder is in progress for this axis
   DEACTIVATE_OK      = 2,   // reached STOW + settled + IDLE'd
-  DEACTIVATE_FAILED  = 3,   // aborted (timeout / bus down / E-STOP)
+  DEACTIVATE_FAILED  = 3,   // aborted (timeout / bus down / E-STOP / errored or dropped leg): held, or IDLE only from Stow
 };
 
 void deactivate_init();
@@ -80,7 +87,9 @@ void deactivate_init();
 // — the hand IDLEs immediately, the legs lower in parallel (even descent); a
 // single axis index (0..6) deactivates just that axis iff present. Validates bus
 // health + targets, rejects a concurrent
-// DEACTIVATE/ACTIVATE/HOME, then latches a non-blocking start. Returns a
+// DEACTIVATE/ACTIVATE/HOME, rejects a single-leg request (ERR_REJECTED) unless
+// every OTHER present leg is at Stow (I-FW-19), clears the targets' HELD bits on
+// accept, then latches a non-blocking start. Returns a
 // JbUdp::RpcStatus (OK = accepted).
 uint16_t deactivate_request(uint8_t axis);
 

@@ -18,8 +18,8 @@ links: []
 parent: two-ball-oval
 filed_by: claude
 night_skip: frozen-path
-night_skip_on: '2026-11-22'
-night_skip_note: Changes flown motion and jugglebot_interfaces, so the gate can only hold it at (f); low priority.
+night_skip_on: '2026-11-26'
+night_skip_note: A day Session built and held it on offline/bug29; it changes flown motion and both packages.
 ---
 
 `RestTerminal.holds_ball` never reaches the node: `tests/ros/test_install_segment.py:1413-1417` excludes it by name, so every REST is rebuilt as holding a ball. That over-constrains an empty-cup REST's cup-contact floor. Conservative: it costs refusals, not safety.

@@ -4,7 +4,7 @@ kind: feature
 title: 'Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load)'
 status: backlog
 created: '2026-10-28'
-updated: '2026-10-28T11:53:08Z'
+updated: '2026-11-26T03:18:33Z'
 owners: []
 priority: high
 effort: m
@@ -59,3 +59,4 @@ Bounded: a solve is <= ~100 ms CPU, so a runaway RT lock-up is not a realistic r
 
 - 2026-10-28: Design done (Opus, 2026-10-28 evening): kernel has CONFIG_RT_GROUP_SCHED and user.slice cpu.rt_runtime_us=0, so rtprio alone cannot give FIFO (detail in the section above)
 - 2026-10-28: Flown once (22:26 Sitting 2026-10-28): wall/CPU 1.01 as predicted, but the FIFO worker stalled the Jetson setpoint stream 60-96 ms per CATCH solve (detail in the section above)
+- 2026-11-26: 2026-11-26 check: FIFO was flown once (2026-10-28 22:26) and stalled the stream; off by default by owner decision, to re-open only with cpu_partition. The launch file has no solver_rt_priority argument. tools/systemd/README.md said default 10; corrected to 0.

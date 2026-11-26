@@ -23,6 +23,8 @@ for tag,d in logs.items():
             if m: t,code,k,mm,ds=float(m.group(1)),m.group(2),int(m.group(3)),float(m.group(4)),float(m.group(5))
             else: t,k,mm,ds=float(m2.group(1)),int(m2.group(2)),float(m2.group(3)),float(m2.group(4)); code='INSTALLED'
             a=aims.get(k,{}); r={'log':tag,'pat':pat,'t':t,'skill':k,'code':code,'mm':mm,'ds':ds,'tl':a.get('tl'),'src':a.get('src')}
+            md=re.search(r" dx=([-+]\d+\.\d) dy=([-+]\d+\.\d)\s*$",ln)  # Robot-frame ask, logged since 2026-11-26 (BUG-75); None on older logs
+            r['dx'],r['dy']=(float(md.group(1)),float(md.group(2))) if md else (None,None)
             r['to_land']= (a['tl']-t) if a else None
             if m and last_ref:
                 for key,rx in [('ks',r'k_s (\d+)'),('kw',r'k_wire@node (\d+)'),('tviol',r't=([\d.]+) s'),('peak',r'peak [^>]*?([\d.]+) [a-z/³^0-9]* >'),('limit',r'\((\w+):')]:

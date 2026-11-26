@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import re
+import signal
 import subprocess
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -201,3 +202,75 @@ def test_read_bag_rows_keeps_rows_of_a_bag_truncated_in_its_index(tmp_path):
     assert rows is not None and len(rows) == 5
     (d / 'b_0.mcap').write_bytes(b'garbage')
     assert R.read_bag_rows(str(d)) is None
+
+
+# ---- the runner's stop logic (tools/probes/bug129_stop_group.sh), no ROS ----------------------
+
+_TREE = r'''
+import os, signal, subprocess, sys, time
+rec = sys.argv[1]
+def note(who):
+    with open(rec, "a") as f:
+        f.write("%s %d\n" % (who, os.getpid()))
+if signal.getsignal(signal.SIGINT) is signal.SIG_IGN:   # the BUG-129 defect: inherited ignore
+    note("IGNORED_AT_START")
+kids = []
+def on_int(*_):
+    note("INT")
+    for k in kids:                     # what ros2 launch does: forward one SIGINT to each node
+        k.send_signal(signal.SIGINT)
+    for k in kids:
+        k.wait(timeout=10)
+    sys.exit(0)
+signal.signal(signal.SIGINT, on_int)
+kids += [subprocess.Popen([sys.executable, "-c", "import os,signal,sys,time\n"
+        "rec=sys.argv[1]\n"
+        "def h(*_):\n open(rec,'a').write('INT %d\\n'%os.getpid()); time.sleep(0.5); sys.exit(0)\n"
+        "signal.signal(signal.SIGINT,h)\nopen(rec+'.up','a').write('x')\n"
+        "while True: time.sleep(0.05)", rec]),
+        subprocess.Popen(["bash", "-c", "trap 'echo INT $$ >> %s; sleep 0.5; exit 0' INT; : > %s.bashup; "
+                          "while true; do sleep 0.05; done" % (rec, rec)])]
+open(rec + ".leader_up", "w").write("x")
+while True:
+    time.sleep(0.05)
+'''
+
+
+def _run_stop(tmp_path, runner_body):
+    """Source the stop library in a NON-INTERACTIVE bash (the runner's situation), start a
+    three-process tree (leader + python child + bash child, each recording its SIGINT), stop it."""
+    tree = tmp_path / 'tree.py'
+    tree.write_text(_TREE)
+    rec = tmp_path / 'rec.txt'
+    script = (f'source {REPO}/tools/probes/bug129_stop_group.sh\n{runner_body}\n'
+              f'echo "STOPSIG=$GROUP_STOP_SIGNAL"; group_alive && echo GROUP_ALIVE || echo GROUP_GONE\n')
+    # The runner itself starts with SIGINT ignored (how a background job or nohup'd runner begins):
+    # the stop logic must hold from that start, which is the shape of the 2026-11-25/26 failures.
+    return rec, subprocess.run(
+        ['bash', '-c', script.replace('TREE', f'python3 {tree} {rec}').replace('REC', str(rec))],
+        capture_output=True, text=True, timeout=60,
+        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN))
+
+
+_START_AND_STOP = '''
+group_start /dev/null TREE
+for i in $(seq 1 100); do [[ -e REC.leader_up && -e REC.up && -e REC.bashup ]] && break; sleep 0.1; done
+group_stop 5 3 2
+'''
+
+
+def test_group_stop_gives_every_process_exactly_one_sigint_via_the_leader(tmp_path):
+    rec, r = _run_stop(tmp_path, _START_AND_STOP)
+    lines = rec.read_text().split()
+    assert 'IGNORED_AT_START' not in lines, 'the launch inherited an ignored SIGINT (background-job trap)'
+    assert lines.count('INT') == 3, (lines, r.stdout, r.stderr)   # leader + python child + bash child
+    pids = [l for l in lines if l.isdigit()]
+    assert len(pids) == len(set(pids)) == 3, 'a process got SIGINT twice or not at all'
+    assert 'STOPSIG=INT' in r.stdout and 'GROUP_GONE' in r.stdout, r.stdout
+
+
+def test_group_stop_escalates_when_sigint_is_ignored(tmp_path):
+    body = ('group_start /dev/null bash -c "trap \'\' INT TERM; while true; do sleep 0.1; done"\n'
+            'sleep 0.5\ngroup_stop 1 1 2\n')
+    _, r = _run_stop(tmp_path, body)
+    assert 'STOPSIG=KILL' in r.stdout and 'GROUP_GONE' in r.stdout, (r.stdout, r.stderr)

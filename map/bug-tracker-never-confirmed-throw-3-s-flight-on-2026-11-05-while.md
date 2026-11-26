@@ -17,9 +17,9 @@ blocked_by: []
 links:
 - logbook/2026-11-18-sitting-debrief.md
 filed_by: claude
-night_skip: too-large
-night_skip_on: '2026-11-22'
-night_skip_note: 'Rated m: the fix changes what a live Catch reads, and why steady Throws escape is untested; not built unattended.'
+night_skip: waiting-trigger
+night_skip_on: '2026-11-26'
+night_skip_note: Fix landed on main 2026-11-25 (8d319e7a), unflown; closes when a Sitting's Throws confirm at release.
 ---
 
 Found by the Night Shift on 2026-11-06 while reading BUG-69's bag (2026-11-05 22:46, the first fed Attempt). Throw 3 got no learner row because the Tracker never confirmed its flight, not because of the identity gate.

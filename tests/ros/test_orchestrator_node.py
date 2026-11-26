@@ -1811,6 +1811,72 @@ class TestFaultExitStowThroughTick:
         spy.call_async.assert_called_once()
 
 
+class TestMixedCaseRecoveryThroughTick:
+    def test_proven_drop_dispatches_deactivate_after_the_clear(self, orch):
+        """FW 53 U6b (R3) through _on_robot_state and _tick: Leg 2 disarms with
+        CURRENT_LIMIT_VIOLATION at the pose while five hold (has_fatal_odrive_error,
+        disarm_while_cl). The operator's clear_errors routes odrive_command; once
+        the errors clear with Leg 2 Idle 0.09 rev below its pose, the node
+        dispatches ONE profiled deactivate, FAULT holds, then BOOT -> IDLE. The
+        evidence (last Closed-loop length, the 4096 reason) came from the
+        orchestrator's own /robot_state feed. Mutation caught: the
+        leg_drops.observe call removed from _on_robot_state (no baseline: refused)."""
+        from jugglebot.can import odrive
+        closed = odrive.AXIS_STATES['CLOSED_LOOP']
+        healthy = dict(is_homed=True, firmware_validated=True)
+
+        def state(leg2_state, disarm2=0, pos2=2.19, **kw):
+            msg = _robot_state_legs(closed, **dict(healthy, **kw))
+            for i in odrive.LEG_AXES:
+                msg.motor_states[i].pos_estimate = 2.19
+            msg.motor_states[2].current_state = leg2_state
+            msg.motor_states[2].disarm_reason = disarm2
+            msg.motor_states[2].pos_estimate = pos2
+            return msg
+
+        orch.sm.force_transition(RobotState.ACTIVE, orch.ctx)
+        orch._on_robot_state(state(closed))
+        orch._on_link_status(_link_status('NONE'))
+        orch._tick()
+        act = MagicMock()
+        act.service_is_ready.return_value = True
+        fut = MockFuture()
+        act.call_async.return_value = fut
+        orch._activate_client = act
+        cmd = MagicMock()
+        cmd.service_is_ready.return_value = True
+        cfut = MockFuture()
+        cmd.call_async.return_value = cfut
+        orch._odrive_cmd_client = cmd
+
+        orch._on_robot_state(state(1, disarm2=4096, pos2=2.15,
+                                   errors=['Leg 2 disarmed: CURRENT_LIMIT_VIOLATION'],
+                                   has_fatal_odrive_error=True))
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+        orch._on_command(MockString(data='clear_errors'))
+        orch._tick()
+        cmd.call_async.assert_called_once()
+        assert cmd.call_async.call_args[0][0].command == 'clear_errors'
+        cfut.set_result(MagicMock(success=True, message='cleared'))
+        act.call_async.assert_not_called()
+
+        orch._on_robot_state(state(1, disarm2=0, pos2=2.10))
+        orch._tick()
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+        act.call_async.assert_called_once()
+        assert act.call_async.call_args[0][0].command == 'deactivate'
+
+        fut.set_result(MagicMock(success=True, message='stowed'))
+        orch._on_robot_state(_robot_state_legs(1, **healthy))
+        orch._tick()
+        assert orch.sm.state == RobotState.BOOT
+        orch._tick()
+        assert orch.sm.state == RobotState.IDLE
+        act.call_async.assert_called_once()
+
+
 class TestFaultExitStowFromLevellingThroughTick:
     """The real-fault exit stow for a FAULT visit that began in LEVELLING
     (ARMING_CONTRACT choreography step 6, extended 2026-10-07), through _tick:

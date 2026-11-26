@@ -185,6 +185,10 @@ function setShown(on, initial = false) {
     btn.classList.toggle('active', on);
     btn.textContent = on ? 'Hide IMU charts' : 'IMU charts';
     els['imu-capture-select'].hidden = !on;
+    // The rule after the capture tools shows only with them: the show/hide button now
+    // sits with the ODrive one (FEAT-66), so hidden tools would leave a stray rule.
+    const toolsDivider = document.getElementById('imu-controls-divider');
+    if (toolsDivider) toolsDivider.hidden = !on;
     applyControlsUI();
     if (on) {
         xRange = getSharedXRange();

@@ -1458,13 +1458,36 @@ class TestFaultExitStow:
         ctx.link_status_seen = True
         assert boot.execute(ctx) == RobotState.HOMING
 
-    @pytest.mark.parametrize('origin', [RobotState.HOMING, RobotState.IDLE])
-    def test_real_fault_not_from_active_exits_to_boot_at_once(self, origin):
+    @pytest.mark.parametrize('origin', [RobotState.HOMING, RobotState.IDLE,
+                                        RobotState.BOOT])
+    def test_real_fault_from_any_state_with_six_closed_loop_stows(self, origin):
+        """FW 53 (2026-11-26): the exit stow is decided on drive state alone. An
+        aborted ladder can leave the six HELD Closed-loop mid-air after any
+        visit, so a visit that began outside ACTIVE/LEVELLING stows too.
+        Mutation: restoring the prev_state-in-(ACTIVE, LEVELLING) condition
+        returns BOOT here with the Legs up."""
         handler = FaultHandler()
         ctx = Context()
         ctx.prev_state = origin
         ctx.is_homed = True
         ctx.legs_closed_loop = True
+        ctx.errors = ['SOME_ERROR']
+        handler.on_enter(ctx)
+        ctx.drain_requests()
+        ctx.errors = []
+        assert handler.execute(ctx) is None
+        assert ctx.drain_requests() == ['deactivate']
+
+    @pytest.mark.parametrize('origin', [RobotState.HOMING, RobotState.IDLE,
+                                        RobotState.ACTIVE, RobotState.LEVELLING])
+    def test_real_fault_with_legs_not_all_closed_loop_exits_to_boot(self, origin):
+        """All six Idle (an FW 53 rise returned to Stow) or a mixed set: BOOT at
+        once, no stow; BOOT's A7/A6 predicate decides from there."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.prev_state = origin
+        ctx.is_homed = True
+        ctx.legs_closed_loop = False
         ctx.errors = ['SOME_ERROR']
         handler.on_enter(ctx)
         ctx.drain_requests()
@@ -2319,7 +2342,7 @@ class TestBootIdleGate:
         assert sm.state == RobotState.BOOT
         assert len(notes) == 1
         assert 'Leg(s) 1, 2, 3, 4, 5 are Closed-loop' in notes[0]
-        assert 'E-stop button' in notes[0] and 'FW 53' in notes[0]
+        assert 'E-stop button' in notes[0] and 'reference is proven kept' in notes[0]
 
     @pytest.mark.parametrize('states,age', [
         (None, 0.0),                                   # never reported
@@ -2344,10 +2367,10 @@ class TestBootIdleGate:
         assert sm.state == RobotState.IDLE
         assert notes == []
 
-    def test_fault_exit_with_posed_legs_from_idle_does_not_claim_idle(self):
-        """A FAULT visit that began outside ACTIVE/LEVELLING skips the exit
-        stow and goes to BOOT; with all six Legs still Closed-loop (a manual
-        /activate in IDLE) BOOT now holds instead of claiming IDLE."""
+    def test_fault_exit_with_posed_legs_from_idle_stows_then_claims_idle(self):
+        """A FAULT visit that began outside ACTIVE/LEVELLING with all six Legs
+        Closed-loop (a manual /activate in IDLE) stows them first since FW 53,
+        and BOOT claims IDLE only once all six read Idle (A7)."""
         sm, ctx, notes = self._homed_boot([_IDLE] * 6)
         sm.tick(ctx)
         assert sm.state == RobotState.IDLE
@@ -2355,11 +2378,19 @@ class TestBootIdleGate:
         ctx.legs_closed_loop = True
         sm.force_transition(RobotState.FAULT, ctx)
         ctx.errors = []
+        reqs = []
         for _ in range(3):
             sm.tick(ctx)
+            reqs += _dispatch(ctx)
+        assert sm.state == RobotState.FAULT          # held while the stow runs
+        assert reqs.count('deactivate') == 1
+        _resolve(ctx, True)
+        ctx.legs_closed_loop = False
+        _legs(ctx, [_IDLE] * 6)
+        sm.tick(ctx)
         assert sm.state == RobotState.BOOT
-        assert 'deactivate' not in ctx.drain_requests()
-        assert any(n.startswith('IDLE refused: all six') for n in notes)
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
 
     def test_predicate_rows(self):
         from jugglebot.state_machine import (
@@ -2387,3 +2418,195 @@ class TestBootIdleGate:
         assert homing_refusal([_IDLE] + [_CL] * 5, None, 0.0).endswith(
             'clear_errors; Homing starts by itself once all six Legs have '
             'been Idle for 2 s.')
+
+
+class TestMixedCaseRecovery:
+    """FW 53 U6b, recovery R3 (owner 2026-11-25): one Leg dropped out by itself
+    while five held the Platform up. After the operator's clear_errors, the FAULT
+    exit re-engages it and stows all six (the profiled deactivate) only when its
+    position reference is proven kept (jugglebot/leg_reference.py); otherwise BOOT
+    holds with the E-stop-button remedy and one notice says why. Once per visit."""
+
+    _MIXED = (_CL, _CL, _IDLE, _CL, _CL, _CL)
+
+    @staticmethod
+    def _feed(ctx, states, disarm2=0, pos2=2.10, active2=0):
+        ctx.leg_drops.observe(states, [0, 0, active2, 0, 0, 0],
+                              [0, 0, disarm2, 0, 0, 0],
+                              [2.19, 2.19, pos2, 2.19, 2.19, 2.19], False)
+        _legs(ctx, states)
+
+    def _dropped_in_fault(self, bits=4096):
+        """ACTIVE, Leg 2 disarms with ``bits``, forced FAULT, operator clear_errors
+        dispatched and resolved, errors and the guard cleared. Returns (sm, ctx)
+        at the tick before the exit decides."""
+        sm, ctx = TestFaultExitStow._armed_active()
+        self._feed(ctx, (_CL,) * 6, pos2=2.19)
+        self._feed(ctx, self._MIXED, disarm2=bits)
+        ctx.legs_closed_loop = False
+        ctx.errors = ['Leg 2 disarmed']
+        ctx.fatal_error = True
+        ctx.guard_latched = True
+        _force_fault(sm, ctx)
+        sm.tick(ctx)
+        assert sm.state == RobotState.FAULT
+        assert _dispatch(ctx) == ['disarm_setpoints']
+        ctx.operator_notices.clear()
+        ctx.enqueue_command('clear_errors')
+        sm.tick(ctx)
+        assert _dispatch(ctx) == ['clear_errors']
+        _resolve(ctx, True)
+        # The clear landed: drive errors and the disarm reason gone, guard released.
+        self._feed(ctx, self._MIXED, disarm2=0)
+        ctx.errors = []
+        ctx.fatal_error = False
+        ctx.guard_latched = False
+        return sm, ctx
+
+    def test_proven_drop_stows_all_six_then_boot_idle(self):
+        """Mutation caught: the mixed branch removed (BOOT, no deactivate); the
+        seal at clear_errors removed (the cleared reason reads as a lapse, refused)."""
+        sm, ctx = self._dropped_in_fault()
+        sm.tick(ctx)
+        assert sm.state == RobotState.FAULT
+        assert _dispatch(ctx) == ['deactivate']
+        assert any('Mixed-case recovery: Leg(s) 2' in n for n in ctx.operator_notices)
+        sm.tick(ctx)
+        assert _dispatch(ctx) == []                  # held, no second request
+        _resolve(ctx, True)
+        self._feed(ctx, (_IDLE,) * 6, pos2=0.0)
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+        ctx.all_heartbeats = True
+        ctx.firmware_validated = True
+        ctx.link_status_seen = True
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
+
+    @pytest.mark.parametrize('bits,why', [(8, 'MISSING_ESTIMATE'),
+                                          (67108864, 'SPINOUT_DETECTED')])
+    def test_unproven_drop_holds_and_names_the_reason(self, bits, why):
+        """Mutation caught: the refusal ignored (a MISSING_ESTIMATE Leg re-energised)."""
+        sm, ctx = self._dropped_in_fault(bits=bits)
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+        assert _dispatch(ctx) == []
+        said = [n for n in ctx.operator_notices if 'not offered' in n]
+        assert len(said) == 1 and 'Leg 2: ' in said[0] and why in said[0]
+        ctx.all_heartbeats = True
+        ctx.firmware_validated = True
+        ctx.link_status_seen = True
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT           # A7 holds the mixed set
+        assert any('E-stop button' in n for n in ctx.operator_notices)
+
+    def test_two_dropped_legs_are_refused_with_the_count(self):
+        """FW 53 audit follow-up: the owner approved the recovery for ONE dropped
+        Leg. Legs 2 and 3 both drop with a proven-kept reason (CURRENT_LIMIT,
+        sealed at the clear): BOOT holds, no deactivate, one notice naming the
+        count and the E-stop-button remedy. Mutation caught: the count check
+        removed from mixed_case_verdict (a deactivate is requested)."""
+        two = (_CL, _CL, _IDLE, _IDLE, _CL, _CL)
+        pos = [2.19, 2.19, 2.10, 2.12, 2.19, 2.19]
+
+        def feed(ctx, states, dis):
+            ctx.leg_drops.observe(states, [0] * 6, [0, 0, dis, dis, 0, 0], pos, False)
+            _legs(ctx, states)
+
+        sm, ctx = TestFaultExitStow._armed_active()
+        feed(ctx, (_CL,) * 6, 0)
+        feed(ctx, two, 4096)
+        ctx.legs_closed_loop = False
+        ctx.errors = ['Legs 2, 3 disarmed']
+        ctx.fatal_error = True
+        ctx.guard_latched = True
+        _force_fault(sm, ctx)
+        sm.tick(ctx)
+        assert sm.state == RobotState.FAULT
+        assert _dispatch(ctx) == ['disarm_setpoints']
+        ctx.operator_notices.clear()
+        ctx.enqueue_command('clear_errors')
+        sm.tick(ctx)
+        assert _dispatch(ctx) == ['clear_errors']
+        _resolve(ctx, True)
+        feed(ctx, two, 0)
+        ctx.errors = []
+        ctx.fatal_error = False
+        ctx.guard_latched = False
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+        assert _dispatch(ctx) == []
+        said = [n for n in ctx.operator_notices if 'not offered' in n]
+        assert len(said) == 1
+        assert '2 Legs' in said[0] and 'one dropped Leg only' in said[0]
+        assert 'E-stop button' in said[0]
+
+    def test_unhomed_drop_is_not_offered(self):
+        sm, ctx = self._dropped_in_fault()
+        ctx.is_homed = False
+        sm.tick(ctx)
+        assert _dispatch(ctx) == []
+        assert any('homed flag is clear' in n for n in ctx.operator_notices)
+
+    def test_failed_recovery_is_not_retried_in_the_same_visit(self):
+        """The Leg re-faulted on re-engage (deactivate failed, set still mixed): the
+        next clear_errors goes to BOOT with a notice, no second deactivate.
+        Mutation caught: the _mixed_tried check removed."""
+        sm, ctx = self._dropped_in_fault()
+        sm.tick(ctx)
+        assert _dispatch(ctx) == ['deactivate']
+        _resolve(ctx, False)
+        sm.tick(ctx)
+        assert sm.state == RobotState.FAULT          # stow failed: held
+        assert _dispatch(ctx) == []
+        ctx.operator_notices.clear()
+        ctx.enqueue_command('clear_errors')
+        sm.tick(ctx)
+        reqs = _dispatch(ctx)
+        assert 'deactivate' not in reqs
+        if 'clear_errors' in reqs:
+            _resolve(ctx, True)
+            sm.tick(ctx)
+            assert _dispatch(ctx) == []
+        assert sm.state == RobotState.BOOT
+        assert any('not offered again' in n for n in ctx.operator_notices)
+
+    def test_failed_recovery_leaving_six_closed_loop_uses_the_all_six_stow(self):
+        """A descent timeout freezes all six Closed-loop: the next clear_errors
+        runs the existing all-six exit stow."""
+        sm, ctx = self._dropped_in_fault()
+        sm.tick(ctx)
+        assert _dispatch(ctx) == ['deactivate']
+        _resolve(ctx, False)
+        self._feed(ctx, (_CL,) * 6, pos2=1.0)
+        ctx.legs_closed_loop = True
+        sm.tick(ctx)
+        ctx.enqueue_command('clear_errors')
+        sm.tick(ctx)
+        reqs = _dispatch(ctx)
+        if reqs == ['clear_errors']:
+            _resolve(ctx, True)
+            sm.tick(ctx)
+            reqs = _dispatch(ctx)
+        assert reqs == ['deactivate']
+        assert sm.state == RobotState.FAULT
+
+    def test_reason_cleared_outside_the_orchestrator_is_not_proven(self):
+        """The disarm reason went to 0 with no clear_errors through FAULT (a drive
+        reboot, or a clear sent around the orchestrator): not proven."""
+        sm, ctx = TestFaultExitStow._armed_active()
+        self._feed(ctx, (_CL,) * 6, pos2=2.19)
+        self._feed(ctx, self._MIXED, disarm2=4096)
+        ctx.legs_closed_loop = False
+        ctx.errors = ['Leg 2 disarmed']
+        ctx.fatal_error = True
+        _force_fault(sm, ctx)
+        sm.tick(ctx)
+        _dispatch(ctx)
+        self._feed(ctx, self._MIXED, disarm2=0)    # no clear_errors through FAULT
+        ctx.errors = []
+        ctx.fatal_error = False
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+        assert _dispatch(ctx) == []
+        assert any('cleared before' in n for n in ctx.operator_notices)

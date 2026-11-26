@@ -104,15 +104,18 @@ work (2026-07-15) hit three distinct doors into that hole:
   Platform is down: an Idle Leg is unpowered and free to move, so six Idle Legs
   cannot hold the Platform up. It is at Stow, either lowered there by a
   confirmed DEACTIVATE (which IDLEs each Leg on arrival) or dropped there under
-  gravity by the drive power loss of the E-stop button. FW 52 has one more way
-  to six Idle Legs, and it is a defect, not an accepted route to Stow: the
-  ACTIVATE and DEACTIVATE abort routines (`abort_all` in `leg_activate.cpp` and
-  `leg_deactivate.cpp`, on a guard ESTOP, a timeout, an errored target Leg or
-  the Hand, or a send failure) IDLE every target Leg wherever it is, so an
-  abort mid-rise or mid-descent drops the Platform. That violates the owner's
-  Leg IDLE rule (A7) and is to be fixed in FW 53 (hold the Legs, do not IDLE
-  them); it is not fixed today. A6 still reads its result correctly (six Idle
-  Legs are down). The settle lets a drop finish. Leg positions are not
+  gravity by the drive power loss of the E-stop button. The ACTIVATE and DEACTIVATE aborts do
+  NOT make a third way to six Idle Legs: from FW 53 no abort IDLEs a Leg above
+  Stow (A7, `INVARIANTS.md` I-FW-19); they hold the Legs, freeze them at their
+  stopping points, or return the Platform to Stow first, so six Idle Legs still
+  mean a Platform that is down. The firmware twin of this gate is
+  `homing_request` in `leg_homing.cpp`: a Leg HOME is refused (ERR_REJECTED)
+  unless every present Leg reads IDLE on a fresh heartbeat that is confirmed
+  after the bridge's last Closed-loop send to it (`all_present_legs_idle`;
+  ENCODER_INDEX_SEARCH and an at-Stow Closed-loop Leg both refuse; the one-Leg
+  bench rig is exempt; HOME of the Hand is not gated); the firmware has no 2 s settle, only the confirmed
+  fresh heartbeat. A Leg
+  CLOSED_LOOP and a Leg SDO write are also refused while a Homing runs. The settle lets a drop finish. Leg positions are not
   used: they mean nothing once a reference is lost, which is exactly when
   Homing is needed. Unknown Leg states (no /robot_state yet, or one too short
   to carry every Leg) refuse: Homing never starts on a guess.
@@ -138,39 +141,52 @@ work (2026-07-15) hit three distinct doors into that hole:
     session left posed, or a false IDLE): the profiled Stow, the bridge's
     `/deactivate` service. Homing then starts by itself (from BOOT) once the
     Legs are Idle.
-  - **Some Legs Closed-loop, some not** (one Leg lost its reference or its
-    drive rebooted during ACTIVE or LEVELLING, and the firmware's Soft E-stop
-    holds the other five at their setpoints): no software stow. The firmware's
-    DEACTIVATE targets one axis or every present Leg, so it would drive the Leg
-    whose reference is lost to "Stow" in a frame that may be turns off, and
-    single-Leg DEACTIVATEs run one at a time and diverge the lengths exactly as
-    Homing would. The operator supports the Platform and presses the E-stop
-    button (the drives lose power and the Platform comes down), then sends
-    `clear_errors` once power is back. This is the present fallback, pending
-    FW 53: it brings the Platform down by a drop, not a lowering, and needs a
+  - **Some Legs Closed-loop, some not** (one Leg dropped out by itself during
+    ACTIVE or LEVELLING, and the firmware's Soft E-stop holds the other five at
+    their setpoints): a software stow only when exactly one Leg is not
+    Closed-loop, and it reads Idle and provably kept its position reference
+    (owner, 2026-11-25; FW 53 U6b, R3). Two or more dropped Legs are refused with
+    a notice naming the count ("recovery is offered for one dropped Leg only")
+    and the E-stop-button remedy below.
+    `FaultHandler._mixed_recovery` decides with `leg_reference.reference_unproven`
+    (homed flag kept, a Closed-loop baseline length seen, no `/robot_state` gap
+    or odd drive state, a disarm reason seen and held until the operator's
+    `clear_errors`, only error bits known to keep the estimate, and no more than
+    `REF_DRIFT_TOL_REV` from the baseline), and after that `clear_errors` sends
+    the profiled DEACTIVATE(AXIS_ALL): the firmware re-seeds the dropped Leg at
+    its measured length and re-engages it there, then lowers all six together
+    (`tests/firmware/native/test_leg_deactivate.cpp` "R3 mixed case"); once per
+    FAULT visit. Otherwise no software stow: a Leg whose reference may be lost
+    would be driven to "Stow" in a frame that may be turns off, and single-Leg
+    DEACTIVATEs run one at a time and diverge the lengths exactly as Homing
+    would. FAULT says why the reference is not proven, and the operator supports
+    the Platform and presses the E-stop button (the drives lose power and the
+    Platform comes down), then sends `clear_errors` once power is back. That
+    fallback brings the Platform down by a drop, not a lowering, and needs a
     person at the Platform.
   - **A Leg in any other state** (a drive still starting, or calibrating):
     wait, or power-cycle it with the E-stop button, then `clear_errors`.
-  Not covered by A6: every path that reaches a Leg HOME or ENCODER_SEARCH
-  without the StateMachine. The bridge's `/home` and `/encoder_search` services
-  typed by an operator (`ros2 service call`; the production orchestrator uses
-  the home action and its own encoder-search client, both behind the
-  StateMachine) are gated at the bridge by A7 since 2026-11-25: they refuse
-  unless every other present Leg reads Idle (no settle). Still NOT gated: the
-  bench drivers that send the RPC
-  straight over UDP (`tests/hardware/teensy_home_bench.py`,
-  `tests/hardware/bench_leg_sysid.py`, `tests/hardware/teensy_encoder_search_bench.py`,
-  all through the `teensy_link/homing.py` and `encoder_search.py` libraries),
-  and the instruction text of `tools/probes/canhub_tier2_hw_validation.py`
-  (it prints `ros2 service call /home`). Checked by grep 2026-11-25:
-  `RpcMethod.HOME` outside tests/ros and tests/teensy_link is sent by exactly
-  those two bench drivers plus the bridge. Not callers, despite appearing in an
-  earlier audit: `tests/hardware/bench_hand_frame_bench.py` (drives the Hand's
-  ODrive directly), `tests/hardware/kincal_capture.py` (prints the operator
-  steps; its `home` is the gated orchestrator command) and
-  `tools/probes/gui_synthetic_stack.py` (registers a fake recording `/home`
-  service). The planned remedy for the manual paths is a firmware check in
-  `homing_request` (refuse a Leg HOME while any other Leg is Closed-loop).
+  Every path that reaches a Leg HOME or ENCODER_SEARCH without the StateMachine
+  is gated twice. The bridge's `/home` and `/encoder_search` services typed by an
+  operator (`ros2 service call`; the production orchestrator uses the home action
+  and its own encoder-search client, both behind the StateMachine) refuse unless
+  every other present Leg reads Idle (A7, no settle). The firmware's
+  `homing_request` (above) refuses the same HOME whatever its sender, so the bench
+  drivers that send the RPC straight over UDP
+  (`tests/hardware/teensy_home_bench.py`, `tests/hardware/bench_leg_sysid.py`,
+  `tests/hardware/teensy_encoder_search_bench.py`, through the
+  `teensy_link/homing.py` and `encoder_search.py` libraries) and the instruction
+  text of `tools/probes/canhub_tier2_hw_validation.py` (it prints
+  `ros2 service call /home`) get ERR_REJECTED on a robot with a posed Platform
+  and pass on the one-Leg bench. Checked by grep 2026-11-25: `RpcMethod.HOME`
+  outside tests/ros and tests/teensy_link is sent by exactly those two bench
+  drivers plus the bridge. Not callers, despite appearing in an earlier audit:
+  `tests/hardware/bench_hand_frame_bench.py` (drives the Hand's ODrive directly),
+  `tests/hardware/kincal_capture.py` (prints the operator steps; its `home` is
+  the gated orchestrator command) and `tools/probes/gui_synthetic_stack.py`
+  (registers a fake recording `/home` service). The firmware half is not
+  verified on hardware. Not gated by A6: ENCODER_SEARCH reaching the firmware over
+  UDP (the Leg SET_AXIS_STATE it sends is a de-energise decided by A7).
   **The `/deactivate` remedy works where the refusal is shown.** Read
   2026-11-25: `_svc_deactivate` -> `_run_deactivate` has no `is_homed` or fault
   term, and the firmware's `deactivate_request` (`leg_deactivate.cpp`) refuses
@@ -195,8 +211,8 @@ work (2026-07-15) hit three distinct doors into that hole:
     Otherwise BOOT holds and raises one notice per episode: all six
     Closed-loop (a relaunch under a posed Platform) names the profiled Stow,
     `/deactivate`; a mixed case (one Leg dropped, five holding, homed flag
-    kept) gets A6's mixed-case text with the E-stop button as the fallback
-    pending FW 53; unknown or other states say to wait. BOOT then enters IDLE
+    kept) gets A6's mixed-case text (the profiled recovery when exactly one Leg
+    dropped and its reference is proven kept, else the E-stop button); unknown or other states say to wait. BOOT then enters IDLE
     by itself once the Legs are Idle. ACTIVE's legs-out exits (the Legs out of
     Closed-loop for `LEGS_OUT_TICKS`, and the deactivate reconcile window) go
     to IDLE only when the same predicate passes, otherwise to BOOT, whose gate
@@ -219,13 +235,67 @@ work (2026-07-15) hit three distinct doors into that hole:
     older than 3 s (they arrive on change and at a forced 1 Hz) or flagged
     `HB_STALE`. The orchestrator's Homing passes, behind A6. Hand-only
     requests are exempt.
-  - **Not covered (firmware, FW 53):** the can-bridge itself has no Leg IDLE
-    check. The ACTIVATE and DEACTIVATE aborts (see A6), the deferred fault stow
-    that IDLEs on commanded rather than measured arrival, a single-Leg
-    DEACTIVATE, and the RPC passthroughs (SET_AXIS_STATE to IDLE on a Leg,
-    allowed even while Armed; REBOOT_ODRIVES) reached by any UDP client,
-    including the bench drivers. Until FW 53 these remain violations of the
-    rule.
+  - **The firmware enforces the same rule for every sender** (FW 53,
+    `INVARIANTS.md` I-FW-19; the host classifiers above are the early, readable
+    refusal, the firmware is the authority). `leg_stow_gate.cpp` is the only
+    translation unit that encodes a Leg Set_Axis_State, reboot or SDO write; it
+    sends one only when `rig_is_bench` or `platform_at_stow` passes. The Platform is
+    at Stow when every present Leg has a fresh (0.5 s), Closed-loop-confirmed
+    heartbeat reporting IDLE or ENCODER_INDEX_SEARCH, or Closed-loop with no
+    error, a fresh encoder sample (150 ms), position in [-0.11, +0.01] rev and
+    speed at most 0.1 rev/s. The Hand is exempt; so is the E-stop button's power
+    cut (physical), the homing task's own Leg, and the one-Leg bench (exactly
+    one drive heard, no Platform Teensy frame, 5 s settled, sticky toward robot;
+    every doubt reads robot). Refusals are ERR_REJECTED with nothing on CAN and
+    the host reads them as "Platform not at Stow". Covered: the ACTIVATE and
+    DEACTIVATE aborts (hold, freeze, or return to Stow under the gentle profile
+    then IDLE; a guard trip during a Stow descent lets it finish, a Soft E-stop
+    or a timeout during a rise returns the Platform to Stow; a Leg that drops out
+    mid-rise freezes the others, and a Leg counts as dropped out as soon as its
+    drive reports an error or a disarm reason, even before its heartbeat leaves
+    Closed-loop), the deferred fault stow (IDLE only once the encoders
+    confirm Stow, within 10 s, else freeze at the measured position and HELD), a
+    single-Leg DEACTIVATE, and
+    the RPC passthroughs (SET_AXIS_STATE to anything but CLOSED_LOOP on a Leg,
+    REBOOT_ODRIVES, a Leg SDO_WRITE). A Leg SET_AXIS_STATE IDLE still passes the
+    Armed gate (I-FW-18) and is decided here. A Leg the firmware refused to IDLE is
+    HELD (`/link_status` `legs_held`; `rig_bench` shows the rig reading);
+    CLEAR_ERRORS(AXIS_ALL), or the next accepted ACTIVATE, DEACTIVATE or HOME
+    naming the Leg, clears it.
+  - **What the operator does, by case.** Posed Platform, Legs holding:
+    `/deactivate` (the profiled Stow). One Leg dropped out by itself, five
+    holding: FAULT, then `clear_errors`; the profiled recovery runs only if the
+    dropped Leg's reference is proven kept (A6), else support the Platform and
+    press the E-stop button. Two or more Legs dropped: always the E-stop button. A rise that returned to Stow: FAULT, then BOOT and
+    IDLE; retry the activate. A HELD Leg after a refused abort: `/deactivate`
+    again (or the E-stop button with the Platform supported). A manual
+    `/reboot_odrives`, `/encoder_search` or Leg IDLE refused with "Platform not at
+    Stow": `/deactivate` first. Not covered: a Leg IDLE the firmware is not asked
+    to send (a drive that disarms itself on an error, which is the mixed case).
+  - **Not verified on hardware (FW 53 is built, not flashed until the
+    orchestrator says so):** the mid-move re-target of a Leg when an ACTIVATE is
+    returned to Stow (continuity of the setpoint, the apex of about 0.10 rev above
+    the abort position), the first post-Closed-loop heartbeat timing the
+    confirmation depends on, the bench-versus-robot inference on the real bus, and
+    the re-engage of a dropped Leg under load. Both ladders send no motion
+    target to any Leg until every target Leg has confirmed Closed-loop by a
+    heartbeat received at least 10 ms after its own Closed-loop command. A Leg
+    still reporting Idle with no error is waited for. A Leg with an error, or
+    no confirmation within 400 ms of the last Closed-loop command, fails the
+    ladder before any motion. So if the dropped Leg re-faults on engage,
+    nothing moves: the five hold, every Leg is HELD and the recovery ends FAILED.
+    Also unverified: the engage latency, from the Closed-loop command to a
+    Leg's first Closed-loop heartbeat. It must stay under about 190 ms (400 ms
+    less two 99 ms heartbeat periods, one of them lost, and one 10 ms tick). A
+    slower drive fails a normal activate or deactivate, with nothing moved.
+    Two Sitting checks (FW 53 audit, 2026-11-26): (1) after Homing, log each
+    Leg's rest position on its bottom stop and compare it with the Stow window's
+    lower edge, -0.11 rev: a Leg resting deeper reads not-at-Stow while
+    Closed-loop, so a pre-rise abort holds it HELD instead of IDLEing it (benign:
+    the FAULT exit stow lifts it to 0 and IDLEs it), and the margin is only
+    0.01 rev below the Homing stop; (2) a Leg in a drive state other than Idle,
+    encoder search or Closed-loop blocks every Leg reboot or Idle: use the E-stop
+    button.
 
 ## Enforcement points
 
@@ -236,8 +306,8 @@ work (2026-07-15) hit three distinct doors into that hole:
 | A3 | `teensy_bridge_node.py` `_run_deactivate` head | disarm-before-DEACTIVATE order test |
 | A4 | `state_machine.py` `ActiveHandler.on_exit` (no blank) + `IdleHandler` deferred blank | mode-survives-deactivate ordering test |
 | A5 | `trajectory_node.py` wire-state WARN + response suffix + `is_homed` seed gate; `teensy_bridge_node.py` `teensy_mpc_active` KeyValue; `state_machine.py` `BootHandler` latch pre-flight | disarmed-accept, seed-gate, pre-flight tests |
-| A6 | `state_machine.py` `homing_refusal` (the predicate) checked by `StateMachine._homing_entry_refused` on every transition into HOMING; `orchestrator_node.py` the `leg_states` / `legs_idle_since` / `leg_states_time` derivation in `_on_robot_state` | `tests/ros/test_state_machine.py::TestHomingGate`; `tests/ros/test_orchestrator_node.py::TestHomingGateThroughTick` |
-| A7 | `state_machine.py` `leg_idle_blockers` (the shared classifier) and `idle_refusal`, checked by `BootHandler.execute` (the homed skip to IDLE) and `ActiveHandler._legs_out_target`; `teensy_bridge_node.py` `_leg_idle_rule_refusal` over `_present_leg_states`, called by `_reboot_odrives`, `_svc_encoder_search` and `_do_home` | `tests/ros/test_state_machine.py::TestBootIdleGate`; `tests/ros/test_state_machine_deactivate_confirm.py::test_legs_out_with_legs_not_all_idle_goes_to_boot_not_idle`; `tests/ros/test_teensy_bridge_node_leg_idle_rule.py` |
+| A6 | `state_machine.py` `homing_refusal` (the predicate) checked by `StateMachine._homing_entry_refused` on every transition into HOMING; `orchestrator_node.py` the `leg_states` / `legs_idle_since` / `leg_states_time` derivation in `_on_robot_state`; firmware twin `leg_homing.cpp` `homing_request` (`leg_stow_gate.cpp` `all_present_legs_idle`); the mixed case: `leg_reference.py` (`reference_unproven`, `LegDropWatch`, `mixed_case_verdict`) via `state_machine.py` `FaultHandler._mixed_recovery` | `tests/ros/test_state_machine.py::TestHomingGate`; `tests/ros/test_orchestrator_node.py::TestHomingGateThroughTick`; `tests/ros/test_leg_reference.py`; `tests/firmware/native/test_leg_homing.cpp` (the "FW 53" cases), `tests/firmware/native/test_leg_deactivate.cpp` "R3 mixed case" |
+| A7 | `state_machine.py` `leg_idle_blockers` (the shared classifier) and `idle_refusal`, checked by `BootHandler.execute` (the homed skip to IDLE) and `ActiveHandler._legs_out_target`; `teensy_bridge_node.py` `_leg_idle_rule_refusal` over `_present_leg_states`, called by `_reboot_odrives`, `_svc_encoder_search` and `_do_home`; firmware authority `leg_stow_gate.cpp` (`INVARIANTS.md` I-FW-19) with the host twin `teensy_link/rpc_args.py` `requires_platform_at_stow` | `tests/ros/test_state_machine.py::TestBootIdleGate`; `tests/ros/test_state_machine_deactivate_confirm.py::test_legs_out_with_legs_not_all_idle_goes_to_boot_not_idle`; `tests/ros/test_teensy_bridge_node_leg_idle_rule.py`; `tests/ros/test_teensy_bridge_node_fw53_host.py`; `tests/firmware/test_stow_gate_xref.py`; `tests/firmware/native/test_leg_stow_gate.cpp` |
 
 ## The choreography (one cycle, walked at the control-system level)
 
@@ -308,19 +378,20 @@ work (2026-07-15) hit three distinct doors into that hole:
 6. Real fault at any point → FAULT entry disarms (A2). Guard-only fault from
    ACTIVE → stays armed, guard suppresses output, resume re-verifies the arm
    through A1 (idempotent if still armed).
-   **The real-fault exit stows the legs when the visit began in ACTIVE or
-   LEVELLING** (2026-10-06, LEVELLING added 2026-10-07). The trigger: a forced
+   **The real-fault exit stows the legs whenever all six are Closed-loop**
+   (2026-10-06 for ACTIVE, LEVELLING added 2026-10-07, any origin since FW 53
+   on 2026-11-26: an aborted FW 53 rise holds the six Closed-loop mid-air
+   after any ladder). The trigger: a forced
    ACTIVE→FAULT cancels ActiveHandler.on_exit's deactivate, and a fault during
    LEVELLING (whose `level_activate` holds the same active pose through its
    settle / tilt / correction / persist / mocap-check phases until
    `level_deactivate`) has no stow at all — LevellingHandler.on_exit only
    clears requests — so either way the legs could reach IDLE still holding an
    active pose. Once every error and the guard latch have cleared, a real
-   fault whose FAULT visit began in ACTIVE or LEVELLING (`prev_state` in
-   {ACTIVE, LEVELLING} at entry, which includes a guard-only fault promoted
-   mid-FAULT; both states hold the legs at an active pose in CLOSED_LOOP)
-   requests the profiled DEACTIVATE when all six legs are in CLOSED_LOOP with
-   no active error. (Until 2026-11-20 it also required the robot to be homed.
+   fault (whatever state the visit began in, a guard-only fault promoted
+   mid-FAULT included) requests the profiled DEACTIVATE when all six legs are
+   in CLOSED_LOOP with no active error; otherwise it goes to BOOT, whose A7/A6
+   predicate holds a mixed set. (Until 2026-11-20 it also required the robot to be homed.
    BUG-122 made the bridge clear `is_homed` whenever any drive loses its
    position reference, the Hand included, so that gate would have skipped the
    stow on a Hand-only loss and started HOMING with the legs at an active pose.
@@ -328,8 +399,13 @@ work (2026-07-15) hit three distinct doors into that hole:
    and DEACTIVATE only IDLEs the Hand.) It **holds FAULT until that
    DEACTIVATE succeeds**, so IDLE ("platform stowed, legs idle") is never
    claimed while the legs still hold a pose. A failed stow also holds FAULT,
-   with one retry per operator `clear_errors`. If any leg is not closed-loop,
-   FAULT exits to BOOT at once, as before (re-arming a leg that dropped out is
+   with one retry per operator `clear_errors`. The one exception is the proven mixed case
+   (some Legs Closed-loop, exactly one dropped Leg, Idle, with a reference
+   `leg_reference.reference_unproven` proves kept, A6): after the operator's
+   `clear_errors` the exit requests the profiled DEACTIVATE(AXIS_ALL), once per
+   FAULT visit. If any leg is not closed-loop in any other case,
+   FAULT exits to BOOT at once, as before, with the reason the reference is not
+   proven when it was a mixed case (re-arming a leg that dropped out is
    BOOT→HOMING's job). BOOT reaches HOMING only through A6 (2026-11-25): a
    BOOT whose robot is not homed while any Leg is still Closed-loop (the
    mixed case of one Leg lost during ACTIVE) holds in BOOT with the A6 notice

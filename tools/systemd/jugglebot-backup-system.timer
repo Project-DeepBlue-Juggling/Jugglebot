@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly OS backup to jeeves, Sunday 05:00 (the OS changes slowly; home data goes nightly)
+
+[Timer]
+OnCalendar=Sun *-*-* 05:00:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=jugglebot-backup-system.service
+
+[Install]
+WantedBy=timers.target

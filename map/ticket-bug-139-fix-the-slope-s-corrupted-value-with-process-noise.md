@@ -2,9 +2,9 @@
 id: TKT-95
 kind: ticket
 title: 'BUG-139: fix the slope''s corrupted value with process noise on b, directional forgetting, one forgetting factor for all, or leave it?'
-status: open
+status: complete
 created: '2026-11-26'
-updated: '2026-11-25T15:58:48Z'
+updated: '2026-11-25T21:17:41Z'
 owners: []
 priority: medium
 effort: xs
@@ -36,3 +36,7 @@ Tonight's BUG-138 build (your TKT-93 answer, option 3) splits the lateral filter
 Answer 1 or 2: the next night builds it as above and holds it for a day Session, since it changes every commanded u and the replay pin. Answer 3: not recommended (rejected by the probe). Answer 4: the Item is closed as accepted, with the xfail kept.
 
 Recommendation: 1, because it removes the mechanism that manufactures the information and is the smallest change to the filter.
+
+## Answer
+
+I agree with your recommendation. Go with Option 1

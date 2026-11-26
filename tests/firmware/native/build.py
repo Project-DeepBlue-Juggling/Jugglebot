@@ -67,6 +67,11 @@ _OBJECTS = {
     # alongside fake_hal.o) for the leg_homing/activate/deactivate drivers — their
     # bus/fault gate + *_active() ODR needs differ from the fault/interp TUs.
     "coldstart_hal":     NATIVE_DIR / "coldstart_hal.cpp",
+    # FW 53 (I-FW-19): the Stow gate, LINKED (not #included) so the cold-start ladder drivers can link
+    # the same object once their call sites migrate (U2..U5). It calls homing_axis_in_flight(), which
+    # each driver that links it must supply unless it #includes leg_homing.cpp (test_leg_homing);
+    # fake_hal.o supplies a controllable one (fake_set_homing_axis) for test_fault_machine.
+    "leg_stow_gate":     FIRMWARE_DIR / "leg_stow_gate.cpp",
     # A-N1: leg_interp.cpp's `hand7 reset` now calls fault_machine.h's
     # fault_hand_dev_prev_reset() so a reset re-baselines fault_machine.cpp's
     # own exceed-tick baseline too. test_leg_interp #includes leg_interp.cpp
@@ -80,9 +85,10 @@ _OBJECTS = {
 # Test binaries: (driver source, objects to link). Each driver #includes the .cpp
 # it tests (fault_machine.cpp/leg_interp.cpp), so those are NOT in the link list.
 _BINARIES = {
+    # FW 53 U4: the deferred stow's CONFIRM IDLEs / holds through the Stow gate.
     "test_fault_machine": (
         NATIVE_DIR / "test_fault_machine.cpp",
-        ["axis_state", "ball_butler_state", "fake_hal"],
+        ["axis_state", "ball_butler_state", "fake_hal", "leg_stow_gate"],
     ),
     "test_leg_interp": (
         NATIVE_DIR / "test_leg_interp.cpp",
@@ -109,7 +115,7 @@ _BINARIES = {
     # (hal_shims/Arduino.h) swallows the console/park lines.
     "test_gpio_poll": (
         NATIVE_DIR / "test_gpio_poll.cpp",
-        ["axis_state", "ball_butler_state", "fake_hal"],
+        ["axis_state", "ball_butler_state", "fake_hal", "leg_stow_gate"],
     ),
     # The Platform Teensy's Hand fan decision: a pure header, so nothing to link.
     # The driver includes it by relative path, not through INCLUDES, because that
@@ -165,17 +171,26 @@ _BINARIES = {
     # module .cpp (defining its own *_active) + supplies the two sibling predicates
     # inline, and links coldstart_hal (NOT fake_hal — that would ODR-clash on the
     # module's own *_active and lacks the can_buses_stats/fault gate these use).
+    # FW 53 U3: the abort paths go through the Stow gate and its shared descent monitor.
     "test_leg_activate": (
         NATIVE_DIR / "test_leg_activate.cpp",
-        ["axis_state", "ball_butler_state", "coldstart_hal"],
+        ["axis_state", "ball_butler_state", "coldstart_hal", "leg_stow_gate"],
     ),
+    # FW 53 U2: the ladder's leg state changes go through the Stow gate (I-FW-19).
     "test_leg_deactivate": (
         NATIVE_DIR / "test_leg_deactivate.cpp",
-        ["axis_state", "ball_butler_state", "coldstart_hal"],
+        ["axis_state", "ball_butler_state", "coldstart_hal", "leg_stow_gate"],
     ),
+    # FW 53 U4: the A6 twin + Homing's frames through the gate (HOMING_OWNER).
     "test_leg_homing": (
         NATIVE_DIR / "test_leg_homing.cpp",
-        ["axis_state", "ball_butler_state", "coldstart_hal"],
+        ["axis_state", "ball_butler_state", "coldstart_hal", "leg_stow_gate"],
+    ),
+    # FW 53 (I-FW-19): the Stow predicate, the de-energise wrappers, the hold and the HELD census,
+    # against the cold-start fake (recording CAN3 TX, controllable clock, cs_stage_leg).
+    "test_leg_stow_gate": (
+        NATIVE_DIR / "test_leg_stow_gate.cpp",
+        ["axis_state", "ball_butler_state", "coldstart_hal", "leg_stow_gate"],
     ),
     # UDP-framing coverage: EXECUTE the hand-written C++ UDP framing (the network
     # trust boundary). Pure header (udp_protocol.h) — no linked objects.
@@ -200,7 +215,7 @@ _BINARIES = {
     # inline in the driver (routing isolation), so no leg_*/relay/version .cpp link.
     "test_rpc_dispatch": (
         NATIVE_DIR / "test_rpc_dispatch.cpp",
-        ["axis_state", "ball_butler_state", "fake_hal"],
+        ["axis_state", "ball_butler_state", "fake_hal", "leg_stow_gate"],
     ),
     # TX tri-state coverage: EXECUTE can_buses.h's header-inline classify_tx_write()
     # + the tx_reached_the_wire / tx_was_deferred predicates and the TxCls census

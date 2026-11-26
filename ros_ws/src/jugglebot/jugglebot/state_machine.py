@@ -14,6 +14,8 @@ import time
 from collections import deque
 from enum import Enum, auto
 
+from jugglebot.leg_reference import LegDropWatch, mixed_case_verdict
+
 
 # ── States ────────────────────────────────────────────────────────
 
@@ -174,8 +176,10 @@ def _legs_down_refusal(leg_states, idle_for_s, states_age_s, w):
                 f'may be held up by some Legs; {w["risk"]}, and a '
                 f'profiled stow must not drive a Leg that is not Closed-loop '
                 f'({contract}). Support the Platform and press the '
-                f'E-stop button to bring it down (the present fallback until '
-                f'FW 53), restore power, then send clear_errors; '
+                f'E-stop button to bring it down (the FAULT exit re-engages '
+                f'a dropped Leg and stows all six only when its position '
+                f'reference is proven kept), restore power, then send '
+                f'clear_errors; '
                 f'{w["starts_mixed"]} once all six Legs are Idle.')
     if other:
         named = ', '.join(f'Leg {i} state {s}' for i, s in other)
@@ -239,9 +243,9 @@ class Context:
         # active_errors == 0 (derived by the orchestrator from
         # /robot_state.motor_states; fewer than six entries -> False). This is
         # "the legs are holding a pose and a profiled DEACTIVATE can lower them".
-        # FaultHandler's real-fault exit stow (a visit that began in ACTIVE or
-        # LEVELLING) runs only when it is true (ARMING_CONTRACT choreography
-        # step 6).
+        # FaultHandler's real-fault exit stow runs exactly when it is true,
+        # whatever state the visit began in (ARMING_CONTRACT choreography
+        # step 6; FW 53).
         self.legs_closed_loop = False
         # ARMING_CONTRACT A6 inputs (derived by the orchestrator from
         # /robot_state.motor_states): the six Leg ODrive axis states (None until
@@ -253,6 +257,10 @@ class Context:
         self.leg_states = None
         self.legs_idle_since = None
         self.leg_states_time = None
+        # FW 53 U6b (R3): per-Leg drop evidence (jugglebot/leg_reference.py), fed
+        # by the orchestrator from every /robot_state, sealed by FaultHandler at the
+        # operator's clear_errors, read by the mixed-case branch of its exit.
+        self.leg_drops = LegDropWatch()
         self.errors = []                     # Error strings from /robot_state
         self.fatal_error = False
         self.fatal_can_error = False
@@ -831,7 +839,9 @@ class LevellingHandler(StateHandler):
 # Replies on which a failed DEACTIVATE is RETRIED -- only those that mean the
 # firmware latched NOTHING: ERR_REJECTED (leg_deactivate.cpp deactivate_request:
 # the wire still armed -- the disarm-staging race of 2026-10-19/23 -- a
-# cold-start move or a deactivate already running, or a fault stow pending) and
+# cold-start move or a deactivate already running, a fault stow pending, or --
+# FW 53, I-FW-19 -- a single-Leg DEACTIVATE while another present Leg is not at
+# Stow) and
 # the orchestrator's own 'not ready' (nothing was sent). ERR_TIMEOUT is NOT
 # here: a lost ack may mean the lower DID latch, so the bridge observes the legs
 # to a verdict instead of reporting a refusal (owner, 2026-10-23); a bare
@@ -1192,15 +1202,6 @@ class ActiveHandler(StateHandler):
         ctx.request = 'deactivate'
 
 
-# States that hold the six legs at an active pose in CLOSED_LOOP: ACTIVE, and
-# LEVELLING (level_activate runs the same profiled ACTIVATE and the pose is held
-# through settle / tilt / correction / persist / mocap-check until
-# level_deactivate). A real fault whose FAULT visit began in one of them stows
-# the legs on exit (FaultHandler._real_fault_exit, ARMING_CONTRACT choreography
-# step 6). NOT the guard-only classification, which stays ACTIVE + armed wire.
-_LEGS_POSED_STATES = (RobotState.ACTIVE, RobotState.LEVELLING)
-
-
 class FaultHandler(StateHandler):
     """Error state — classify severity and wait for resolution.
 
@@ -1225,15 +1226,16 @@ class FaultHandler(StateHandler):
     IDLE (if already homed) or proceeds through HOMING (if ODrives rebooted).
 
     Real-fault exit stow (ARMING_CONTRACT choreography step 6, 2026-10-06;
-    LEVELLING added 2026-10-07): a real fault whose visit began in ACTIVE or
-    LEVELLING, once everything has cleared, first requests the profiled
-    DEACTIVATE if all six legs are closed-loop (not gated on is_homed since
-    BUG-122; see _real_fault_exit), and
-    holds FAULT until it succeeds. Without it a forced ACTIVE->FAULT (whose
-    ActiveHandler.on_exit deactivate the orchestrator cancels), or any fault
+    decided on drive state alone since FW 53, 2026-11-26): a real fault, once
+    everything has cleared, first requests the profiled DEACTIVATE whenever all
+    six legs are closed-loop (not gated on is_homed since BUG-122, nor on the
+    state the visit began in since FW 53; see _real_fault_exit), and holds
+    FAULT until it succeeds. Without it a forced ACTIVE->FAULT (whose
+    ActiveHandler.on_exit deactivate the orchestrator cancels), any fault
     during LEVELLING (whose level_activate holds the same active pose until
-    level_deactivate, and whose on_exit only clears requests), reached IDLE
-    with the legs still holding an active pose.
+    level_deactivate, and whose on_exit only clears requests), or an FW 53
+    aborted rise that HOLDS the legs Closed-loop mid-air, reached BOOT with the
+    legs still up.
     """
 
     def __init__(self):
@@ -1242,21 +1244,21 @@ class FaultHandler(StateHandler):
         # ACTIVE) with NO ODrive-level error — see on_enter.
         self._guard_only = False
         # Real-fault exit stow bookkeeping, all reset on every on_enter.
-        # _legs_posed_at_entry: this FAULT visit began in a state that holds
-        # the legs at an active pose in CLOSED_LOOP (ACTIVE, or LEVELLING
-        # between level_activate and level_deactivate). Sticky, so a guard-only
-        # fault promoted to real mid-FAULT (promotion does not re-enter) still
-        # stows. The guard-only classification below stays ACTIVE-only.
-        self._legs_posed_at_entry = False
         self._stow_requested = False   # our 'deactivate' is in flight
         self._stow_done = False        # it succeeded: the legs are stowed
         self._stow_failed = False      # it failed: hold FAULT until clear_errors
+        # FW 53 U6b (R3) mixed-case recovery: tried at most once per visit, and
+        # its not-proven notice said once per visit.
+        self._mixed_tried = False
+        self._mixed_said = None
+        self._mixed_notice = ''
 
     def on_enter(self, ctx):
-        self._legs_posed_at_entry = ctx.prev_state in _LEGS_POSED_STATES
         self._stow_requested = False
         self._stow_done = False
         self._stow_failed = False
+        self._mixed_tried = False
+        self._mixed_said = None
 
         # A GUARD-ONLY fault is observability + clear_errors routing ONLY: the Teensy
         # guard suppresses leg output WITHOUT disarming the ODrives, and trajectory_node
@@ -1374,6 +1376,9 @@ class FaultHandler(StateHandler):
         if cmd == 'clear_errors':
             ctx.request = 'clear_errors'
             ctx.boot_timed_out = False
+            # R3: from here a dropped Leg's disarm reason going back to 0 is this
+            # clear, not a drive reboot (leg_reference.LegDropWatch.seal).
+            ctx.leg_drops.seal()
             # One stow retry per clear_errors: a failed stow re-arms here and
             # nowhere else, so a refusing bridge cannot make the exit spin.
             self._stow_failed = False
@@ -1402,17 +1407,32 @@ class FaultHandler(StateHandler):
     def _real_fault_exit(self, ctx):
         """The real-fault exit, given every error and the guard latch have cleared.
 
-        Returns BOOT, or None to hold FAULT. A FAULT visit that began in ACTIVE
-        or LEVELLING with all six legs closed-loop means the legs are still
-        holding an active pose: request the profiled DEACTIVATE first and hold
-        FAULT until it succeeds, so the machine never reaches IDLE ("platform
-        stowed, legs idle") while they hold it (ARMING_CONTRACT choreography
-        step 6). Otherwise BOOT at once, as before: a leg that dropped out of
-        closed loop (e.g. an ODrive reboot) is BOOT -> HOMING's job, and a fault
-        from BOOT/HOMING/IDLE has no active pose. BOOT -> HOMING passes the A6
-        gate (StateMachine._homing_entry_refused): while any Leg is still
-        Closed-loop (the other five holding the Platform up after one Leg lost
-        its reference) BOOT holds and the operator is told how to lower it.
+        Returns BOOT, or None to hold FAULT. Decided on the Legs' drive state
+        alone, whatever state the visit began in (FW 53, 2026-11-26):
+
+        * All six legs closed-loop (any height: an Active pose, an FW 53
+          aborted rise HELD mid-air, or at Stow): request the profiled
+          DEACTIVATE first and hold FAULT until it succeeds, so the machine
+          never reaches BOOT -> IDLE ("platform stowed, legs idle") while they
+          may hold the Platform up (ARMING_CONTRACT choreography step 6). The
+          orchestrator has no Leg position it trusts here, so Legs already at
+          Stow are lowered too: the firmware accepts that DEACTIVATE, arrives at
+          once and IDLEs them through its Stow gate.
+        * Otherwise BOOT at once (all six Idle, e.g. an FW 53 rise returned to
+          Stow; or a mixed set). BOOT applies the one Leg IDLE predicate
+          (A7 for its IDLE claim, A6 through StateMachine._homing_entry_refused
+          for HOMING): while some Leg is still Closed-loop and some is not (the
+          other five holding the Platform up after one Leg dropped) BOOT holds
+          and the operator is told how to lower it. Exception, R3 (FW 53 U6b,
+          _mixed_recovery): a mixed set with exactly one dropped Leg, which reads
+          Idle and provably kept its position reference, is stowed like the all-six case,
+          once per visit; otherwise a profiled stow must not drive a Leg that is
+          not Closed-loop.
+
+        Until FW 53 the stow also required the visit to have begun in ACTIVE or
+        LEVELLING; an FW 53 abort can leave the six HELD after any ladder, and a
+        visit that began elsewhere (a boot timeout under a posed Platform) is no
+        safer left up, so that condition is gone.
 
         Not gated on is_homed (BUG-122, 2026-11-20). The bridge now clears
         is_homed when ANY drive loses its position reference, the Hand included,
@@ -1427,8 +1447,10 @@ class FaultHandler(StateHandler):
             return RobotState.BOOT
         if self._stow_requested or self._stow_failed:
             return None
-        if not (self._legs_posed_at_entry and ctx.legs_closed_loop):
-            return RobotState.BOOT
+        if not ctx.legs_closed_loop:
+            if not self._mixed_recovery(ctx):
+                return RobotState.BOOT
+            # R3: a proven mixed set gets the same profiled DEACTIVATE below.
         if ctx.operation_pending:
             # A tracked operation (an operator clear_errors, or the
             # ActiveHandler.on_exit deactivate on a handler-returned
@@ -1438,10 +1460,55 @@ class FaultHandler(StateHandler):
             # fires only on a RESOLVED level_* result, and on_exit clears any
             # queued request.)
             return None
+        if not ctx.legs_closed_loop:
+            self._mixed_tried = True
+            ctx.notify(self._mixed_notice)
         ctx.operation_result = None
         ctx.request = 'deactivate'
         self._stow_requested = True
         return None
+
+    def _mixed_recovery(self, ctx):
+        """The mixed-case recovery R3 (FW 53 U6b; owner 2026-11-25): True when
+        the exit should stow a mixed set, False to go to BOOT as before.
+
+        A mixed set is some Legs Closed-loop and the rest not (one dropped out by
+        itself, the others holding the Platform up). It is stowed, by the same
+        profiled DEACTIVATE(AXIS_ALL) as the all-six exit stow, only when exactly
+        one Leg is not Closed-loop (two or more are refused with the count: the
+        owner approved one), and it reads Idle and provably kept its position
+        reference (leg_reference.reference_unproven; the evidence was sealed at
+        the operator's clear_errors, which is also what cleared the errors this
+        exit waits for). The firmware's SETUP re-seeds such a Leg at its measured
+        length and re-engages it there, so nothing moves until all six descend
+        together (fw53_design.md 6; tests/firmware/native/test_leg_deactivate.cpp
+        "R3 mixed case"). Once per visit: a recovery that failed (the Leg
+        re-faulted, or the DEACTIVATE was refused) is not retried. Otherwise one
+        notice says why, and BOOT holds with the A7 mixed-case remedy (support
+        the Platform, press the E-stop button).
+        """
+        age = (None if ctx.leg_states_time is None
+               else time.monotonic() - ctx.leg_states_time)
+        fresh = age is not None and age <= LEG_STATES_MAX_AGE_S
+        mixed, dropped, refusal = mixed_case_verdict(
+            ctx.leg_states, fresh, bool(ctx.is_homed), ctx.leg_drops)
+        if not mixed:
+            return False
+        if refusal is None and self._mixed_tried:
+            refusal = ('Mixed-case recovery not offered again: it was tried once '
+                       'in this FAULT visit and did not complete (ARMING_CONTRACT '
+                       'A6 mixed case).')
+        if refusal is not None:
+            if refusal != self._mixed_said:
+                self._mixed_said = refusal
+                ctx.notify(refusal)
+            return False
+        self._mixed_notice = (
+            f'Mixed-case recovery: Leg(s) {_legs_list(dropped)} dropped out with '
+            f'the position reference proven kept; re-engaging them where they '
+            f'stand and stowing all six with the profiled deactivate '
+            f'(ARMING_CONTRACT A6 mixed case).')
+        return True
 
     def on_exit(self, ctx):
         ctx.error_severity = None

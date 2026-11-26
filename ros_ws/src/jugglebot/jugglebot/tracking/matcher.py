@@ -113,6 +113,7 @@ class BallTracker:
         flight_fit_residual_mm: float = 12.0,
         flight_fit_freeze_above_plane_mm: float = 250.0,
         flight_fit_new_flight_rise_mm: Optional[float] = 50.0,
+        gravity_world_xy_mmps2: Tuple[float, float] = (0.0, 0.0),
         announced_release_lead_s: float = 0.10,
         announced_speed_ratio: Tuple[float, float] = (0.4, 1.8),
         announced_min_direction_cos: float = 0.5,
@@ -285,6 +286,17 @@ class BallTracker:
             None if flight_fit_new_flight_rise_mm is None
             else float(flight_fit_new_flight_rise_mm))
         self._flight_fits: Dict[int, FlightFit] = {}
+        # Gravity's horizontal part in the Mocap world frame, mm/s^2 (FEAT-27,
+        # 2026-11-26; `ball_tracking.gravity_world_xy_mmps2`). Every landing
+        # this tracker publishes uses it: the FlightFit (fit and landing) and
+        # the Kalman fallback's extrapolation. NOT used by the announced-ball
+        # gate or the parabolic test: over a 0.8 s flight it moves a ball
+        # 0.5 * 94 * 0.8^2 = 30 mm, inside the 200 mm gate, and 94 mm/s^2 is
+        # under a quarter of the 400 mm/s^2 projectile threshold. (0, 0) is
+        # the pre-FEAT-27 tracker bit for bit. Change it with
+        # `set_gravity_world_xy`, which also updates the fits in progress.
+        self.gravity_world_xy_mmps2: Tuple[float, float] = (
+            float(gravity_world_xy_mmps2[0]), float(gravity_world_xy_mmps2[1]))
 
         # Active balls keyed by id
         self._balls: Dict[int, Ball] = {}
@@ -1110,6 +1122,17 @@ class BallTracker:
     # Internal: Landing prediction
     # ------------------------------------------------------------------
 
+    def set_gravity_world_xy(self, gx_mmps2: float, gy_mmps2: float) -> None:
+        """Set gravity's horizontal part (Mocap world frame, mm/s^2) for every
+        landing from now on, including the fits of balls already in flight
+        (their next `fit()` uses it: one step in that flight's estimate, so
+        switch between Attempts). The node's `gravity_world_xy_mmps2`
+        parameter calls this (the FEAT-27 Sitting A/B)."""
+        g = (float(gx_mmps2), float(gy_mmps2))
+        self.gravity_world_xy_mmps2 = g
+        for fit in self._flight_fits.values():
+            fit.gravity_xy_mmps2 = g
+
     def _get_or_create_flight_fit(self, ball_id: int, ball: Ball) -> FlightFit:
         """Get this ball's gravity-fixed flight fit, creating it on first use.
 
@@ -1130,6 +1153,7 @@ class BallTracker:
                 new_flight_rise_mm=(self.flight_fit_new_flight_rise_mm
                                     if ball_id not in self._announcement_states
                                     else None),
+                gravity_xy_mmps2=self.gravity_world_xy_mmps2,
             )
             self._flight_fits[ball_id] = fit
         return fit
@@ -1168,7 +1192,8 @@ class BallTracker:
         pos = ball.position
         vel = ball.velocity
 
-        result = predict_landing_state(pos, vel, self.landing_z)
+        result = predict_landing_state(pos, vel, self.landing_z,
+                                       g_xy_mmps2=self.gravity_world_xy_mmps2)
         if result is not None:
             landing_pos, landing_vel, ttl = result
             ball.landing_position = landing_pos

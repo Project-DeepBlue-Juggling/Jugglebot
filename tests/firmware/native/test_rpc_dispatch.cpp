@@ -40,6 +40,7 @@
 #include "leg_homing.h"
 #include "leg_activate.h"
 #include "leg_deactivate.h"
+#include "leg_stow_gate.h"
 #include "platform_relay.h"
 #include "version_check.h"
 #include "fake_hal.h"
@@ -120,6 +121,7 @@ static uint8_t  g_axis_clear_axis = 0xFF;
 void fault_notify_clear_axis_errors(uint8_t axis) { g_axis_clear_calls++; g_axis_clear_axis = axis; }
 void fault_notify_reboot_started() { g_reboot_calls++; }
 bool fault_stow_pending()          { return g_stow_pending; }
+bool fault_can_bus_down()          { return false; }   // link only: leg_stow_gate.o's stow_descent_step reads it (never called here)
 bool fault_mpc_active()            { return g_mpc_active; }
 
 // ── leg_homing/activate/deactivate.h (entry points only — record + settable ret) ──
@@ -238,6 +240,7 @@ static uint16_t call_noarg(uint16_t method) {
 
 static void reset_all() {
   fake_reset(); drv_reset(); Rpc::hand_torque_scale_reset();
+  CanBridge::leg_stow_gate_init();   // FW 53: the gate's CL stamps, HELD mask, census, bench witnesses
   g_axis_clear_calls = 0; g_axis_clear_axis = 0xFF;
   g_cone_sent = 0; g_cone_last = ODrive::CanFrame{}; g_cone_last_cls = 0xFF;
   g_cone_result = TxResult::MAILBOX;
@@ -1129,4 +1132,257 @@ TEST_CASE("FW 52 D1: REBOOT_ODRIVES is refused while Armed, per axis AND the AXI
   ArgSdoRead r{}; r.axis = 0; r.endpoint = 265;
   CHECK(call(RpcMethod::SDO_READ, r) == RpcStatus::OK);
   CHECK(fake_sent_count() == 1);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FW 53 U5 (I-FW-19, fw53_design.md 4): the RPC layer's de-energise requests go
+// through the Stow gate. Owner rule: "A Leg should never be made IDLE unless the
+// Platform is already at the Stow position." The Hand is exempt; so is the one-Leg
+// bench (rig_is_bench). Refusals are the EXISTING ERR_REJECTED with nothing on CAN.
+// ═════════════════════════════════════════════════════════════════════════════
+
+static constexpr uint32_t ST_IDLE = 1, ST_ENC_SEARCH = 6, ST_CL = 8;
+static constexpr uint64_t T0_US = 100'000'000ull;    // a clock far from zero: ages are now - age
+
+// Stage Leg i as a PRESENT Leg reporting `st`, its heartbeat and encoder sample 1 ms
+// old (a fixed literal: fresh under every threshold, never derived from one).
+static void stage_leg(uint8_t i, uint8_t st, float pos, float vel) {
+  axes[i].heartbeat_seen = true;
+  axes[i].active_errors = 0;
+  axes[i].axis_state = st;
+  axes[i].last_heartbeat_us = fake_mono_us() - 1000;
+  axes[i].last_rx_us = fake_mono_us() - 1000;
+  write_pos_vel(axes[i], pos, vel, fake_mono_us() - 1000);
+}
+// Six IDLE Legs at the hardstop (the Platform at Stow, what Homing leaves).
+static void stage_stowed() {
+  for (uint8_t i = 0; i < CanBridge::NUM_LEGS; ++i) stage_leg(i, ST_IDLE, -0.1f, 0.0f);
+}
+// The Platform posed: Leg `posed` Closed-loop at 2.2 rev, the other five IDLE.
+static void stage_posed(uint8_t posed) {
+  stage_stowed();
+  stage_leg(posed, ST_CL, 2.2f, 0.0f);
+}
+// Every axis back to absent (axes[] is a process global that earlier cases stage), the
+// gate's file-statics zeroed (reset_all), and a clock far from zero.
+static void fw53_reset() {
+  reset_all();
+  for (uint8_t i = 0; i < CanBridge::NUM_AXES; ++i) {
+    axes[i].heartbeat_seen = false;
+    axes[i].last_heartbeat_us = 0;
+    axes[i].last_rx_us = 0;
+    axes[i].axis_state = 0;
+    axes[i].active_errors = 0;
+    write_pos_vel(axes[i], 0.0f, 0.0f, 0);
+  }
+  fake_set_clock(T0_US, T0_US);
+}
+
+static uint16_t set_state(uint8_t axis, uint32_t st) {
+  ArgAxisState a{}; a.axis = axis; a.state = st;
+  return call(RpcMethod::SET_AXIS_STATE, a);
+}
+static uint16_t reboot(uint8_t axis) { ArgAxisOnly a{}; a.axis = axis; return call(RpcMethod::REBOOT_ODRIVES, a); }
+static uint16_t sdo_write(uint8_t axis) {
+  JbUdp::RpcArgs::ArgSdoWrite a{}; a.axis = axis; a.endpoint = 265; a.value = 1.0f;
+  return call(RpcMethod::SDO_WRITE, a);
+}
+
+TEST_CASE("FW 53: the classifiers (twins of teensy_link/rpc_args.py) name exactly the Leg de-energise requests") {
+  using Rpc::requires_platform_at_stow; using Rpc::home_requires_all_legs_idle;
+  for (uint8_t leg = 0; leg < CanBridge::NUM_LEGS; ++leg) {
+    INFO("leg " << (int)leg);
+    CHECK(requires_platform_at_stow(RpcMethod::SET_AXIS_STATE, leg, ST_IDLE));
+    CHECK(requires_platform_at_stow(RpcMethod::SET_AXIS_STATE, leg, ST_ENC_SEARCH));
+    CHECK_FALSE(requires_platform_at_stow(RpcMethod::SET_AXIS_STATE, leg, ST_CL));   // engaging is not de-energising
+    CHECK(requires_platform_at_stow(RpcMethod::REBOOT_ODRIVES, leg, 0));
+    CHECK(requires_platform_at_stow(RpcMethod::SDO_WRITE, leg, 0));
+    CHECK_FALSE(requires_platform_at_stow(RpcMethod::SDO_READ, leg, 0));
+    CHECK_FALSE(requires_platform_at_stow(RpcMethod::SET_VEL_CURR_LIMITS, leg, 0));
+    CHECK_FALSE(requires_platform_at_stow(RpcMethod::CLEAR_ERRORS, leg, 0));
+    CHECK(home_requires_all_legs_idle(leg));
+  }
+  CHECK_FALSE(requires_platform_at_stow(RpcMethod::SET_AXIS_STATE, HAND_AXIS, ST_IDLE));   // the Hand is exempt
+  CHECK_FALSE(requires_platform_at_stow(RpcMethod::REBOOT_ODRIVES, HAND_AXIS, 0));
+  CHECK(requires_platform_at_stow(RpcMethod::REBOOT_ODRIVES, AXIS_ALL, 0));
+  CHECK_FALSE(requires_platform_at_stow(RpcMethod::SET_AXIS_STATE, AXIS_ALL, ST_IDLE));    // not a valid broadcast
+  CHECK_FALSE(home_requires_all_legs_idle(HAND_AXIS));
+}
+
+TEST_CASE("FW 53: SET_AXIS_STATE(Leg, IDLE) is ERR_REJECTED with nothing on CAN unless the Platform is at Stow; the Hand always passes") {
+  fw53_reset();
+  stage_stowed();
+  CHECK(set_state(2, ST_IDLE) == RpcStatus::OK);                       // at Stow: the FW 52 behaviour
+  REQUIRE(fake_sent_count() == 1);
+  const auto f = ODrive::encode_set_state(2, ST_IDLE);
+  CHECK(fake_sent_at(0).id == f.id);
+  CHECK(memcmp(fake_sent_at(0).buf, f.buf, 8) == 0);
+
+  for (uint8_t target : {uint8_t(0), uint8_t(2), uint8_t(5)}) {          // the target and two other Legs
+    fw53_reset();
+    stage_posed(3);                                                     // Leg 3 holds 2.2 rev
+    INFO("IDLE to leg " << (int)target << " with leg 3 posed");
+    CHECK(set_state(target, ST_IDLE) == RpcStatus::ERR_REJECTED);       // every Leg is refused, not only Leg 3
+    CHECK(fake_sent_count() == 0);
+    CHECK(leg_deenergise_refusals() == 1);                              // counted ...
+    CHECK(leg_held_mask() == 0);                                        // ... but an RPC refusal is not a HELD Leg
+  }
+  fw53_reset();
+  stage_posed(3);
+  CHECK(set_state(HAND_AXIS, ST_IDLE) == RpcStatus::OK);                // Hand IDLE always passes
+  CHECK(fake_sent_count() == 1);
+}
+
+TEST_CASE("FW 53: a Leg IDLE while Armed passes the Armed gate and is then refused by the Stow gate; at Stow it still passes") {
+  fw53_reset();
+  g_mpc_active = true;
+  stage_posed(1);
+  CHECK(set_state(4, ST_IDLE) == RpcStatus::ERR_REJECTED);              // Armed implies posed
+  CHECK(fake_sent_count() == 0);
+  CHECK(leg_deenergise_refusals() == 1);                                // proof it got PAST the Armed gate to the Stow gate
+  CHECK(set_state(HAND_AXIS, ST_IDLE) == RpcStatus::OK);                // the Hand is exempt, Armed or not
+  fw53_reset();
+  g_mpc_active = true;
+  stage_stowed();
+  CHECK(set_state(4, ST_IDLE) == RpcStatus::OK);                        // a stop at Stow is still a stop
+}
+
+TEST_CASE("FW 53: SET_AXIS_STATE(Leg, 6) passes with every Leg IDLE and is refused with one posed") {
+  fw53_reset();
+  stage_stowed();
+  CHECK(set_state(0, ST_ENC_SEARCH) == RpcStatus::OK);                  // the production encoder-search path
+  CHECK(fake_sent_count() == 1);
+  fw53_reset();
+  stage_posed(5);
+  CHECK(set_state(0, ST_ENC_SEARCH) == RpcStatus::ERR_REJECTED);
+  CHECK(fake_sent_count() == 0);
+}
+
+TEST_CASE("FW 53: a Leg CLOSED_LOOP is refused while a Homing runs and passes otherwise (it is not gated); the Hand CL is never refused") {
+  fw53_reset();
+  stage_posed(3);                                                       // posed: engaging another Leg is not a de-energise
+  CHECK(set_state(0, ST_CL) == RpcStatus::OK);
+  CHECK(fake_sent_count() == 1);
+  fw53_reset();
+  stage_stowed();
+  fake_set_homing(true);
+  CHECK(set_state(0, ST_CL) == RpcStatus::ERR_REJECTED);
+  CHECK(fake_sent_count() == 0);
+  CHECK(leg_cl_cmd_us(0) == 0);                                         // no CL stamp left behind by the refusal
+  CHECK(set_state(HAND_AXIS, ST_CL) == RpcStatus::OK);                  // the Hand CL preamble is untouched
+  CHECK(fake_sent_count() == 1);
+  fake_set_homing(false);
+  CHECK(set_state(0, ST_CL) == RpcStatus::OK);
+}
+
+TEST_CASE("FW 53 BUG-47: the Leg a Homing is driving may be IDLEd (HOMING_OWNER), no other Leg may") {
+  fw53_reset();
+  stage_posed(4);
+  fake_set_homing(true);
+  fake_set_homing_axis(2);
+  CHECK(set_state(2, ST_IDLE) == RpcStatus::OK);                        // the homing-abort IDLE
+  REQUIRE(fake_sent_count() == 1);
+  const auto f = ODrive::encode_set_state(2, ST_IDLE);
+  CHECK(fake_sent_at(0).id == f.id);
+  CHECK(set_state(3, ST_IDLE) == RpcStatus::ERR_REJECTED);              // not the in-flight Leg
+  CHECK(set_state(2, ST_ENC_SEARCH) == RpcStatus::ERR_REJECTED);        // the carve-out is IDLE only
+  CHECK(fake_sent_count() == 1);
+  fake_set_homing_axis(0xFF);
+  CHECK(set_state(2, ST_IDLE) == RpcStatus::ERR_REJECTED);              // no Homing in flight: no carve-out
+}
+
+TEST_CASE("FW 53: REBOOT per Leg and AXIS_ALL are refused WHOLE when the Platform is posed (no Leg frame, no Hand frame, latch not armed)") {
+  fw53_reset();
+  stage_posed(3);
+  CHECK(reboot(3) == RpcStatus::ERR_REJECTED);
+  CHECK(reboot(0) == RpcStatus::ERR_REJECTED);                          // an IDLE Leg too: the loop of the posed one drops
+  CHECK(reboot(AXIS_ALL) == RpcStatus::ERR_REJECTED);
+  CHECK(fake_sent_count() == 0);                                        // not even the Hand's frame
+  CHECK(g_reboot_calls == 0);                                           // the watchdog-suppression latch was never armed
+  CHECK(reboot(HAND_AXIS) == RpcStatus::OK);                            // Hand-only reboot is unchanged
+  CHECK(fake_sent_count() == 1);
+  CHECK(g_reboot_calls == 0);
+
+  fw53_reset();
+  stage_stowed();                                                       // at Stow everything is as FW 52
+  CHECK(reboot(AXIS_ALL) == RpcStatus::OK);
+  CHECK(fake_sent_count() == (size_t)CanBridge::NUM_AXES);
+  CHECK(g_reboot_calls == 1);
+  fw53_reset();
+  stage_stowed();
+  CHECK(reboot(1) == RpcStatus::OK);
+  CHECK(fake_sent_count() == 1);
+  CHECK(g_reboot_calls == 1);
+}
+
+TEST_CASE("FW 53: SDO_WRITE(Leg) is gated, and refused while a Homing runs even at Stow; the Hand stays refused by its allow-table") {
+  fw53_reset();
+  stage_posed(2);
+  CHECK(sdo_write(2) == RpcStatus::ERR_REJECTED);
+  CHECK(sdo_write(0) == RpcStatus::ERR_REJECTED);
+  CHECK(fake_sent_count() == 0);
+  fw53_reset();
+  stage_stowed();
+  CHECK(sdo_write(2) == RpcStatus::OK);
+  CHECK(fake_sent_count() == 1);
+  fake_set_homing(true);
+  CHECK(sdo_write(2) == RpcStatus::ERR_REJECTED);                       // an SDO write can set requested_state
+  CHECK(fake_sent_count() == 1);
+  CHECK(sdo_write(HAND_AXIS) == RpcStatus::ERR_REJECTED);               // unchanged (hand_axis6_permitted)
+}
+
+TEST_CASE("FW 53: the wrapper's TX_FAILED is the only ERR_TIMEOUT (a refused gate is ERR_REJECTED, not a retry basis)") {
+  fw53_reset();
+  stage_stowed();
+  fake_set_send_fail_index(0);                                          // no bus partner: nothing reaches the wire
+  CHECK(set_state(1, ST_IDLE) == RpcStatus::ERR_TIMEOUT);
+  fw53_reset();
+  stage_stowed();
+  fake_set_send_defer_all(true);                                        // queued, transmits in order
+  CHECK(set_state(1, ST_IDLE) == RpcStatus::OK);
+  CHECK(sdo_write(1) == RpcStatus::OK);
+  CHECK(reboot(1) == RpcStatus::OK);
+}
+
+TEST_CASE("FW 53: CLEAR_ERRORS(AXIS_ALL) clears every Leg's HELD bit; a per-axis clear and a dead bus do not") {
+  fw53_reset();
+  stage_posed(1);
+  (void)CanBridge::leg_freeze_tx(1, -0.11f, 2.5f);                      // an aborted ladder's hold
+  (void)CanBridge::leg_freeze_tx(4, -0.11f, 2.5f);
+  REQUIRE(leg_held_mask() == ((1u << 1) | (1u << 4)));
+  ArgAxisOnly one{}; one.axis = 1;
+  CHECK(call(RpcMethod::CLEAR_ERRORS, one) == RpcStatus::OK);
+  CHECK(leg_held_mask() == ((1u << 1) | (1u << 4)));                    // per-axis: releases no latch, clears no HELD
+  g_bus_transmittable = false;
+  ArgAxisOnly all{}; all.axis = AXIS_ALL;
+  CHECK(call(RpcMethod::CLEAR_ERRORS, all) == RpcStatus::ERR_BUS_DOWN);
+  CHECK(leg_held_mask() == ((1u << 1) | (1u << 4)));                    // nothing reached the bus: not an acknowledgement
+  g_bus_transmittable = true;
+  CHECK(call(RpcMethod::CLEAR_ERRORS, all) == RpcStatus::OK);
+  CHECK(leg_held_mask() == 0);
+}
+
+TEST_CASE("FW 53 one-Leg bench (rig_note_* staged): a Leg IDLE, reboot and SDO write pass at 2 rev after the 5 s settle, and not before") {
+  fw53_reset();
+  const uint64_t t0 = fake_mono_us();
+  CanBridge::rig_note_bus(true, t0);
+  CanBridge::rig_note_axis_frame(0, t0);                                // exactly one ODrive, no Platform frame
+  stage_leg(0, ST_CL, 2.0f, 0.0f);                                      // the bench Leg, Closed-loop 2 rev off Stow
+  fake_advance(2'000'000);                                              // 2 s: inside the settle window
+  stage_leg(0, ST_CL, 2.0f, 0.0f);
+  CHECK(set_state(0, ST_IDLE) == RpcStatus::ERR_REJECTED);              // the doubt reads robot
+  CHECK(fake_sent_count() == 0);
+  fake_advance(4'000'000);                                              // 6 s after the first frame
+  stage_leg(0, ST_CL, 2.0f, 0.0f);
+  CHECK(set_state(0, ST_IDLE) == RpcStatus::OK);
+  CHECK(sdo_write(0) == RpcStatus::OK);
+  CHECK(reboot(0) == RpcStatus::OK);
+  CHECK(reboot(AXIS_ALL) == RpcStatus::OK);
+  CHECK(fake_sent_count() == 3u + (size_t)CanBridge::NUM_AXES);
+  // A Platform Teensy frame latches ROBOT (sticky): the same Leg is refused again.
+  CanBridge::rig_note_platform_frame();
+  fake_clear_sent();
+  CHECK(set_state(0, ST_IDLE) == RpcStatus::ERR_REJECTED);
+  CHECK(fake_sent_count() == 0);
 }

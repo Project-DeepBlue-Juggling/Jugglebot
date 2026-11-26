@@ -37,6 +37,7 @@
 #include "leg_activate.h"     // activate_active (no concurrent cold-start moves)
 #include "leg_deactivate.h"   // deactivate_active (no concurrent cold-start moves)
 #include "time_base.h"        // micros64
+#include "leg_stow_gate.h"    // FW 53: odrive_set_state_tx (HOMING_OWNER), the A6 twin
 
 namespace CanBridge {
 
@@ -118,16 +119,27 @@ static bool homing_allowed() {
   return true;
 }
 
-// Stop the active axis and record the outcome. Called on success AND on every
-// abort path — the leg is ALWAYS left in IDLE, never driving.
+// Stop the active axis and record the outcome. Called on every abort path (the
+// success path reached SET_REF already left it IDLE at the stall stop) — the leg
+// is ALWAYS left in IDLE, never driving.
+// FW 53 (I-FW-19): the IDLE goes through the Stow gate as HOMING_OWNER, which
+// passes it for homing_axis_in_flight() only, so it MUST be asked for while s_axis
+// still names this axis (s_axis is cleared below, after the send). A homing Leg
+// only retracts and the A6 twin at accept established every other Leg IDLE; a
+// refusal here would leave the Leg pushing its stop (fw53_design.md 1.3).
 static void finish(uint8_t result) {
   if (s_axis < NUM_AXES) {
-    can_jugglebot_send(ODrive::encode_set_state(s_axis, ODriveState::IDLE));
+    (void)odrive_set_state_tx(s_axis, ODriveState::IDLE, TxCls::OTHER, Who::HOMING_OWNER);
     s_result[s_axis] = result;
   }
   s_phase = Phase::IDLE;
   s_axis  = 0xFF;
 }
+
+// Read from the net task (RPC) and the ladders through leg_stow_gate.cpp; the
+// homing task is the only writer. A single-byte read is atomic on Cortex-M7, and
+// the volatile access stops the compiler caching it across the caller's checks.
+uint8_t homing_axis_in_flight() { return *(const volatile uint8_t*)&s_axis; }
 
 void homing_init() {
   s_start_req = false;
@@ -153,6 +165,17 @@ uint16_t homing_request(uint8_t axis) {
   // the 500 Hz stream commands would fight it — mutual exclusion, both directions
   // (the interp ISR also suppresses its TX during a cold-start move).
   if (fault_mpc_active()) return RpcStatus::ERR_REJECTED;
+  // FW 53 (I-FW-19): the firmware twin of the host's Homing gate (ARMING_CONTRACT
+  // A6). Homing never starts while the Platform is up: a Leg HOME needs every
+  // present Leg reporting IDLE in a fresh, CL-confirmed heartbeat, unless the rig is
+  // the one-Leg bench (owner, 2026-11-25). HOME(Hand) is not gated. Between two
+  // Legs of the production sequence the previous Leg's last heartbeat can still read
+  // CLOSED_LOOP for up to one heartbeat period after its stall IDLE; the host
+  // retries ERR_REJECTED (teensy_bridge_node _run_home, 20 x 50 ms).
+  if (axis < NUM_LEGS) {
+    const uint64_t now = micros64();
+    if (!rig_is_bench(now) && !all_present_legs_idle(now)) return RpcStatus::ERR_REJECTED;
+  }
   // Reject if a homing is active or a start is already pending (idempotent).
   // IRQ-guarded so the (busy-check + latch) is atomic vs the homing task that
   // consumes s_start_req at the top of homing_step.
@@ -170,6 +193,9 @@ uint16_t homing_request(uint8_t axis) {
     s_epoch[axis]  = (uint8_t)(s_epoch[axis] + 1u);
   }
   __set_PRIMASK(pm);
+  // An accepted HOME clears the Leg's HELD bit (leg_stow_gate.h): on the robot it
+  // was accepted with every Leg reporting IDLE, so the bit is stale.
+  if (!busy && axis < NUM_LEGS) leg_held_clear(axis);
   return busy ? RpcStatus::ERR_REJECTED : RpcStatus::OK;
 }
 
@@ -224,7 +250,10 @@ void homing_step() {
   switch (s_phase) {
     case Phase::SETUP: {
       bool ok = true;
-      ok = can_jugglebot_send(ODrive::encode_set_state(a, ODriveState::CLOSED_LOOP)) && ok;
+      // FW 53: through the gate, which stamps the Leg's CL-command time (the
+      // Stow predicate's CL confirmation). CLOSED_LOOP is never refused.
+      ok = (odrive_set_state_tx(a, ODriveState::CLOSED_LOOP, TxCls::OTHER, Who::HOMING_OWNER)
+            == DeResult::SENT) && ok;
       ok = can_jugglebot_send(ODrive::encode_set_controller_mode(
                a, ODriveControlMode::VELOCITY, ODriveInputMode::VEL_RAMP)) && ok;
       // vel limit = |speed|*2 (headroom so travel isn't velocity-clamped),
@@ -259,7 +288,8 @@ void homing_step() {
       const float iq = axes[a].iq_measured;
       s_iq_ema = Homing::EMA_WEIGHT * s_iq_ema + (1.0f - Homing::EMA_WEIGHT) * iq;
       if (fabsf(s_iq_ema) >= homing_curr_limit_a(a)) {
-        can_jugglebot_send(ODrive::encode_set_state(a, ODriveState::IDLE));  // stop pushing
+        // Stop pushing. HOMING_OWNER: s_axis == a is the axis in flight (FW 53).
+        (void)odrive_set_state_tx(a, ODriveState::IDLE, TxCls::OTHER, Who::HOMING_OWNER);
         s_t_phase_us = now;
         s_phase = Phase::STOP_SETTLE;
       }

@@ -1788,6 +1788,19 @@ ball_tracking:
   # 5-55 ms and the still-pushed (> g) samples bias the fit EARLY. See
   # tracking/flight_fit.py add().
   flight_fit_freeze_above_plane_mm: 250.0
+  # Gravity's HORIZONTAL part in the Mocap world frame (the frame the Tracker
+  # and its Fit work in), [gx, gy] {mm/s^2} (FEAT-27). The Fit and every
+  # landing the Tracker publishes use it; the vertical part stays
+  # gravity_mps2. The Mocap frame is tilted 0.55 deg from gravity: MEASURED
+  # (+43.0, +83.0) mm/s^2, drag removed, from 1,139 free flights over six
+  # Sittings 2026-09-29..2026-11-22 (offline analysis 2026-11-26,
+  # temp/probes/feat27-gravity/). Assuming (0, 0) puts the landing (-8, -21) mm
+  # off in the Robot frame for an early Fit and (-3, -11) mm for the final Fit;
+  # with the measured value both are within 1.5 mm. DEFAULT [0.0, 0.0] = the
+  # pre-FEAT-27 Fit bit for bit, until the owner switches it on at a Sitting
+  # (node parameter gravity_world_xy_mmps2 overrides it live). The value goes
+  # STALE at any Mocap (QTM) recalibration or L-frame move: re-measure then.
+  gravity_world_xy_mmps2: [0.0, 0.0]
   # Live WARN for a marker dwelling under the Hand (FEAT-50; BUG-84's three Hand
   # stalls of 2026-11-13 were each a Ball the Tracker had dropped, trapped under
   # the Cup). Log-only; see tracking/trapped_ball.py. Values are those of

@@ -68,6 +68,8 @@ void fake_clear_time_jump();
 void fake_set_homing(bool active);
 void fake_set_activate(bool active);
 void fake_set_deactivate(bool active);
+// FW 53: drives homing_axis_in_flight() (0xFF = none), read by leg_stow_gate.o.
+void fake_set_homing_axis(uint8_t axis);
 
 // ── CAN3 command gate (drives jugglebot_commands_allowed()) ──────────────────
 //  Defaults to TRUE on fake_reset() so a relay/leg send is recorded unless a test

@@ -21,20 +21,25 @@ where the position is reliable), then drops it to IDLE. We cannot judge success
 from the post-IDLE position — the instant a leg IDLEs it relaxes into the foam
 stop by a variable amount (the 2026-06-26 homing-observer lesson,
 [[2026-06-26-phase11-u5-six-leg-cutover]]) — *and* we cannot judge it from the
-IDLE alone: the firmware also reaches IDLE on every **abort** path (E-STOP,
-firmware timeout on a stalled descent, transient bus-WARN → ``abort_all`` IDLEs
-the leg with no ODrive error). Since the firmware op-timeout (10 s) is shorter
-than this observer's timeout, a stalled descent *always* aborts to IDLE before
-the observer would time out — so "IDLE ⇒ done" would silently report a failed or
-uncontrolled descent as success. Therefore:
+IDLE alone: a leg also reaches IDLE without a controlled descent when it
+disarms itself, and up to FW 52 the firmware IDLE'd every leg on every
+**abort** path (E-STOP, timeout, bus fault). From FW 53 (I-FW-19) an abort
+IDLEs the legs only if the Platform is already at Stow and otherwise HOLDS them
+in CLOSED_LOOP (frozen, or with nothing sent), so a stalled or aborted descent
+ends at this observer's timeout instead. Either way "IDLE ⇒ done" would report a
+failed or uncontrolled descent as success. Therefore:
 
   * **success** ⇒ the leg was observed within ``arrival_tol_rev`` of STOW *while
     in CLOSED_LOOP* (reliable position, latched), AND then reached IDLE with no
     active errors (the firmware completed the controlled descent + de-energised).
   * **failure** ⇒ active errors at any point; OR the leg dropped to IDLE *after
     having been driven* without ever reaching the STOW band (descent aborted /
-    stalled — E-STOP, firmware timeout, bus fault); OR the observer timeout
-    elapsed (telemetry froze / the firmware never re-energised).
+    stalled — E-STOP, firmware timeout, bus fault); OR the firmware set the leg's
+    ``DIAG_FLAG_LEG_HELD`` (FW 53: it froze or held the leg Closed-loop above Stow,
+    so the descent will not finish; honoured only after a clear bit was seen this
+    run, as ActivateMonitor's stall bit, because the flag is sticky from an earlier
+    abort until this DEACTIVATE is accepted); OR the observer timeout elapsed
+    (telemetry froze / the firmware never re-energised).
 
 The arrival latch is collected only in CLOSED_LOOP, never from a post-IDLE
 sample, so the foam-relaxation lesson is fully respected — it just adds the
@@ -69,6 +74,8 @@ DEFAULT_STOW_REV = 0.0
 # CLOSED_LOOP; far tighter than any mid-descent abort distance, so it cleanly
 # separates a clean descent from an abort-to-IDLE.
 DEFAULT_ARRIVAL_TOL_REV = 0.15
+# Reason prefix of a fail-fast on DIAG_FLAG_LEG_HELD (FW 53).
+REASON_HELD = "HELD"
 
 
 @dataclass(frozen=True)
@@ -80,11 +87,14 @@ class AxisStatus:
         pos_rev: ``TELEMETRY.pos_rev[axis]`` — Jugglebot convention (for messages).
         vel_rps: ``TELEMETRY.vel_rps[axis]`` — Jugglebot convention (for messages).
         active_errors: ODrive ``active_errors`` bitmask (``DIAGNOSTIC.active_errors``).
+        held: ``DIAGNOSTIC.flags & DIAG_FLAG_LEG_HELD`` (FW 53; always False
+            against an older board).
     """
     axis_state: int
     pos_rev: float
     vel_rps: float
     active_errors: int = 0
+    held: bool = False
 
 
 class Phase(str, Enum):
@@ -105,6 +115,7 @@ class StepResult:
 class _Prog:
     phase: Phase = Phase.ACTIVE
     reason: str = ""
+    saw_unheld: bool = False   # the sticky HELD bit is honoured only after a clear one
 
 
 class DeactivateMonitor:
@@ -183,6 +194,15 @@ class DeactivateMonitor:
                 if st.active_errors != 0:
                     pr.phase = Phase.FAILED
                     pr.reason = f"active_errors 0x{st.active_errors:x} during deactivate"
+                    continue
+                if not st.held:
+                    pr.saw_unheld = True
+                elif pr.saw_unheld:
+                    pr.phase = Phase.FAILED
+                    pr.reason = (f"{REASON_HELD}: the can-bridge stopped the descent and "
+                                 f"holds this Leg Closed-loop at pos {st.pos_rev:+.3f} rev "
+                                 f"(FW 53 LEG_HELD: a Leg dropped out, or the descent "
+                                 f"timed out above Stow); the Platform is NOT at Stow")
                     continue
                 if st.axis_state == AXIS_STATE_CLOSED_LOOP:
                     # Collect arrival evidence ONLY while the position is reliable

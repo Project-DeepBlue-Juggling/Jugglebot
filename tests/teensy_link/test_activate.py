@@ -189,3 +189,72 @@ def test_multi_axis_all_succeed_only_when_all_terminal():
     assert not r.done   # axis 1 still moving
     r = m.step(1.0, {0: st(TGT, vel_rps=0.0), 1: st(TGT, vel_rps=0.0)})
     assert r.done and sorted(m.succeeded) == [0, 1]
+
+
+# ── FW 53 (I-FW-19) abort outcomes: returned rise, held, dropped ─────────────
+# Each fails at once by outcome instead of a 20 s timeout. Mutations caught:
+# deleting the IDLE-after-Closed-loop branch (the returned/pre-rise/dropped
+# tests run to the timeout), not extending the deadline on a return (the late
+# return test times out), deleting the HELD branch (held test not done), and
+# honouring HELD without a clear bit first (stale-HELD test fails at t=0).
+
+def _held(pos, held=True, state=CL):
+    return AxisStatus(axis_state=state, pos_rev=pos, vel_rps=0.0, held=held)
+
+
+def test_returned_rise_fails_at_once_naming_the_return_to_stow():
+    from teensy_link.activate import REASON_RETURNED
+    m = mon([0])
+    for t, p in ((0.0, -0.10), (0.3, 0.6), (0.6, 1.4), (0.9, 1.2), (1.5, 0.05)):
+        assert not m.step(t, {0: st(p, vel_rps=1.0)}).done
+    r = m.step(1.6, {0: st(0.02, state=1)})                 # IDLEd at Stow
+    assert r.done and m.failed[0].startswith(REASON_RETURNED)
+    assert "returned the Platform to Stow" in m.failed[0]
+
+
+def test_late_return_extends_the_budget_past_the_rise_timeout():
+    from teensy_link.activate import RETURN_TIMEOUT_S, REASON_RETURNED
+    m = mon([0], timeout_s=2.0)
+    m.step(0.0, {0: st(-0.10, vel_rps=1.0)})
+    m.step(1.9, {0: st(1.5, vel_rps=1.0)})
+    m.step(1.95, {0: st(1.35, vel_rps=-2.0)})              # the return begins
+    assert m.deadline_s == pytest.approx(1.95 + RETURN_TIMEOUT_S)
+    r = m.step(2.5, {0: st(0.6, vel_rps=-2.5)})            # past the rise budget
+    assert not r.done
+    assert not m.step(3.1, {0: st(0.02, vel_rps=0.0)}).done   # at Stow, Closed-loop
+    r = m.step(3.2, {0: st(0.01, state=1)})
+    assert r.done and m.failed[0].startswith(REASON_RETURNED)
+
+
+def test_pre_rise_abort_at_stow_is_named_not_timed_out():
+    from teensy_link.activate import REASON_RETURNED
+    m = mon([0])
+    m.step(0.0, {0: st(-0.10, state=1)})                   # Idle before ACTIVATE
+    m.step(0.1, {0: st(-0.10)})                            # Closed-loop at the bottom
+    r = m.step(0.2, {0: st(-0.10, state=1)})               # aborted, IDLEd at Stow
+    assert r.done and m.failed[0].startswith(REASON_RETURNED)
+    assert "before the rise" in m.failed[0]
+
+
+def test_idle_above_stow_is_a_drop_not_a_return():
+    from teensy_link.activate import REASON_DROPPED
+    m = mon([0])
+    m.step(0.0, {0: st(0.9, vel_rps=2.0)})
+    r = m.step(0.1, {0: st(1.0, state=1)})
+    assert r.done and m.failed[0].startswith(REASON_DROPPED)
+
+
+def test_held_leg_fails_at_once_naming_the_hold():
+    from teensy_link.activate import REASON_HELD
+    m = mon([0])
+    assert not m.step(0.0, {0: _held(0.8, held=False)}).done
+    r = m.step(0.1, {0: _held(0.85)})
+    assert r.done and m.failed[0].startswith(REASON_HELD)
+    assert "+0.850" in m.failed[0]
+
+
+def test_stale_held_bit_is_ignored_until_seen_clear():
+    m = mon([0])
+    assert not m.step(0.0, {0: _held(-0.10, state=1)}).done   # last run's sticky bit
+    r = m.step(0.1, {0: st(TGT)})
+    assert r.done and m.succeeded == [0]

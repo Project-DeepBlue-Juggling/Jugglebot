@@ -42,6 +42,27 @@ static inline void atomic_write_u64(volatile uint64_t* p, uint64_t v) {
   __set_PRIMASK(pm);
 }
 
+// ── THE ONE AGE PREDICATE over a receive-stamped timestamp (FW 46, BUG-93) ─────
+// True iff `ts` is strictly older than `now` by MORE than `limit`. Every
+// "has axis i gone quiet?" test goes through here (fault_machine.cpp's silence
+// and staleness predicates, and since FW 53 leg_stow_gate.cpp's Stow predicate),
+// because the naive form `now - ts > limit` is wrong on this scheduler in one
+// specific way: the caller captures `now = micros64()` FIRST and reads the
+// timestamp AFTER, and the writer (task_can_rx, priority 5) preempts the reader
+// in between. A frame stamped in that window is NEWER than `now`, the unsigned
+// subtraction wraps to ~2^64, and a live axis reads as silent for one
+// evaluation. On the fatal predicate that is a CAN_BUS_DOWN trip and a Stow
+// mid-Attempt whose latch names leg 0xFF with age 0 (first_silent_leg re-reads
+// a clock that has moved on). A stamp at or after `now` is age zero: NOT older,
+// so NOT silent / NOT stale and, in the inverted predicates, ALIVE / fresh.
+// Same semantics as the MOTOR_FB_STALE guard has carried since FW 27; this
+// helper is that guard made the single enforcement point for the whole class.
+// (Lived file-static in fault_machine.cpp until FW 53 moved it here so the Stow
+// gate shares the one age rule; the body is unchanged.)
+static inline bool rx_older_than(uint64_t now, uint64_t ts, uint64_t limit) {
+  return now > ts && (now - ts) > limit;
+}
+
 // 64-bit monotonic microseconds since boot (wrap-safe).
 //
 // CLOCK-DISCIPLINE INVARIANT: use micros64() for ALL interval /

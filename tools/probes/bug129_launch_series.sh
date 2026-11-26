@@ -18,8 +18,8 @@
 # Per launch (~7 min incl. cool-down): t0-90 s hands off; t=60 manipulation check (fastrtps
 # maps in the bridge: >0 in A, exactly 0 in B, else discard and rerun the slot); t=90 churn
 # 10 s apart (node list, topic hz, echo+kill -9, service list, 30 s wait, echo+kill -9, echo
-# --once /link_status); idle to t=270; SIGINT the launch; wait <=30 s for the bridge to exit
-# (SIGKILL leftovers, noted); 20 s cool-down. The 30 s mark of the FIRST launch also asserts
+# --once /link_status); idle to t=270; ONE SIGINT to the launch (its own process group, see bug129_stop_group.sh), <=30 s, then
+# SIGTERM/SIGKILL of the group; the ending signal goes to the .meta (stop_signal=) and the .log; 20 s cool-down. The 30 s mark of the FIRST launch also asserts
 # that tools/lib/live_session.sh reports LIVE (first meeting of the BUG-85 argv-shape guard
 # with a real launch); the result is written to the meta file and the series log, and a
 # NOT-LIVE result stops the series after that launch (exit 4).
@@ -109,13 +109,10 @@ load_high() { awk -v l="$(load1)" 'BEGIN{exit !(l>4)}'; }
 # Slot sequence: blocks A B B A A B B A ...
 slot_arm() { case $(( $1 % 4 )) in 0|3) echo A ;; *) echo B ;; esac; }
 
-LAUNCH_PID=""; LOCKFD=""
-stop_launch() {   # bounded SIGINT shutdown of the current launch; never blocks forever
-  [[ -n "$LAUNCH_PID" ]] && kill -0 "$LAUNCH_PID" 2>/dev/null || return 0
-  kill -INT "$LAUNCH_PID" 2>/dev/null
-  local i; for i in $(seq 1 60); do kill -0 "$LAUNCH_PID" 2>/dev/null || return 0; sleep 1; done
-  kill -KILL -- "-$LAUNCH_PID" 2>/dev/null; sleep 1
-}
+LOCKFD=""
+# shellcheck disable=SC1091
+source "$HERE/bug129_stop_group.sh" || { echo "cannot source bug129_stop_group.sh" >&2; exit 2; }
+stop_launch() { group_stop 30 10 5; }   # one SIGINT to the launch's process group, then TERM, KILL
 trap 'say "runner interrupted: stopping the launch"; stop_launch; exit 130' INT TERM
 
 abort_series() { say "ABORT: $*"; stop_launch; exit "${2:-1}"; }   # $2 not used by say
@@ -129,7 +126,7 @@ print_launch_plan() {   # $1 arm $2 slot name
   --- launch ${nm} (arm ${arm}) ---
   [pre]  live_session must be clear; load1 <= 4 (else wait <= 10 min); HEAD + install mtimes unchanged;
          exec {fd}>$LOCK ; flock -w 900 \$fd ; free -m / uptime appended to ${log%.log}.meta
-  [t=0]  setsid bash -c '$ENVSRC && exec $LAUNCH_BASE$extra' > $log 2>&1 &
+  [t=0]  (set -m) bash -c '$ENVSRC && exec $LAUNCH_BASE$extra' > $log 2>&1 &   # own process group
   [t=2s..]  every 2 s: grep -aE '$FORBIDDEN_RE' on the log (ANSI stripped) -> SIGINT launch, abort series
   [t=30] (first launch only) source $MAIN/tools/lib/live_session.sh; live_session  -> must be LIVE, recorded
   [t=60] bridge pid via /proc argv; grep -c /dev/shm/fastrtps_ /proc/<pid>/maps  (A: >0, B: ==0); ls /dev/shm | wc -l
@@ -139,8 +136,8 @@ print_launch_plan() {   # $1 arm $2 slot name
          bash -c '$ENVSRC && timeout 30 ros2 service list --no-daemon'       ; sleep 30
          bash -c '$ENVSRC && ros2 topic echo /robot_state >/dev/null & sleep 4; kill -9 \$!' ; sleep 10
          bash -c '$ENVSRC && timeout 30 ros2 topic echo --once /link_status >/dev/null'
-  [t=270] kill -INT <launch pid>; wait <= 30 s for the bridge to exit (else kill -9 it, note); wait <= 30 s more
-          for the launch (else kill -KILL its process group, note); live_session must be clear; sleep 20
+  [t=270] one SIGINT to the launch (leader of its own process group, SIGINT reset to default); wait <= 30 s, else SIGTERM the group,
+          <= 10 s, else SIGKILL (the signal that ended it goes to the meta and the log); live_session must be clear; sleep 20
   [post] parser input = ${log%.log}.{log,meta}; bag path is in the log
 EOF
 }
@@ -217,15 +214,17 @@ git -C "$MAIN" diff --quiet "$START_HEAD" HEAD -- ros_ws/src teensy_link control
   extra=""; [[ "$arm" == B ]] && extra=" bridge_shm:=false"
   say "launch $nm: load1=$(load1) (waited ${waited}s)"
   T0=$(date +%s); echo "start_epoch=$T0" >> "${base}.meta"
-  setsid bash -c "$ENVSRC && exec $LAUNCH_BASE$extra" > "${base}.log" 2>&1 &
-  LAUNCH_PID=$!
+  # Own process group with default signal dispositions (see bug129_stop_group.sh): a plain
+  # background job ignores SIGINT and the old runner's SIGINT never reached the launch.
+  group_start "${base}.log" bash -c "$ENVSRC && exec $LAUNCH_BASE$extra"
+  LAUNCH_PID=$GROUP_PID
 
   # wait_until <offset_s>: sleep to T0+offset, scanning the log for forbidden commands every 2 s.
   # Returns 1 if the launch died.
   wait_until() {
     local tgt=$((T0 + $1))
     while (( $(date +%s) < tgt )); do
-      kill -0 "$LAUNCH_PID" 2>/dev/null || return 1
+      group_alive || return 1
       if sed 's/\x1b\[[0-9;]*m//g' "${base}.log" | grep -aEq "$FORBIDDEN_RE"; then
         say "FORBIDDEN arm/motion line in ${base}.log: $(sed 's/\x1b\[[0-9;]*m//g' "${base}.log" | grep -aE "$FORBIDDEN_RE" | head -1)"
         stop_launch; exec {LOCKFD}>&-
@@ -289,19 +288,16 @@ git -C "$MAIN" diff --quiet "$START_HEAD" HEAD -- ros_ws/src teensy_link control
 
   # ── clean shutdown, bounded ──
   exit_note="clean"
-  kill -0 "$LAUNCH_PID" 2>/dev/null || exit_note="launch died early"
-  bp="$(bridge_pid || true)"
-  kill -INT "$LAUNCH_PID" 2>/dev/null
-  for _ in $(seq 1 30); do bridge_pid >/dev/null || break; sleep 1; done
-  if bp2="$(bridge_pid)"; then
-    kill -KILL "$bp2" 2>/dev/null; exit_note="bridge SIGKILLed after 30 s"
-  fi
-  for _ in $(seq 1 30); do kill -0 "$LAUNCH_PID" 2>/dev/null || break; sleep 1; done
-  if kill -0 "$LAUNCH_PID" 2>/dev/null; then
-    kill -KILL -- "-$LAUNCH_PID" 2>/dev/null; exit_note="$exit_note; launch group SIGKILLed"
-  fi
-  wait "$LAUNCH_PID" 2>/dev/null
-  echo "bridge_exit=$exit_note" >> "${base}.meta"; echo "end_epoch=$(date +%s)" >> "${base}.meta"
+  group_alive || exit_note="launch died early"
+  stop_launch
+  case "$GROUP_STOP_SIGNAL" in
+    INT) ;;
+    none) ;;
+    *) exit_note="launch group needed SIG$GROUP_STOP_SIGNAL (SIGINT did not end it)" ;;
+  esac
+  echo "bridge_exit=$exit_note" >> "${base}.meta"; echo "stop_signal=$GROUP_STOP_SIGNAL" >> "${base}.meta"
+  echo "end_epoch=$(date +%s)" >> "${base}.meta"
+  echo "bug129_runner: launch ended by SIG$GROUP_STOP_SIGNAL (${exit_note})" >> "${base}.log"
   LAUNCH_PID=""
   # No churn subscriber may outlive its launch (it would hold shm and count as a participant).
   pkill -9 -f 'bin/ros2 topic ech[o] /robot_state' 2>/dev/null || true

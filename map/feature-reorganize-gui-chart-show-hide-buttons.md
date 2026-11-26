@@ -2,14 +2,19 @@
 id: FEAT-66
 kind: feature
 title: Reorganize GUI Chart "Show/Hide" buttons
-status: inbox
+status: complete
 created: '2026-11-25'
-updated: '2026-11-24T22:17:07Z'
+updated: '2026-11-25T15:53:55Z'
 owners: []
 priority: low
 effort: xs
+hardware: none
+owner: none
+radius: local
+area: gui
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-26-gui-imu-charts-button-with-odrive-toggle.md
 filed_by: harrison
 parent: gui-improvements
 ---

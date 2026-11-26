@@ -126,6 +126,7 @@ def make_tracker() -> BallTracker:
         flight_fit_min_samples=hw.TRACKING_FLIGHT_FIT_MIN_SAMPLES,
         flight_fit_residual_mm=hw.TRACKING_FLIGHT_FIT_RESIDUAL_MM,
         flight_fit_freeze_above_plane_mm=hw.TRACKING_FLIGHT_FIT_FREEZE_ABOVE_PLANE_MM,
+        gravity_world_xy_mmps2=tuple(hw.TRACKING_GRAVITY_WORLD_XY_MMPS2),
     )
 
 

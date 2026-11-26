@@ -53,11 +53,24 @@ def _wd(tmp_path, warns, **kw):
 
 
 def test_gil_held_stall_is_dumped_mid_stall_and_named(tmp_path, warns):
+    """The holder stalls only after a watchdog tick has recorded its name: the
+    module names threads alive BEFORE a stall. Started straight into the stall,
+    the holder could take the GIL before any tick saw it alive, and under box load
+    another thread (xdist's IO thread) could take the GIL when it let go, so the
+    holder exited unnamed (BUG-143, 2026-11-25, load average 15 to 18)."""
     wd = _wd(tmp_path, warns).start()
     try:
-        holder = threading.Thread(target=_hold_gil, args=(300,), name='gil_holder')
+        go = threading.Event()
+
+        def _named_then_hold():
+            go.wait(5.0)
+            _hold_gil(300)
+
+        holder = threading.Thread(target=_named_then_hold, name='gil_holder')
         time.sleep(0.1)
         holder.start()
+        assert _wait(lambda: wd._names.get(holder.ident) == 'gil_holder'), 'never named'
+        go.set()
         holder.join()
         assert _wait(lambda: wd.reports), warns
         text = open(wd.reports[0]).read()

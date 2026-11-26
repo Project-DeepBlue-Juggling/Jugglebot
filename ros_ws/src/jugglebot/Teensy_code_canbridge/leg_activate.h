@@ -48,9 +48,16 @@
 //  status field, exactly as HOME/encoder-search are observed.
 //
 //  Determinacy / safety: no unbounded loops, no blocking, no ISR work. Bounded by
-//  a hard timeout; any abort (bus down / E-STOP / timeout) leaves the targeted
-//  legs in IDLE — the move is NEVER left driving. Re-running ACTIVATE while one is
-//  active is rejected (idempotent); a concurrent HOME is rejected too.
+//  a hard timeout. FW 53 (I-FW-19, owner rule 2026-11-25): no Leg is made IDLE
+//  unless the Platform is already at Stow (the Hand is exempt and is IDLEd on
+//  every abort). An abort before the rise IDLEs the Legs only from Stow (else
+//  they hold, HELD); a Soft E-stop, commands-not-allowed or timeout mid-rise
+//  RETURNS the Platform to Stow under the same gentle profile and IDLEs the Legs
+//  there; a Leg that disarmed itself mid-rise freezes the others; bus down sends
+//  nothing to the Legs (the deferred stow lowers them at reconnect). The ladder
+//  stays active (HOME / DEACTIVATE / ACTIVATE refused) until the return ends.
+//  leg_activate.cpp's header has the per-phase detail. Re-running ACTIVATE while
+//  one is active is rejected (idempotent); a concurrent HOME is rejected too.
 // =============================================================================
 
 #include <cstdint>
@@ -64,7 +71,7 @@ enum ActivateResult : uint8_t {
   ACTIVATE_NONE    = 0,   // never activated this boot
   ACTIVATE_RUNNING = 1,   // the fire ladder is in progress for this axis
   ACTIVATE_OK      = 2,   // TRAP_TRAJ move commanded (the ODrive runs it)
-  ACTIVATE_FAILED  = 3,   // aborted (timeout / bus down / E-STOP)
+  ACTIVATE_FAILED  = 3,   // aborted (timeout / bus down / Soft E-stop), incl. after a return to Stow
 };
 
 void activate_init();

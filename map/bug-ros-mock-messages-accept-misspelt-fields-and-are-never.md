@@ -18,8 +18,8 @@ links:
 - bug-tests-that-never-run-or-cannot-fail-two-permanent-skips-node
 filed_by: claude
 night_skip: frozen-path
-night_skip_on: '2026-11-22'
-night_skip_note: 'Needs tests/ros/conftest.py, a never-list path: a day Session with the full gate.'
+night_skip_on: '2026-11-26'
+night_skip_note: Slice 1 landed 2026-11-25; slice 2 (strict setattr on the mocks) needs tests/ros/conftest.py, a never-list path.
 ---
 
 The ROS mock layer accepts a misspelt message field, so a node test can pass on a field the real message does not have. Split from BUG-103 on 2026-11-18.

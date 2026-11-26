@@ -5,8 +5,10 @@ horizontal plane at a given Z height. Returns landing position, velocity,
 and time-to-land.
 """
 
+from __future__ import annotations
+
 import math
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -20,10 +22,19 @@ def predict_landing_state(
     position: np.ndarray,
     velocity: np.ndarray,
     landing_z: float,
+    g_xy_mmps2: Optional[Sequence[float]] = None,
 ) -> Optional[Tuple[np.ndarray, np.ndarray, float]]:
     """Predict where and when a ball will cross a horizontal plane.
 
     Uses ballistic equations (gravity only, no drag).
+
+    ``g_xy_mmps2`` is gravity's HORIZONTAL part in the caller's frame, mm/s^2
+    (FEAT-27, 2026-11-26): the Mocap world frame is tilted 0.55 deg from
+    gravity, measured (+43, +83) mm/s^2, so a flight there curves sideways
+    as well as down. It moves the landing xy by ``0.5 g_xy t^2`` and the
+    landing velocity by ``g_xy t``; the crossing time (the z root) is
+    unchanged, with the vertical part still ``GRAVITY_MMPS2``. None or
+    (0, 0) is the pre-FEAT-27 arithmetic exactly, bit for bit.
 
     Args:
         position: Current [x, y, z] in mm.
@@ -68,6 +79,15 @@ def predict_landing_state(
     landing_vx = vx
     landing_vy = vy
     landing_vz = vz - GRAVITY_MMPS2 * time_to_land
+
+    if g_xy_mmps2 is not None:
+        gx, gy = float(g_xy_mmps2[0]), float(g_xy_mmps2[1])
+        if gx != 0.0 or gy != 0.0:
+            half_t2 = 0.5 * time_to_land * time_to_land
+            landing_x += gx * half_t2
+            landing_y += gy * half_t2
+            landing_vx += gx * time_to_land
+            landing_vy += gy * time_to_land
 
     landing_pos = np.array([landing_x, landing_y, landing_z])
     landing_vel = np.array([landing_vx, landing_vy, landing_vz])

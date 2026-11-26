@@ -55,6 +55,12 @@ _ALLOWED_MOTION_TUS = {
     "leg_activate.cpp": "the one-shot ACTIVATE park (behind the coldstart interlock)",
     "leg_deactivate.cpp": "the legs' profiled descent (the hand only ever IDLEs)",
     "leg_homing.cpp": "the homing drive onto the hardstop (behind the interlock)",
+    # FW 53 (I-FW-19): leg_freeze_tx, the hold that replaces an IDLE above Stow. It is
+    # not a new writer of axis 6: it refuses every axis >= NUM_LEGS before encoding
+    # (native test_leg_stow_gate case 13 pins "Hand: nothing sent"), and it only ever
+    # runs on behalf of a ladder above (or the fault machine's deferred stow after
+    # interp_end_stow), so it inherits their serialisation with the streamed lane.
+    "leg_stow_gate.cpp": "the Leg-only hold of a ladder or stow that may not IDLE (never axis 6)",
 }
 
 
@@ -151,10 +157,15 @@ def test_deactivate_only_ever_idles_the_hand(canbridge):
     assert "idle_hand_now" in body, (
         "leg_deactivate.cpp no longer routes the hand through idle_hand_now — "
         "the hand may have been put into the legs' descent ladder")
-    hand_frames = re.findall(r"(encode_\w+)\s*\(\s*HAND_AXIS", body)
-    assert hand_frames == ["encode_set_state"], (
+    # FW 53 (I-FW-19): every Set_Axis_State goes through the Stow gate's wrapper
+    # (the Hand passes it ungated), so the hand frame is odrive_set_state_tx, and
+    # a direct encoder call on axis 6 is still caught here.
+    hand_frames = re.findall(r"(encode_\w+|odrive_\w+_tx)\s*\(\s*HAND_AXIS", body)
+    assert hand_frames == ["odrive_set_state_tx"], (
         "the ONLY axis-6 frame DEACTIVATE may send is the IDLE state change. "
         f"Found: {hand_frames}")
+    assert re.search(r"odrive_set_state_tx\s*\(\s*HAND_AXIS,\s*ODriveState::IDLE\b", body), (
+        "DEACTIVATE's one axis-6 frame must be the IDLE state change")
 
 
 def test_the_coldstart_interlock_names_all_three_cold_start_ops(canbridge):

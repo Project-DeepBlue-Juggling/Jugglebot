@@ -51,8 +51,16 @@ bool deactivate_active() { return g_sib_deactivate; }
 
 using namespace CanBridge;
 
+static constexpr uint64_t T0 = 100000000ull;   // 100 s: every staged age fits below it
+static constexpr int64_t  FRESH_HB  = 50000;   // 50 ms
+static constexpr int64_t  FRESH_ENC = 2000;    // 2 ms
+static constexpr uint8_t  ST_IDLE = (uint8_t)ODriveState::IDLE;
+static constexpr uint8_t  ST_CL   = (uint8_t)ODriveState::CLOSED_LOOP;
+
 static void full_reset() {
   cs_reset();
+  cs_set_mono(T0);
+  leg_stow_gate_init();
   g_sib_activate = false;
   g_sib_deactivate = false;
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
@@ -60,6 +68,9 @@ static void full_reset() {
     axes[i].active_errors = 0;
     axes[i].iq_measured = 0.0f;
   }
+  // FW 53: the robot after the encoder search: every Leg present, IDLE in a fresh
+  // heartbeat (the A6 twin's precondition). Needs the clock set first.
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) cs_stage_leg(i, ST_IDLE, 0.0f, 0.0f, FRESH_HB, FRESH_ENC);
   homing_init();
 }
 
@@ -417,4 +428,161 @@ TEST_CASE("FW 34: a refused HOME (dead bus) leaves the epoch and the last result
   homing_status(0, &r, &e);
   CHECK(r == HOMING_NONE);
   CHECK(e == 0);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FW 53 U4 (I-FW-19): the A6 twin at HOME accept, and Homing's own frames
+// through the Stow gate as HOMING_OWNER. Staged stamps come from the fake clock
+// (cs_stage_leg ages), never from leg_cl_cmd_us().
+// ═════════════════════════════════════════════════════════════════════════════
+
+static bool sent_idle_to(uint8_t axis) {
+  return saw_frame(ODrive::encode_set_state(axis, ODriveState::IDLE));
+}
+
+TEST_CASE("FW 53: HOME(Leg) refused unless every present Leg is IDLE and fresh; HOME(Hand) ungated") {
+  uint8_t r = 0, e = 0;
+  // One Leg posed Closed-loop (the Platform up): every Leg HOME refused, nothing
+  // latched, no epoch bump, nothing on CAN.
+  full_reset();
+  cs_stage_leg(3, ST_CL, 1.0f, 0.0f, FRESH_HB, FRESH_ENC);
+  cs_clear_sent();
+  CHECK(homing_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK(homing_request(3) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK_FALSE(homing_active());
+  homing_status(0, &r, &e);
+  CHECK(r == HOMING_NONE);
+  CHECK(e == 0);
+  CHECK(cs_sent_count() == 0);
+  // ...while HOME(Hand) is not gated.
+  CHECK(homing_request(HAND_AXIS) == JbUdp::RpcStatus::OK);
+
+  // A Closed-loop Leg AT Stow still refuses (strict IDLE).
+  full_reset();
+  cs_stage_leg(5, ST_CL, 0.0f, 0.0f, FRESH_HB, FRESH_ENC);
+  CHECK(homing_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+
+  // A stale heartbeat (0.6 s) on another Leg refuses.
+  full_reset();
+  cs_stage_leg(2, ST_IDLE, 0.0f, 0.0f, 600000, FRESH_ENC);
+  CHECK(homing_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+
+  // A Leg still in ENCODER_INDEX_SEARCH refuses.
+  full_reset();
+  cs_stage_leg(4, (uint8_t)ODriveState::ENCODER_INDEX_SEARCH, 0.0f, 0.0f, FRESH_HB, FRESH_ENC);
+  CHECK(homing_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+
+  // Every Leg IDLE and fresh: accepted.
+  full_reset();
+  CHECK(homing_request(0) == JbUdp::RpcStatus::OK);
+}
+
+TEST_CASE("FW 53: the one-Leg bench homes a Closed-loop Leg once the rig is settled as a bench") {
+  full_reset();
+  cs_clear_axes();                                         // only Leg 0 on the bus, no Hand
+  cs_stage_leg(0, ST_CL, 1.5f, 0.0f, FRESH_HB, FRESH_ENC); // posed, Closed-loop
+  rig_note_axis_frame(0, T0);
+  rig_note_bus(true, T0);
+  // Inside the 5 s settle the rig is undecided: the gate applies.
+  cs_advance(1000000);
+  cs_stage_leg(0, ST_CL, 1.5f, 0.0f, FRESH_HB, FRESH_ENC);
+  CHECK(homing_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+  // Settled bench: accepted from Closed-loop.
+  cs_advance(RIG_BENCH_SETTLE_US);
+  cs_stage_leg(0, ST_CL, 1.5f, 0.0f, FRESH_HB, FRESH_ENC);
+  REQUIRE(rig_is_bench(micros64()));
+  REQUIRE(homing_request(0) == JbUdp::RpcStatus::OK);
+  // And it homes: SETUP re-sends CLOSED_LOOP, drives, the stall IDLE goes out.
+  homing_step();
+  cs_advance(SETTLE_DRIVE_US + 1);
+  homing_step();
+  REQUIRE(s_phase == Phase::MONITOR);
+  axes[0].iq_measured = homing_curr_limit_a(0) * 3.0f;
+  int guard = 0;
+  cs_clear_sent();
+  while (s_phase == Phase::MONITOR && guard++ < 1000) homing_step();
+  REQUIRE(s_phase == Phase::STOP_SETTLE);
+  CHECK(sent_idle_to(0));
+}
+
+TEST_CASE("FW 53: production sequence — stall IDLE via HOMING_OWNER; the next Leg waits for the IDLE heartbeat") {
+  full_reset();
+  REQUIRE(homing_request(0) == JbUdp::RpcStatus::OK);
+  const uint64_t t_setup = micros64();
+  homing_step();                                   // SETUP: CLOSED_LOOP through the gate
+  CHECK(leg_cl_cmd_us(0) == t_setup);              // the gate stamped it (a raw send would not)
+  cs_advance(SETTLE_DRIVE_US + 1);
+  homing_step();                                   // DRIVE → MONITOR
+  REQUIRE(s_phase == Phase::MONITOR);
+  // The Leg is now Closed-loop in a confirming heartbeat, at its UNHOMED encoder
+  // reading (2.0 rev, outside the Stow window): the Stow predicate refuses it, so
+  // only the HOMING_OWNER carve-out can IDLE it.
+  cs_advance(100000);
+  cs_stage_leg(0, ST_CL, 2.0f, -0.5f, 0, 0);
+  for (uint8_t i = 1; i < NUM_LEGS; ++i) cs_stage_leg(i, ST_IDLE, 0.0f, 0.0f, FRESH_HB, FRESH_ENC);
+  REQUIRE_FALSE(platform_at_stow(micros64()).ok);
+  axes[0].iq_measured = homing_curr_limit_a(0) * 3.0f;
+  cs_clear_sent();
+  int guard = 0;
+  while (s_phase == Phase::MONITOR && guard++ < 1000) homing_step();
+  REQUIRE(s_phase == Phase::STOP_SETTLE);
+  CHECK(sent_idle_to(0));                          // the stall IDLE reached the wire
+  cs_advance(SETTLE_STOP_US + 1);
+  homing_step();                                   // → SET_REF
+  homing_step();                                   // SET_REF → OK
+  REQUIRE(homing_result(0) == HOMING_OK);
+  REQUIRE_FALSE(homing_active());
+
+  // HOME Leg 1 at once: Leg 0's newest heartbeat still reads CLOSED_LOOP (sent
+  // before its IDLE took effect) → refused, as the host's retry expects.
+  cs_advance(20000);
+  CHECK(homing_request(1) == JbUdp::RpcStatus::ERR_REJECTED);
+  // Leg 0's next heartbeat (≤ ~100 ms later) reports IDLE; its stamp is far past
+  // Leg 0's own CL command + CL_ENGAGE_SETTLE_US → the retry is accepted.
+  cs_advance(80000);
+  cs_stage_leg(0, ST_IDLE, -0.1f, 0.0f, 0, 0);
+  for (uint8_t i = 1; i < NUM_LEGS; ++i) cs_stage_leg(i, ST_IDLE, 0.0f, 0.0f, FRESH_HB, FRESH_ENC);
+  CHECK(homing_request(1) == JbUdp::RpcStatus::OK);
+}
+
+TEST_CASE("FW 53: every homing abort IDLEs the homing Leg via HOMING_OWNER (posed, unhomed reading)") {
+  // Bus loss, timeout and E-STOP each end in finish(): the IDLE must reach the wire
+  // although the Stow predicate refuses the Leg (Closed-loop at 2.0 rev).
+  for (int which = 0; which < 3; ++which) {
+    CAPTURE(which);
+    full_reset();
+    REQUIRE(homing_request(2) == JbUdp::RpcStatus::OK);
+    homing_step();                                 // SETUP
+    cs_advance(SETTLE_DRIVE_US + 1);
+    homing_step();                                 // → MONITOR
+    cs_advance(100000);
+    cs_stage_leg(2, ST_CL, 2.0f, -0.5f, 0, 0);
+    for (uint8_t i = 0; i < NUM_LEGS; ++i)
+      if (i != 2) cs_stage_leg(i, ST_IDLE, 0.0f, 0.0f, FRESH_HB, FRESH_ENC);
+    REQUIRE_FALSE(platform_at_stow(micros64()).ok);
+    if (which == 0) cs_set_jugglebot_health(JbUdp::BusHealth::BUS_OFF);
+    if (which == 1) cs_advance(TIMEOUT_US + 1);
+    if (which == 2) cs_set_guard_estop(true);
+    cs_clear_sent();
+    const uint32_t refusals = leg_deenergise_refusals();
+    homing_step();                                 // abort → finish(FAILED)
+    CHECK_FALSE(homing_active());
+    CHECK(homing_result(2) == HOMING_FAILED);
+    REQUIRE(cs_sent_count() == 1);
+    CHECK(sent_idle_to(2));
+    CHECK(leg_deenergise_refusals() == refusals);  // never refused, never counted
+    CHECK(homing_axis_in_flight() == 0xFF);        // cleared AFTER the IDLE
+  }
+}
+
+TEST_CASE("FW 53: an accepted Leg HOME clears that Leg's HELD bit (a refused one does not)") {
+  full_reset();
+  (void)leg_freeze_tx(1, -0.11f, 1.0f);            // sets HELD on Leg 1
+  REQUIRE((leg_held_mask() & 0x02) != 0);
+  cs_stage_leg(4, ST_CL, 1.0f, 0.0f, FRESH_HB, FRESH_ENC);
+  CHECK(homing_request(1) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK((leg_held_mask() & 0x02) != 0);
+  cs_stage_leg(4, ST_IDLE, 0.0f, 0.0f, FRESH_HB, FRESH_ENC);
+  CHECK(homing_request(1) == JbUdp::RpcStatus::OK);
+  CHECK((leg_held_mask() & 0x02) == 0);
 }

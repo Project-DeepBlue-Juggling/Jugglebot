@@ -281,6 +281,18 @@ inline bool is_platform_imu_data_id(uint32_t id) {
   return id == PlatformCanId::IMU_DATA;
 }
 
+// True iff `id` is any frame the Platform Teensy transmits on the Jugglebot bus: the
+// reply ids above, IMU_DATA, the reserved IMU_LIVE pair, and the 2 Hz TRAFFIC_REPORT
+// (0x7DF, sent unconditionally from its loop(), so a live Platform Teensy of any FW
+// version is heard within 0.5 s). Witness for rig_is_bench() (leg_stow_gate.h): one
+// such frame since boot makes the board a robot. Inclusive on purpose: a false
+// positive only keeps the Stow gate on.
+inline bool is_platform_teensy_tx_id(uint32_t id) {
+  return is_platform_reply_id(id) || is_platform_imu_data_id(id) ||
+         id == PlatformCanId::TRAFFIC_REPORT ||
+         id == PlatformCanId::IMU_LIVE_ACCEL || id == PlatformCanId::IMU_LIVE_GYRO;
+}
+
 // The FW 45 Platform IMU_DATA ring (producer on_jugglebot_rx in task_can_rx,
 // consumer platform_imu_uplink_step in task_telem). Lock-free SPSC; see imu_ring.h.
 ImuDataRingT& can_imu_data_ring();

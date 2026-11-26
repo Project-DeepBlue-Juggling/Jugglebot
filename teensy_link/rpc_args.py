@@ -1081,7 +1081,17 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # stream keeps its held clock offset through a sync loss and a legacy -> scheduled
 # entry is checked like a resume; UDP from any source but the Jetson is dropped.
 # Behavioural only: no wire change, PROTOCOL_VERSION stays 14.
-EXPECTED_BRIDGE_FW_VERSION = 52
+# 52 -> 53 (2026-11-26, I-FW-19, owner rule 2026-11-25): "A Leg should never be
+# made IDLE unless the Platform is already at the Stow position." The Stow gate
+# (leg_stow_gate.cpp) is the one place a Leg Set_Axis_State, Reboot or SDO write is
+# built. Every ladder abort holds the Legs instead of IDLEing them above Stow; HOME(Leg)
+# needs every present Leg IDLE; the deferred stow IDLEs on encoder-confirmed Stow;
+# SET_AXIS_STATE on a Leg (any state but CLOSED_LOOP), REBOOT_ODRIVES and SDO_WRITE on
+# a Leg answer ERR_REJECTED (requires_platform_at_stow below) unless the Platform is at
+# Stow or the rig is the one-Leg bench; Leg CLOSED_LOOP and Leg SDO_WRITE are refused
+# while a Homing runs; Diagnostic flags bit4 LEG_HELD and bit5 RIG_BENCH (activate.py).
+# Behavioural only: no wire change, PROTOCOL_VERSION stays 14.
+EXPECTED_BRIDGE_FW_VERSION = 53
 
 # ── The Armed reconfiguration gate (can-bridge FW 52, BUG-99 D1) ─────────────
 # Twin of rpc.cpp refused_while_armed, the firmware's one enforcement point
@@ -1091,6 +1101,10 @@ EXPECTED_BRIDGE_FW_VERSION = 52
 # CLEAR_ERRORS (/recover), SET_VEL_CURR_LIMITS (the Hand jam relief, the GUI
 # limits), SET_AXIS_STATE IDLE (a stop), SDO_READ. The Hand's SET_POS_GAIN stays allowed by
 # the owner's decision (the Kp x MAX_LEAD_REV headroom is a Leg invariant).
+# FW 53 changes what the kept-allowed Leg IDLE does while Armed: it still PASSES this
+# gate (False below), and is then REFUSED by the Stow gate (requires_platform_at_stow),
+# because Armed implies the Platform is posed. A Hand IDLE is untouched (the Hand is
+# exempt from both).
 _ODRIVE_STATE_IDLE = 1
 ARMED_REFUSAL_HINT = ('refused while Armed (can-bridge FW 52, BUG-99): the bridge does not '
                       're-zero, re-tune, re-mode or reboot an ODrive under a live stream; disarm first')
@@ -1114,6 +1128,44 @@ def refused_while_armed(method, axis, requested_state=None):
 
 
 NUM_LEGS_FOR_ARMED_GATE = 6
+
+
+# ── The Stow gate (can-bridge FW 53, I-FW-19) ────────────────────────────────
+# Twins of rpc.cpp requires_platform_at_stow / home_requires_all_legs_idle (pinned
+# by tests/firmware/test_stow_gate_xref.py). The firmware enforcement is
+# leg_stow_gate.cpp's wrappers (the single point); a refusal is the EXISTING
+# ERR_REJECTED with nothing on CAN, so the host names it through these classifiers:
+# when one is True and the answer is ERR_REJECTED, the reason is "Platform not at Stow".
+# The one-Leg bench (rig_is_bench, Diagnostic flag RIG_BENCH) is exempt in firmware.
+_ODRIVE_STATE_CLOSED_LOOP = 8
+STOW_REFUSAL_HINT = ('refused (can-bridge FW 53, I-FW-19): a Leg is never de-energised unless the '
+                     'Platform is at Stow (every present Leg IDLE, or Closed-loop at rest in the Stow window)')
+
+
+def requires_platform_at_stow(method, axis, requested_state=None):
+    """True iff the can-bridge FW 53 refuses ``method`` on ``axis`` unless the Platform
+    is at Stow (or the rig is the one-Leg bench): every request that can de-energise a Leg.
+
+    SET_AXIS_STATE on a Leg to anything but CLOSED_LOOP (``requested_state`` None is
+    treated as "could be IDLE": True); REBOOT_ODRIVES on a Leg or AXIS_ALL; SDO_WRITE on
+    a Leg. The Hand is exempt. Leg CLOSED_LOOP is separately refused while a Homing runs
+    (not a Stow question).
+    """
+    m, ax = int(method), int(axis)
+    leg = 0 <= ax < NUM_LEGS_FOR_ARMED_GATE
+    if m == int(RpcMethod.SET_AXIS_STATE):
+        return leg and (requested_state is None or int(requested_state) != _ODRIVE_STATE_CLOSED_LOOP)
+    if m == int(RpcMethod.REBOOT_ODRIVES):
+        return leg or ax == int(AXIS_ALL)
+    if m == int(RpcMethod.SDO_WRITE):
+        return leg
+    return False
+
+
+def home_requires_all_legs_idle(axis):
+    """True iff HOME(``axis``) is refused (ERR_REJECTED) unless every present Leg is IDLE
+    and fresh (the firmware twin of ARMING_CONTRACT A6): HOME of a Leg. HOME(Hand) is not gated."""
+    return 0 <= int(axis) < NUM_LEGS_FOR_ARMED_GATE
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
