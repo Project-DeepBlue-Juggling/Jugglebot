@@ -384,12 +384,14 @@ def main(argv=None):
     ap.add_argument('--record', action='append', default=[], metavar='ANG:APEX:SEP=PKL', help='select the record per row label (repeat); without it --records serves every row')
     ap.add_argument('--check', action='store_true', help='print b(t_rel), the landing offset and b(t_end) for the first retarget case')
     ap.add_argument('--no-launch-bound', action='store_true', help='disable the 50 mm/s retarget launch bound (reproduces the pre-decision design row)')
+    ap.add_argument('--launch-bound', type=float, default=None, metavar='MM_S', help='override the retarget launch bound (default the production 50 mm/s); a probe-local what-if, the planner constant is untouched')
     ap.add_argument('--legacy-start', action='store_true', help='ramp from the pre-production continuous t + lead (reproduces the design row) instead of the knot-aligned k_b')
     a = ap.parse_args(argv)
     global LEAD_KNOTS, LAUNCH_BOUND, LEGACY_START
     LEGACY_START = a.legacy_start
     LEAD_KNOTS = a.lead_knots
-    LAUNCH_BOUND = float('inf') if a.no_launch_bound else bump.BUMP_MAX_LAUNCH_LATERAL_MM_S
+    LAUNCH_BOUND = (float('inf') if a.no_launch_bound else a.launch_bound if a.launch_bound is not None
+                    else bump.BUMP_MAX_LAUNCH_LATERAL_MM_S)
     global HOLD_THROUGH
     HOLD_THROUGH = a.hold_through
     global RETARGET
