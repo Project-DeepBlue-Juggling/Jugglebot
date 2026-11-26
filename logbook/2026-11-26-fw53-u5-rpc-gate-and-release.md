@@ -52,3 +52,7 @@ Decisions: (1) the classifier is asked in `rpc.cpp` only for the AXIS_ALL reboot
 - `pio run -e teensy41` (build only, never uploaded): see the unit report for the firmware.hex sha256.
 
 Integration gate for the whole FW 53 chain (U1 to U9, tip 09669806, rebased on main ed2b0fd7): 2026-11-26 10:47, `flock /tmp/jugglebot-tests.lock ./run_tests.sh --full`: 11450 passed, 54 skipped, 2 xfailed in 786 s; serial phase 16 passed; exit 0. Independent audit of the diff the same morning: nothing blocking; its should-fix items are the audit follow-up sections of the U8 and U6b entries.
+
+**Flashed 2026-11-26 11:04** from main a723861e (`pio run -e teensy41 -t upload`, launch down, firmware.hex sha256 ae73341b3acc..., the image the audit-follow-up unit built). Receipt: 10 of 10 BridgeIdentity frames read (53, 14) in a 10 s listen; every drive's Diagnostic flags read 0x02 (no LEG_HELD, no RIG_BENCH). Unpowered launch 11:05 (`temp/logs/fw53_unpowered_check_20261126_110557.log`): `BRIDGE_FW_CHECK: OK, can-bridge v53`, `PLATFORM_FW_CHECK: OK, v15`, `/link_status` `legs_held` none and `rig_bench` 0, BOOT to FAULT on bus undervoltage as expected, clean shutdown. Nothing in FW 53 has run with motor power: FEAT-69 carries the first powered Sitting.
+
+Note: the commit that filed FEAT-69 and cited the integration gate (a723861e) carries the wrong message, a copy of an FW 52 commit's subject and trailer, through a stale message file in my push step. Its content is the FEAT-69 Item, the regenerated indexes and the gate citation above.

@@ -30,6 +30,10 @@ FW 53 puts every Leg set-state, reboot and SDO write behind one predicate in `le
 
 Nothing in FW 53 has run with motor power. Unverified on hardware: a Leg's mid-move re-target (the return to Stow), the re-engage of a dropped Leg under load, the Closed-loop engage time against the 400 ms bound, and each Leg's rest position on its stop against the Stow window.
 
+## Progress
+
+- 2026-11-26: built as units U1 to U9 with an independent audit (nothing blocking), full-tier gate green, flashed 11:04 (BridgeIdentity 53/14; unpowered launch check clean; `rig_bench` 0, `legs_held` none). Host side live after the rebuild. Open until the Sitting below is flown.
+
 ## Sitting
 
 - setup: level, bridge-cycled
