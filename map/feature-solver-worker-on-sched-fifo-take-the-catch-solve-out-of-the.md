@@ -55,6 +55,14 @@ Bounded: a solve is <= ~100 ms CPU, so a runaway RT lock-up is not a realistic r
 - Owner: default OFF (solver_rt_priority 0; the 21:02 CFS state is the accepted result), emitter-gap (45 ms) and sched_stops WARNs added so a stall fails loudly.
 - Back to backlog: pick up only if a future Sitting shows the solve tail biting again; the design then is a CPU partition (worker on cores trajectory_node and teensy_bridge_node never run on), dress-rehearsed on the loaded box before the robot is powered.
 
+## Options (2026-11-28)
+
+The trigger fired at the 2026-11-27 Sitting: the wall tail still bites and is preemption. TKT-104 asks which way.
+
+1. Build the SCHED_FIFO worker now, held for a Sitting A/B (recommended).
+2. Wait for BUG-149's install fix and re-measure first.
+3. Drop it.
+
 ## Progress
 
 - 2026-10-28: Design done (Opus, 2026-10-28 evening): kernel has CONFIG_RT_GROUP_SCHED and user.slice cpu.rt_runtime_us=0, so rtprio alone cannot give FIFO (detail in the section above)
