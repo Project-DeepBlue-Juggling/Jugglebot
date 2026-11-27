@@ -2,9 +2,9 @@
 id: BUG-138
 kind: bug
 title: Plant model pools carried and from-rest rows, so oval rows move the Columns offset
-status: in_progress
+status: complete
 created: '2026-11-24'
-updated: '2026-11-25T17:40:23Z'
+updated: '2026-11-27T13:55:44Z'
 owners:
 - night-shift
 priority: medium
@@ -55,3 +55,4 @@ Recommendation: 3, since K held across Sittings and Sites while the oval's later
 ## Progress
 
 - 2026-11-26: Night Shift 2026-11-26: held on night-shift/2026-11-26-BUG-138: TKT-93 option 3 built (K shared, lateral law per release kind, I-LEARN-1 amended); unblocked by a day Session (2 audit findings, full gate, sim gate, merge) then a rehearsal
+- 2026-11-28: Merged with BUG-139 after the full gate and the sim gate; finding 2 went to BUG-153. Rehearsal and a first Columns Attempt are owed.

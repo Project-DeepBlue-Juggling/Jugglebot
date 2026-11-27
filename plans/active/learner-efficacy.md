@@ -3,7 +3,7 @@ title: Learner efficacy - find the launch term and fix it at the Hand; Learner c
 created: 2026-11-24
 status: active
 owner: Harrison
-last_updated: 2026-11-27
+last_updated: 2026-11-28
 pathway: learner-generalisation
 branch: main
 scope: >-
@@ -14,7 +14,7 @@ scope: >-
 steps:
   - {id: PE0, title: Unsettled-ball test from existing bags, kind: phase, status: complete, completed: 2026-11-25, effort: m, hardware: none}
   - {id: PE1, title: Launch baseline on the robot's Hand, kind: phase, status: complete, completed: 2026-11-27, effort: s, hardware: robot}
-  - {id: PE2, title: Learner correctness fixes, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: PE2, title: Learner correctness fixes, kind: phase, status: in_progress, effort: m, hardware: none}
   - {id: PE3, title: The transit term and yaw, kind: phase, status: retired, date: 2026-11-25, effort: l, hardware: robot}
   - {id: PE4, title: Hand change against the baseline, kind: phase, status: not_started, effort: m, hardware: robot}
   - {id: PE5, title: Catch-side robustness, kind: phase, status: not_started, effort: m, hardware: robot}
@@ -132,7 +132,7 @@ Step ids: the frontmatter ids are `PE0` to `PE7` (a constraint of the plan tooli
 |---|---|---|---|---|
 | E0 | Unsettled-ball test from existing bags | none | COMPLETE 2026-11-25: BETWEEN, leaning against | what E1 asks |
 | E1 | Launch baseline on the robot's Hand (FEAT-68, report FEAT-67) | robot | COMPLETE 2026-11-27 | separation; baseline 15 mm/s per axis in every block |
-| E2 | Learner correctness fixes (BUG-137, BUG-138, one Memory) | none | NOT STARTED | nothing downstream; independent |
+| E2 | Learner correctness fixes (BUG-137, BUG-138, one Memory) | none | IN PROGRESS: fixes merged 2026-11-28; the one-Memory rule and the first flight open | nothing downstream; independent |
 | E3 | The transit term and yaw | robot | RETIRED 2026-11-25 | - |
 | E4 | Hand change against the baseline | robot | NOT STARTED | whether the launch term is cut |
 | E5 | Catch-side robustness | robot | NOT STARTED | whether the 15 mm authority and the bounce-out causes need Items |
@@ -257,6 +257,16 @@ production on every axis; sim gate green; first flown as a normal Columns Attemp
 before any Sitting that flies it. Wrap every run in `flock /tmp/jugglebot-tests.lock`.
 
 **Decides.** Nothing downstream; E7's I-LEARN-1 row describes the result.
+
+**Status (2026-11-28).** (a) BUG-137 is on main. (b) BUG-138 merged 2026-11-28 as TKT-93 option 3 (K shared,
+the lateral law per release kind), together with BUG-139 (process noise on b in each kind's filter); (d) their
+tests are in. On the live Memory (5,811 rows) the next launch's command moves by at most 3.9 mm (the +125 mm
+Site) and 0.3 mm at the +/-62.5 mm Sites; replay rms 23.86 / 22.42 / 21.00 mm against 23.86 / 22.41 / 21.00,
+accepted by the owner as no worse. `./run_tests.sh --full` and the sim gate ran green but for one stale
+source-scan test, fixed. A cold release kind's 100 mm gate is left pinned and filed as BUG-153 (owner).
+Open: (c) the one-Memory rule is not written down or built; the `/skills/nominate` rehearsal and the first
+Columns Attempt are owed. Entries: `logbook/2026-11-26-plant-model-lateral-law-per-release-kind.md`,
+`logbook/2026-11-27-plant-model-process-noise-on-b.md`.
 
 ### Phase E3: The transit term and yaw — RETIRED 2026-11-25
 

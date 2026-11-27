@@ -767,7 +767,7 @@ def test_bug138_a_cold_carried_kind_learns_an_offset_up_to_120_mm():
 
 
 @pytest.mark.xfail(strict=True, reason=(
-    'BUG-138 audit finding 2, open (2026-11-27): a cold release kind rejects every row whose '
+    'BUG-153 (BUG-138 audit finding 2, open 2026-11-27): a cold release kind rejects every row whose '
     'consistent lateral offset is past ~130-150 mm, because the 100 mm lateral gate is relative '
     'to the prior; the fix (a consistent-run re-seed, or a wider carried prior) needs an owner '
     'decision. See logbook/2026-11-26-plant-model-lateral-law-per-release-kind.md.'))

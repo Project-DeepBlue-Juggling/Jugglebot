@@ -2,9 +2,9 @@
 id: BUG-139
 kind: bug
 title: 'Plant model slope value stays corrupted after a long single-Site Memory: one row at a second Site applies a line up to 59 mm off'
-status: in_progress
+status: complete
 created: '2026-11-25'
-updated: '2026-11-26T17:23:39Z'
+updated: '2026-11-27T13:55:49Z'
 owners:
 - night-shift
 priority: medium
@@ -46,3 +46,4 @@ Logbook: `logbook/2026-11-25-plant-model-far-site-guard-unforgotten-information.
 ## Progress
 
 - 2026-11-27: Night Shift 2026-11-27: held on night-shift/2026-11-27-BUG-139: process noise on b (TKT-95 option 1), xfail passes, 0 audit findings open; unblocked by a day Session merge
+- 2026-11-28: Merged with BUG-138 (process noise inside each release kind's lateral filter) after the full gate and the sim gate.

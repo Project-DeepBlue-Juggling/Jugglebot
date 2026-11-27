@@ -73,3 +73,11 @@ Either one needs an owner decision. Pinned: `test_bug138_a_cold_carried_kind_lea
   - Sequential prediction rms (x / y / Apex mm), old to new: all rows 23.86 / 22.41 / 21.00 to 23.86 / 22.42 / 21.00; free_cup 25.02 / 23.30 / 22.89 to 25.01 / 23.30 / 22.89; carried 17.98 / 18.04 / 8.97 to 17.99 / 18.07 / 8.97; last 1000 rows 21.66 / 19.98 / 14.24 to 21.66 / 19.99 / 14.24. The plan's "no worse on every axis" holds only to 0.01-0.03 mm: axis 1 is 0.01 mm worse overall and 0.03 mm worse on carried rows, which is noise against a 20 mm shot noise but not literally "no worse".
   - An empty Memory gives exactly the identity command for both kinds, in both versions.
   - Step in u between consecutive Throws at the same Site and kind (x / y mm): max 53.32 / 12.66 old against 53.54 / 12.47 new; p99 6.60 / 6.71 against 6.60 / 6.59. No new larger step appears.
+
+## Merge gate 2026-11-28
+
+- 2026-11-28, `flock /tmp/jugglebot-tests.lock ./run_tests.sh --full` on the branch merged with main: parallel **1 failed, 11586 passed, 53 skipped, 2 xfailed in 961.91 s**, serial **16 passed in 62.50 s**. The failure was `tests/firmware/test_hand_copied_constants.py::test_release_kinds_are_identical_across_schedule_learner_and_memory`: it read a `RELEASE_KINDS` literal out of `learner.py`, which now imports it from `plant_model.py`. The test now compares `schedule.py`, `plant_model.py` and `memory.py` and asserts `learner.py` imports the constant.
+- 2026-11-28, `python -m pytest -q tests/firmware/test_hand_copied_constants.py -p no:cacheprovider` after that edit: **20 passed in 4.04 s**. The full gate was not re-run after this one test-file edit.
+- 2026-11-28, `flock /tmp/jugglebot-tests.lock nice python sim/skills_gate.py --no-viewer`: **PASS**, 5 seeds, 20 makes of 20 and 0 drops on each, wall 108.0 s.
+- Owner decisions, 2026-11-28: the cold-kind 100 mm gate merges pinned by its strict xfail and goes to its own Item (BUG-153); the replay's 0.01 to 0.03 mm on axis 1 counts as no worse than production.
+- Still owed before a Sitting flies it: `colcon build`, a `/skills/nominate` rehearsal with the launch up, and a first normal Columns Attempt.

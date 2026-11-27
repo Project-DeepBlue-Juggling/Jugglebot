@@ -246,12 +246,18 @@ def test_rest_return_budget_is_the_half_resume_tolerance_and_holds_at_the_onset(
 
 
 # ── 5. RELEASE_KINDS ─────────────────────────────────────────────────────────
-def test_release_kinds_are_identical_across_schedule_learner_and_memory():
-    files = [os.path.join(_SKILLS, f) for f in ("schedule.py", "learner.py", "memory.py")]
+def test_release_kinds_are_identical_across_schedule_plant_model_and_memory():
+    # BUG-138 moved the Learner's copy into plant_model.py (the lateral law is per release kind);
+    # learner.py imports it, so it holds no literal of its own to drift.
+    files = [os.path.join(_SKILLS, f) for f in ("schedule.py", "plant_model.py", "memory.py")]
     vals = {rel: tuple(_const(rel, "RELEASE_KINDS")) for rel in files}
     ref = vals[files[0]]
     for rel in files[1:]:
         assert vals[rel] == ref, "RELEASE_KINDS: %s = %r but %s = %r" % (files[0], ref, rel, vals[rel])
+    learner = _text(os.path.join(_SKILLS, "learner.py"))
+    assert re.search(r"^from jugglebot\.motion\.skills\.plant_model import [^\n]*\bRELEASE_KINDS\b", learner, re.M), (
+        "learner.py must import RELEASE_KINDS from plant_model, not define its own")
+    assert not re.search(r"^RELEASE_KINDS\s*=", learner, re.M)
 
 
 # ── 6. Tool and tracker literals ─────────────────────────────────────────────
