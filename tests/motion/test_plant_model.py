@@ -54,7 +54,8 @@ def test_t_u1_forward_inverse_round_trip_for_random_theta_and_sites(offsets):
             sx, ball = (-0.15, 0.0, 0.125)[i % 3], i % 2
             u = _cmd(rng)
             m.observe(u, _plant(th, u, sx, ball, ndx, ndy) + rng.normal(0, 0.002, 3), sx, ball)
-        assert m.at_prior() == []
+        # free_cup rows only: the carried kind's lateral law (BUG-138, '@carried') stays at prior
+        assert [n for n in m.at_prior() if not n.endswith('@carried')] == []
         for _ in range(10):
             y = np.array([rng.uniform(-0.1, 0.1), rng.uniform(-0.1, 0.1), rng.uniform(0.5, 1.5)])
             sx, ball = rng.uniform(-0.3, 0.3), int(rng.integers(0, 2))
@@ -158,7 +159,8 @@ def test_t_u2_an_uncertain_parameter_reports_its_prior():
     names = m.param_names
     # at ONE off-centre Site b_x and s are confounded (only b_x + s x is seen), so BOTH stay at
     # their prior: b_x's marginal sd keeps |x| sd_s = 22.5 mm > 15 mm. Axis 0 is then L2's.
-    assert set(m.at_prior()) == {'b_x', 's', 'delta1_x', 'delta1_y'}
+    carried = {n for n in names if n.endswith('@carried')}     # no carried rows (BUG-138)
+    assert set(m.at_prior()) == {'b_x', 's', 'delta1_x', 'delta1_y'} | carried
     raw, rep, sd = m.raw(), m.theta(), m.sd()
     i_s = names.index('s')
     assert raw[i_s] != 0.0 and rep[i_s] == 0.0      # a raw estimate exists; the prior is reported
@@ -300,13 +302,15 @@ def test_bug137_unforgotten_covariance_is_the_lambda_one_filter_and_rejected_row
         y = _plant((1.08, 0.01, 0.012, -0.09), u, sx, 0) + rng.normal(0, [0.002, 0.002, 0.001])
         assert m.observe(u, y, sx, 0) is True
         assert m1.observe(u, y, sx, 0) is True
-    for f, f1 in ((m._fa, m1._fa), (m._fx, m1._fx), (m._fy, m1._fy)):
+    fc, fc1 = m._lat['free_cup'], m1._lat['free_cup']
+    for f, f1 in ((m._fa, m1._fa), (fc.fx, fc1.fx), (fc.fy, fc1.fy)):
         np.testing.assert_allclose(f.P_unforgotten, f1.P, rtol=1e-9)
-    before = [f.P_unforgotten.copy() for f in (m._fa, m._fx, m._fy)]
+    every = (m._fa,) + tuple(g for lat in m._lat.values() for g in (lat.fx, lat.fy))
+    before = [f.P_unforgotten.copy() for f in every]
     u = np.array([0.0, 0.0, 1.0])
     y = m.forward(u, 0.075, 0) + np.array([0.0, 0.300, 0.0])
     assert m.observe(u, y, 0.075, 0) is False
-    for f, b in zip((m._fa, m._fx, m._fy), before):
+    for f, b in zip(every, before):
         assert np.array_equal(f.P_unforgotten, b)
 
 
@@ -409,7 +413,9 @@ def test_the_summary_names_the_parameters_still_at_their_prior():
     m = PlantModel()
     assert 'at prior: K, b_x, b_y, s' in m.summary()
     m2 = _converged(np.random.default_rng(9))
-    assert 'at prior: none' in m2.summary() and '100 accepted / 0 rejected' in m2.summary()
+    # free_cup rows only: just the carried kind's lateral law (BUG-138) is left at its prior
+    assert 'at prior: b_x@carried, b_y@carried, s@carried' in m2.summary()
+    assert '100 accepted / 0 rejected' in m2.summary()
 
 
 # --------------------------------------------------------------------------- production vs probe
@@ -452,8 +458,159 @@ def test_pin_production_equals_the_probe_prototype_on_400_corpus_rows(monkeypatc
     probe_theta = np.array([h[0], h[1], h[4], h[2], h[3], h[5]])
     r = raw[-1]
     probe_raw = np.array([r[0], r[1], r[4], r[2], r[3], r[5]])
-    np.testing.assert_allclose(models[0].theta(), probe_theta, rtol=0, atol=1e-9)
-    np.testing.assert_allclose(models[0].raw(), probe_raw, rtol=0, atol=1e-9)
-    np.testing.assert_allclose(models[0].theta(), PIN_THETA_OFFSETS, rtol=0, atol=1e-9)
-    np.testing.assert_allclose(models[1].theta(), PIN_THETA_DEFAULT, rtol=0, atol=1e-9)
+    # the corpus is v1 (free_cup rows only): the pin is the free_cup slice of param_names, and
+    # the carried lateral law (BUG-138) is untouched, at its prior
+    n6, n4 = len(PIN_THETA_OFFSETS), len(PIN_THETA_DEFAULT)
+    np.testing.assert_allclose(models[0].theta()[:n6], probe_theta, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(models[0].raw()[:n6], probe_raw, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(models[0].theta()[:n6], PIN_THETA_OFFSETS, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(models[1].theta()[:n4], PIN_THETA_DEFAULT, rtol=0, atol=1e-9)
+    for m in models:
+        carried = [i for i, n in enumerate(m.param_names) if n.endswith('@carried')]
+        assert len(carried) == (len(m.param_names) - 1) // 2
+        assert np.all(m.raw()[carried] == 0.0)
+        assert set(m.param_names[i] for i in carried) <= set(m.at_prior())
     assert np.array_equal(accs[1], acc)
+
+
+# --------------------------------------------------------------------------- BUG-138: lateral law per release kind
+#: The measured oval (carried) lateral fit on its own rows (2026-11-24 review): b_x +179 mm,
+#: s +1.23 per m, flown at ONE Site (x = -0.075), so only the sum b_x + s x = +86.75 mm there is
+#: meaningful. Its b_y and K are chosen to differ from Columns so every shared/split part shows.
+OVAL = dict(K=1.095, b_x=0.179, s=1.23, b_y=0.030, site_x=-0.075)
+COLUMNS = (1.08, 0.004, 0.012, -0.09)                # free_cup plant (K, b_x, b_y, s)
+COLUMNS_SITES = (-0.0625, 0.0625, -0.125, 0.125)
+
+
+def _columns_model(seed=21, n=400):
+    """A Columns (free_cup) model: rows alternating over the Columns Sites."""
+    rng = np.random.default_rng(seed)
+    m = PlantModel()
+    for i in range(n):
+        sx = COLUMNS_SITES[i % len(COLUMNS_SITES)]
+        u = _cmd(rng)
+        assert m.observe(u, _plant(COLUMNS, u, sx, 0) + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0,
+                         release_kind='free_cup')
+    return m
+
+
+def _oval_rows(m, n, seed=22):
+    rng = np.random.default_rng(seed)
+    sx = OVAL['site_x']
+    acc = 0
+    for _ in range(n):
+        u = _cmd(rng)
+        y = np.array([u[0] + OVAL['b_x'] + OVAL['s'] * sx, u[1] + OVAL['b_y'], OVAL['K'] * u[2]])
+        acc += m.observe(u, y + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0, release_kind='carried')
+    return acc
+
+
+def test_bug138_carried_rows_never_move_the_columns_lateral_offset_and_k_is_shared():
+    """BUG-138 (option 3, TKT-93): 600 oval rows (the measured carried law) added to a Columns
+    Memory. The free_cup lateral law is a separate filter that a carried row never updates, so the
+    free_cup applied offsets (axis 0 at every Columns Site, axis 1) and the lateral part of the
+    free_cup command are BIT-IDENTICAL: tolerance 0, because any nonzero change can only be
+    leakage (pooled, the same rows moved the +62.5 mm Site's offset by ~8 mm on the live Memory and
+    by more here). K is shared by design: it moves toward the carried rows' gain."""
+    m = _columns_model()
+    sites = COLUMNS_SITES + (0.0, 0.03)
+    before = [m.offset_x(sx, 'free_cup') for sx in sites]
+    y_d = np.array([0.01, -0.02, 1.0])
+    cmd_before = [m.inverse(y_d, sx, 0, 'free_cup') for sx in sites]
+    K_before = m.theta()[0]
+    assert K_before == pytest.approx(COLUMNS[0], abs=0.006)
+    assert all(not p for _, p in before)                       # Columns is fitted: applied
+    assert _oval_rows(m, 600) > 500                            # carried rows are accepted
+    after = [m.offset_x(sx, 'free_cup') for sx in sites]
+    assert after == before
+    for sx, c0 in zip(sites, cmd_before):
+        assert np.array_equal(m.inverse(y_d, sx, 0, 'free_cup')[:2], c0[:2])
+        assert m.inverse(y_d, sx, 0)[:2].tolist() == c0[:2].tolist()   # the default kind
+    names = m.param_names
+    th = m.theta()
+    for n in ('b_x', 'b_y', 's'):
+        assert th[names.index(n)] == pytest.approx(
+            {'b_x': COLUMNS[1], 'b_y': COLUMNS[2], 's': COLUMNS[3]}[n], abs=0.03)
+    # K is shared: the 600 carried rows pull it to their gain (lambda 0.99: ~100-row memory)
+    assert m.theta()[0] == pytest.approx(OVAL['K'], abs=0.004)
+    assert m.theta()[0] > K_before + 0.008
+
+
+def test_bug138_the_carried_kind_learns_its_own_lateral_law():
+    """The carried rows fit the carried lateral pair: the applied carried offset at the oval's
+    Site is its own law's (+86.75 mm), b_y@carried is its own +30 mm, and (one Site only, the
+    BUG-137 guard per kind) b_x@carried and s@carried stay at prior and a far Site gets the
+    identity for the carried kind."""
+    m = _columns_model()
+    _oval_rows(m, 600)
+    ox, p = m.offset_x(OVAL['site_x'], 'carried')
+    assert not p
+    assert ox == pytest.approx(OVAL['b_x'] + OVAL['s'] * OVAL['site_x'], abs=0.012)
+    names, th = m.param_names, m.theta()
+    assert th[names.index('b_y@carried')] == pytest.approx(OVAL['b_y'], abs=0.008)
+    assert {'b_x@carried', 's@carried'} <= set(m.at_prior())
+    assert not {'b_x', 'b_y', 's'} & set(m.at_prior())
+    assert m.offset_x(0.0625, 'carried') == (0.0, True)
+    u = np.array([0.003, -0.002, 1.0])
+    y = m.forward(u, OVAL['site_x'], 0, 'carried')
+    assert y[0] == pytest.approx(u[0] + ox, abs=1e-15)
+    assert y[1] == pytest.approx(u[1] + th[names.index('b_y@carried')], abs=1e-15)
+    assert y[2] == pytest.approx(m.theta()[0] * u[2], abs=1e-15)
+    assert 'carried: b ' in m.summary(OVAL['site_x']) and '600 carried rows' in m.summary()
+
+
+def test_bug138_a_carried_law_with_two_sites_recovers_its_own_slope():
+    """Two carried Sites identify the carried b_x and s separately from the free_cup ones."""
+    m = _columns_model()
+    rng = np.random.default_rng(23)
+    law = (1.08, 0.030, -0.005, 0.20)
+    for i in range(400):
+        sx = (-0.075, 0.075)[i % 2]
+        u = _cmd(rng)
+        assert m.observe(u, _plant(law, u, sx, 0) + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0,
+                         release_kind='carried')
+    names, th = m.param_names, m.theta()
+    assert th[names.index('b_x@carried')] == pytest.approx(law[1], abs=0.008)
+    assert th[names.index('s@carried')] == pytest.approx(law[3], abs=0.06)
+    assert th[names.index('b_y@carried')] == pytest.approx(law[2], abs=0.008)
+    assert th[names.index('s')] == pytest.approx(COLUMNS[3], abs=0.03)
+
+
+def test_bug138_an_empty_kind_is_the_identity_laterally_whatever_the_other_kind_learned():
+    """Identity at an empty model for BOTH kinds; a model with only free_cup rows applies the
+    identity laterally to a carried query (at prior) and K to its apex."""
+    for offsets in (False, True):
+        m = PlantModel(PlantModelConfig(ball_offsets=offsets))
+        y = np.array([0.0123, -0.0456, 0.987654321])
+        for kind in ('free_cup', 'carried'):
+            for sx, ball in ((0.0, 0), (-0.075, 1), (0.0625, 0)):
+                assert np.array_equal(m.inverse(y, sx, ball, kind), y)
+                assert np.array_equal(m.forward(y, sx, ball, kind), y)
+            assert m.offset_x(0.0625, kind) == (0.0, True)
+        assert set(m.at_prior()) == set(m.param_names)
+    m = _columns_model()
+    K = m.theta()[0]
+    y = np.array([0.0123, -0.0456, 0.9])
+    for sx in COLUMNS_SITES + (-0.075,):
+        u = m.inverse(y, sx, 0, 'carried')
+        assert u[0] == y[0] and u[1] == y[1] and u[2] == pytest.approx(y[2] / K, rel=1e-15)
+        f = m.forward(y, sx, 0, 'carried')
+        assert f[0] == y[0] and f[1] == y[1]
+        assert m.offset_x(sx, 'carried') == (0.0, True)
+        np.testing.assert_array_equal(
+            m.forward_rows(np.tile(y, (2, 1)), np.array([sx, sx]), 0, 'carried')[:, :2],
+            np.tile(y[:2], (2, 1)))
+    assert set(m.at_prior()) == {'b_x@carried', 'b_y@carried', 's@carried'}
+
+
+def test_bug138_release_kind_is_validated():
+    m = PlantModel()
+    for bad in ('oval', None, 0):
+        for call in (lambda: m.observe([0.0, 0.0, 1.0], [0.0, 0.0, 1.0], 0.0, 0, bad),
+                     lambda: m.forward([0.0, 0.0, 1.0], 0.0, 0, bad),
+                     lambda: m.inverse([0.0, 0.0, 1.0], 0.0, 0, bad),
+                     lambda: m.offset_x(0.0, bad),
+                     lambda: m.forward_rows(np.zeros((1, 3)), np.zeros(1), 0, bad)):
+            with pytest.raises(ValueError, match='release_kind'):
+                call()
+    assert m.n_accepted == 0 and m.n_rejected == 0

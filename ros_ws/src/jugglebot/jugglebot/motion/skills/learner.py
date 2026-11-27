@@ -4,7 +4,9 @@
 Given a target landing ``y_d`` and a :class:`ThrowContext` (the physics of the Throw about to be
 commanded), :meth:`Learner.command` returns the command ``u``::
 
-    model command   u_m = f0^-1(y_d)                                  (plant_model.PlantModel)
+    model command   u_m = f0^-1(y_d)                                  (plant_model.PlantModel;
+                                                                       K shared, lateral law of
+                                                                       the ctx's release_kind)
     residual        r_hat = sum w_i (y_i - f0(u_i)) / sum w_i         (L2, over the k most recent
                     w_i = exp(-d_i^2),                                 support rows with the SAME
                     d^2 = |dp|^2/h_p^2 + |dv|^2/h_v^2 (+ ddwell^2/h_d^2)   ball_id and release_kind)
@@ -53,12 +55,12 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from jugglebot.motion.skills.plant_model import PlantModel, _ball_id, _finite_vec
+from jugglebot.motion.skills.plant_model import RELEASE_KINDS, PlantModel, _ball_id, _finite_vec
 
 __all__ = ['RELEASE_KINDS', 'SUPPORT_D2', 'ThrowContext', 'LearnerConfig', 'Learner']
 
-#: The categorical release kinds; L2 requires an exact match (plan § 2.3).
-RELEASE_KINDS = ('free_cup', 'carried')
+# RELEASE_KINDS (imported from plant_model, re-exported here): the categorical release kinds; L2
+# requires an exact match (plan § 2.3), and f0's lateral law is per kind (BUG-138, K shared).
 #: Support gate on the kernel distance d^2 (the old law's ``support_d2``: 3 bandwidths).
 SUPPORT_D2 = 9.0
 
@@ -240,7 +242,7 @@ class Learner(object):
             kind = RELEASE_KINDS.index(_kind(exp.release_kind))
         except AttributeError as exc:
             raise ValueError('the experience lacks a v2 field: %s' % (exc,))
-        accepted = self.model.observe(u, y, site[0], ball)
+        accepted = self.model.observe(u, y, site[0], ball, RELEASE_KINDS[kind])
         self._rows.append(_kernel_pos(site, rel), vel, dwell, u, y, site[0], ball, kind, accepted)
         return accepted
 
@@ -274,7 +276,8 @@ class Learner(object):
         w = np.exp(-d2[idx])
         th = self.model.theta()
         # residual against the CURRENT reported f0 (the probe's th_q), vectorised forward map
-        r = R.y[sup] - self.model.forward_rows(R.u[sup], R.site_x[sup], ctx.ball_id)
+        r = R.y[sup] - self.model.forward_rows(R.u[sup], R.site_x[sup], ctx.ball_id,
+                                                  ctx.release_kind)
         sw = float(w.sum())
         r_hat = (w[:, None] * r).sum(0) / sw
         corr = (sw / (sw + cfg.w0)) * r_hat
@@ -291,18 +294,18 @@ class Learner(object):
     def model_command(self, ctx: ThrowContext, y_d) -> np.ndarray:
         """f0^-1(y_d): the command the plant model alone gives (exactly ``y_d`` when empty)."""
         ctx = self._ctx(ctx)
-        return self.model.inverse(y_d, ctx.site_xy_m[0], ctx.ball_id)
+        return self.model.inverse(y_d, ctx.site_xy_m[0], ctx.ball_id, ctx.release_kind)
 
     def command(self, ctx: ThrowContext, y_d) -> np.ndarray:
         """The Learner's command (3,) [m]: the model command corrected by the residual memory,
         capped about the model command by the evidence (L3)."""
         ctx = self._ctx(ctx)
         y_d = _finite_vec(y_d, 3, 'y_d')
-        u_m = self.model.inverse(y_d, ctx.site_xy_m[0], ctx.ball_id)
+        u_m = self.model.inverse(y_d, ctx.site_xy_m[0], ctx.ball_id, ctx.release_kind)
         corr, sw, n = self._residual(ctx)
         if n == 0:
             return u_m
-        u = self.model.inverse(y_d - corr, ctx.site_xy_m[0], ctx.ball_id)
+        u = self.model.inverse(y_d - corr, ctx.site_xy_m[0], ctx.ball_id, ctx.release_kind)
         f = 1.0 - math.exp(-sw / self.config.w0)
         lim = np.array([self.config.c_max_xy_m, self.config.c_max_xy_m, self.config.c_max_apex_m]) * f
         u = u_m + np.clip(u - u_m, -lim, lim)
@@ -315,7 +318,8 @@ class Learner(object):
         what the Catch aim prior uses). ``y_d`` is accepted for the executor's call shape and
         unused (the query physics is the context's)."""
         ctx = self._ctx(ctx)
-        y = self.model.forward(u, ctx.site_xy_m[0], ctx.ball_id) + self._residual(ctx)[0]
+        y = (self.model.forward(u, ctx.site_xy_m[0], ctx.ball_id, ctx.release_kind)
+             + self._residual(ctx)[0])
         if not np.all(np.isfinite(y)):
             raise ValueError('the learner prediction is not finite (%r)' % (y.tolist(),))
         return y
@@ -324,10 +328,11 @@ class Learner(object):
         """The affine forward map ``(u_bar, D, d)`` with ``predict(ctx, u) == d + D (u - u_bar)``:
         u_bar = the model command, D = diag(1, 1, K), d = f0(u_bar) + alpha r_hat. Never None."""
         ctx = self._ctx(ctx)
-        u_bar = self.model.inverse(y_d, ctx.site_xy_m[0], ctx.ball_id)
+        u_bar = self.model.inverse(y_d, ctx.site_xy_m[0], ctx.ball_id, ctx.release_kind)
         K = float(self.model.theta()[0])
         D = np.diag([1.0, 1.0, K])
-        d = self.model.forward(u_bar, ctx.site_xy_m[0], ctx.ball_id) + self._residual(ctx)[0]
+        d = (self.model.forward(u_bar, ctx.site_xy_m[0], ctx.ball_id, ctx.release_kind)
+             + self._residual(ctx)[0])
         if not np.all(np.isfinite(d)):
             raise ValueError('the learner local model is not finite (%r)' % (d.tolist(),))
         return u_bar, D, d

@@ -15,7 +15,8 @@ radius: normative
 diagnosis: hypothesis
 area: learner
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-26-plant-model-lateral-law-per-release-kind.md
 parent: learner-generalisation
 filed_by: claude
 ---
