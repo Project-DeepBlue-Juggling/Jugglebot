@@ -4,11 +4,14 @@ kind: bug
 title: 'Plant model: a release kind with no rows rejects every row more than about 120 mm off its prior, so a cold carried kind cannot learn the oval''s 179 mm offset'
 status: inbox
 created: '2026-11-28'
-updated: '2026-11-27T13:55:33Z'
+updated: '2026-11-27T15:50:25Z'
 owners: []
 priority: low
 effort: s
 hardware: none
+owner: decision
+radius: subsystem
+diagnosis: confirmed
 area: learner
 blocked_by: []
 links: []
