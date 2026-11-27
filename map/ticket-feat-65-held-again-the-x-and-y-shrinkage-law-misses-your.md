@@ -2,9 +2,9 @@
 id: TKT-100
 kind: ticket
 title: 'FEAT-65 held again: the x and y shrinkage law misses your gate on the full Memory; build a recency-weighted variant, merge as the quiet-command law, or drop it?'
-status: open
+status: complete
 created: '2026-11-27'
-updated: '2026-11-26T17:23:46Z'
+updated: '2026-11-27T00:13:40Z'
 owners: []
 priority: medium
 effort: xs
@@ -39,3 +39,7 @@ Command jitter is 53 and 56 % lower on x and y, but rms is 1.24 and 1.59 mm wors
 1: the next night builds and replays the variant. 2: a day Session merges. 3: the Item reopens without a branch.
 
 Recommendation: 3, or 1 if you still want a quieter command: on the full Memory no all-rows law has beaten the recent-16 mean on rms.
+
+## Answer
+
+I agree. Go with Option 3. Please delete the branch yourself.
