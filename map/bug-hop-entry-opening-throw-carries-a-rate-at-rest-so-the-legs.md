@@ -4,11 +4,11 @@ kind: bug
 title: Hop entry opening Throw carries a rate at rest, so the Legs ripple before the first Throw
 status: inbox
 created: '2026-11-27'
-updated: '2026-11-27T10:47:25Z'
+updated: '2026-11-27T15:50:38Z'
 owners: []
 priority: medium
 effort: s
-hardware: none
+hardware: robot
 owner: decision
 radius: subsystem
 diagnosis: confirmed
