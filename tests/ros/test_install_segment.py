@@ -1142,52 +1142,11 @@ def test_the_emitter_stamps_each_frame_emit_lead_knots_ahead_of_its_tick():
                                atol=1e-12, rtol=0)
 
 
-def test_no_accepted_install_changes_a_knot_already_on_the_wire(monkeypatch):
-    """I-WIRE-7 contract (emit-lead design 2(d)): every u0/u1/u2 knot the REAL
-    emitter has published before an ACCEPTED splice must equal the spliced
-    record sampled at the same stamps.
-
-    Driver: a THROW is installed fresh and streamed by ``_emit_once`` tick by
-    tick (grid-absolute ticks, the clock frozen per tick); then a CATCH is
-    requested after the THROW's release (so the splice is NOT pinned to the
-    release knot: its ``k_s`` is the planner's own wire-horizon arithmetic)
-    at a seeded random phase inside a tick, with a solve of about the whole
-    solve budget (so ``k_s`` sits at the minimum the planner accepts), and the
-    one tick that can land between the clock read and the install published
-    BEFORE the install (it is on the wire too). Each published frame is then
-    rebuilt from the installed record at the same stamp and compared
-    channel by channel.
-
-    Why this bites: a splice whose lead is shorter than the emitter's reach
-    (``WIRE_READ_KNOTS`` below ``3 + EMIT_LEAD_KNOTS``) rewrites the span a
-    frame already named, a commanded step on six legs. Fails at emit lead 1
-    with ``WIRE_READ_KNOTS`` reverted to the literal 3 (logbook
-    2026-11-25-emit-lead-planner-derivation.md, P1b)."""
-    import random
+def _assert_no_wire_knot_rewritten(trials, check_origin):
+    """The loop of :func:`test_no_accepted_install_changes_a_knot_already_on_the_wire`
+    (see its docstring), with the REBASED origin's own assertion injected."""
     dt = float(hw.JB_TRAJ_KNOT_DT_S)
-    rng = random.Random(20261125)
     budget_s = sk_sched_mod.SOLVE_BUDGET_KNOTS * dt
-    # (origin offset inside a grid tick as a fraction of dt, how long before a
-    # tick the install instant falls in ms, how far under the whole solve
-    # budget the solve ran as a fraction of dt). An origin OFF the grid makes
-    # every frame's u2 land mid-span (the realistic case: a record's t0 is
-    # the dispatch instant); an install 0.5-1.5 ms before a tick has that
-    # tick RACE the install (a 2 ms handler tail); a solve of nearly the whole
-    # budget keeps k_s at the minimum the planner accepts. The seeded random
-    # trials add other phases.
-    #
-    # Since BUG-140 (2026-11-27) a REBASED at-rest REST starts ON the grid, so
-    # the live install path no longer makes this off-grid record; the old
-    # origin (`t_inst + WIRE_READ_KNOTS*dt` exactly) is restored here through
-    # the executor's one grid helper, keeping the harder, off-grid case this
-    # contract was written against (a splice must survive any record origin).
-    monkeypatch.setattr(sk_exec, 'rebase_slide_knots',
-                        lambda t0_b, t0_wire, dt_: (t0_wire - t0_b) / dt_)
-    trials = [(g0, eps, short)
-              for g0 in (0.25, 0.985) for eps in (0.5, 1.5, 6.0, 20.0)
-              for short in (0.002, 0.3)]
-    trials += [(0.05 + 0.9 * rng.random(), 25.0 * rng.random(),
-                0.3 * rng.random()) for _ in range(8)]
     accepted = 0
     for trial, (g0, eps_ms, short) in enumerate(trials):
         node = _perf_node()
@@ -1209,10 +1168,11 @@ def test_no_accepted_install_changes_a_knot_already_on_the_wire(monkeypatch):
             time.perf_counter = real
         assert resp1.accepted is True, resp1.message
         assert 'REBASED' in resp1.message, resp1.message
+        # the seed holds still: the held branch (no knots dropped) is the one
+        # whose origin the wrapper restores
+        assert 'from rest' in resp1.message, resp1.message
         plan1, meta1, t0 = node._cycle
-        # the REBASED origin is OFF the grid (t_inst + the wire read)
-        assert t0 == pytest.approx(at + 0.2 + sk_sched_mod.WIRE_READ_KNOTS * dt,
-                                   abs=1e-9)
+        check_origin(t0, at)
         # the install instant (mid-REST), eps ms before a grid tick; the
         # handler was entered `solve_s` earlier
         tick_n = (math.ceil((t0 + 0.65) / dt)) * dt
@@ -1263,6 +1223,96 @@ def test_no_accepted_install_changes_a_knot_already_on_the_wire(monkeypatch):
                                 '%.4f (k_s=%d) was rewritten by the install'
                                 % (trial, g0, eps_ms, key, T, resp2.splice_k))
     assert accepted >= 4, 'too few accepted splices to mean anything'
+
+
+def test_no_accepted_install_changes_a_knot_already_on_the_wire(monkeypatch):
+    """I-WIRE-7 contract (emit-lead design 2(d)): every u0/u1/u2 knot the REAL
+    emitter has published before an ACCEPTED splice must equal the spliced
+    record sampled at the same stamps.
+
+    Driver: a THROW is installed fresh and streamed by ``_emit_once`` tick by
+    tick (grid-absolute ticks, the clock frozen per tick); then a CATCH is
+    requested after the THROW's release (so the splice is NOT pinned to the
+    release knot: its ``k_s`` is the planner's own wire-horizon arithmetic)
+    at a seeded random phase inside a tick, with a solve of about the whole
+    solve budget (so ``k_s`` sits at the minimum the planner accepts), and the
+    one tick that can land between the clock read and the install published
+    BEFORE the install (it is on the wire too). Each published frame is then
+    rebuilt from the installed record at the same stamp and compared
+    channel by channel.
+
+    Why this bites: a splice whose lead is shorter than the emitter's reach
+    (``WIRE_READ_KNOTS`` below ``3 + EMIT_LEAD_KNOTS``) rewrites the span a
+    frame already named, a commanded step on six legs. Fails at emit lead 1
+    with ``WIRE_READ_KNOTS`` reverted to the literal 3 (logbook
+    2026-11-25-emit-lead-planner-derivation.md, P1b)."""
+    import random
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    rng = random.Random(20261125)
+    budget_s = sk_sched_mod.SOLVE_BUDGET_KNOTS * dt
+    # (origin offset inside a grid tick as a fraction of dt, how long before a
+    # tick the install instant falls in ms, how far under the whole solve
+    # budget the solve ran as a fraction of dt). An origin OFF the grid makes
+    # every frame's u2 land mid-span (the realistic case: a record's t0 is
+    # the dispatch instant); an install 0.5-1.5 ms before a tick has that
+    # tick RACE the install (a 2 ms handler tail); a solve of nearly the whole
+    # budget keeps k_s at the minimum the planner accepts. The seeded random
+    # trials add other phases.
+    #
+    # Since BUG-140 (2026-11-27) a REBASED at-rest REST starts ON the grid, so
+    # the live install path no longer makes this off-grid record; the old
+    # origin (`t_inst + WIRE_READ_KNOTS*dt` exactly) is restored here, keeping the harder, off-grid case this
+    # contract was written against (a splice must survive any record origin).
+    # The patch must not hand a FLOAT k to `rebase_slide_knots`' callers (an
+    # in-motion seed would slice `tail_view` with a float `k_cut`), so the
+    # helper stays the real, int-returning one and the old origin is restored
+    # by wrapping the REBASE itself: for a seed AT REST (held, `k_cut == 0`,
+    # asserted per trial below) the origin is put back at `t0_wire_s`.
+    real_rebase = sk_exec._rebase_fresh_rest
+
+    def _old_origin_rebase(seg, seed, t0_b, t0_wire, *args, **kw):
+        plan, meta, t0, k_cut, held, refusal = real_rebase(
+            seg, seed, t0_b, t0_wire, *args, **kw)
+        if refusal is None and held and k_cut == 0:
+            t0 = float(t0_wire)
+        return plan, meta, t0, k_cut, held, refusal
+
+    monkeypatch.setattr(sk_exec, '_rebase_fresh_rest', _old_origin_rebase)
+    trials = [(g0, eps, short)
+              for g0 in (0.25, 0.985) for eps in (0.5, 1.5, 6.0, 20.0)
+              for short in (0.002, 0.3)]
+    trials += [(0.05 + 0.9 * rng.random(), 25.0 * rng.random(),
+                0.3 * rng.random()) for _ in range(8)]
+    def _off_grid(t0, at):
+        # the REBASED origin is OFF the grid (t_inst + the wire read)
+        assert t0 == pytest.approx(at + 0.2 + sk_sched_mod.WIRE_READ_KNOTS * dt,
+                                   abs=1e-9)
+
+    _assert_no_wire_knot_rewritten(trials, _off_grid)
+
+
+def test_no_accepted_splice_after_an_on_grid_rebased_rest_changes_a_knot_on_the_wire():
+    """BUG-140 audit fix 2, the sibling of the test above WITHOUT its patch:
+    the live path now REBASES an at-rest REST ONTO the knot grid, so the
+    record a splice lands on has an on-grid origin (whole knots after the
+    node's own grid snap).  Same driver, same trials, same frame-by-frame
+    comparison; the origin is asserted on the grid and not before the wire
+    read."""
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    import random
+    rng = random.Random(20261128)
+    trials = [(g0, eps, short)
+              for g0 in (0.25, 0.985) for eps in (0.5, 1.5, 6.0, 20.0)
+              for short in (0.002, 0.3)]
+    trials += [(0.05 + 0.9 * rng.random(), 25.0 * rng.random(),
+                0.3 * rng.random()) for _ in range(8)]
+
+    def _on_grid(t0, at):
+        assert abs(t0 / dt - round(t0 / dt)) <= 1e-6, t0
+        assert t0 >= at + 0.2 + sk_sched_mod.WIRE_READ_KNOTS * dt - 1e-9
+        assert t0 < at + 0.2 + (sk_sched_mod.WIRE_READ_KNOTS + 1) * dt + 1e-9
+
+    _assert_no_wire_knot_rewritten(trials, _on_grid)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

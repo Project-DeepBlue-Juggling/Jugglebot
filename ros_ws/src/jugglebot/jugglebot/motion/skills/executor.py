@@ -1995,16 +1995,28 @@ def rebase_slide_knots(t0_before_solve: float, t0_wire_s: float,
     The ONE spelling of the REBASE's grid arithmetic (BUG-140), read by
     :func:`_rebase_fresh_rest` for both seed branches; no cap (the band REST's
     cap is :func:`band_rest_slide_refusal`, applied before this)."""
-    return int(math.ceil((float(t0_wire_s) - float(t0_before_solve))
-                         / float(dt) - 1e-9))
+    gap_s = float(t0_wire_s) - float(t0_before_solve)
+    # The guard is RELATIVE: the float error of `t0_wire_s - t0_before_solve`
+    # is a few ulps of the clock magnitude (perf_counter grows with box
+    # uptime: ~2e-9 knot at 262144 s, 8e-9 at 1e6 s), so an absolute 1e-9
+    # knot stops absorbing it after about three days and an exact multiple
+    # would ceil one knot late.  Scale by the magnitudes; floor at 1e-9.
+    eps = float(np.finfo(float).eps)
+    guard = max(1e-9, 4.0 * eps * max(abs(float(t0_wire_s)),
+                                      abs(float(t0_before_solve))) / float(dt))
+    return int(math.ceil(gap_s / float(dt) - guard))
 
 
 def _rebase_fresh_rest(seg, seed: uc.CycleState, t0_before_solve: float,
-                       t0_wire_s: float, limits, geom):
+                       t0_wire_s: float, limits, geom,
+                       slide_knots: Optional[int] = None):
     """The REBASE of a fresh REST whose solve outran the wire (I-PLAN-12).
 
     Returns ``(plan, meta, t0, k_cut, held, refusal)``; ``refusal`` is
-    ``None`` or ``(code, message)``.
+    ``None`` or ``(code, message)``.  ``slide_knots`` is the band REST's
+    already-capped whole-Knot slide: when given it IS the slide (no
+    recomputation from the times, which at a large clock magnitude can round
+    one knot late, past the cap :func:`band_rest_slide_refusal` just checked).
 
     The ORIGIN is the same for both seeds (BUG-140, owner answer to TKT-96:
     option 2, snap only, 2026-11-27): ``t0 = t0_before_solve + k·dt`` with
@@ -2048,7 +2060,8 @@ def _rebase_fresh_rest(seg, seed: uc.CycleState, t0_before_solve: float,
     plan, meta = seg.plan, seg.meta
     dt = float(plan.dt)
     held = _seed_holds_still(seed, limits, geom)
-    k_slide = rebase_slide_knots(t0_before_solve, t0_wire_s, dt)
+    k_slide = (int(slide_knots) if slide_knots is not None else
+               rebase_slide_knots(t0_before_solve, t0_wire_s, dt))
     if held:
         t0, k_cut = float(t0_before_solve) + k_slide * dt, 0
         ref = (np.asarray(seed.pose, dtype=float),
@@ -2584,8 +2597,10 @@ def install_segment(record: Optional[PlanRecord],
                     # Either way knot 0 is checked against the propagated
                     # state and a mismatch is refused, never clipped.
                     plan_r, meta_r, t0, k_cut, held, refusal = \
-                        _rebase_fresh_rest(seg, seed, t0_before_solve,
-                                           t0_wire, limits, geom)
+                        _rebase_fresh_rest(
+                            seg, seed, t0_before_solve, t0_wire, limits, geom,
+                            slide_knots=(slide_knots if org.band_rest
+                                         else None))
                     if refusal is not None:
                         return record, InstallResult(
                             False, refusal[0], refusal[1],

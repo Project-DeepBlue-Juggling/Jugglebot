@@ -11,6 +11,7 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/motion/skills/schedule.py
   - ros_ws/src/jugglebot/jugglebot/trajectory_node.py
   - tests/motion/test_skills_rebase_continuity.py
+  - tests/motion/test_skills_executor.py
   - tests/ros/test_install_segment.py
 ---
 
@@ -39,3 +40,18 @@ files_changed:
 - Fail-before (2026-11-27, executor.py reverted to HEAD, `night_shift_nonet.sh env -C <worktree> timeout 900 python -m pytest tests/motion/test_skills_rebase_continuity.py -q -p no:cacheprovider -k "..."`): 15 failed, 1 passed (the edge-case pin, by design); the 5 in-motion cases fail on the missing helper and the slide clause only.
 - Scoped run (2026-11-27, `night_shift_nonet.sh env -C <worktree> timeout 900 python -m pytest tests/motion/test_skills_rebase_continuity.py tests/motion/test_skills_install_origin.py tests/motion/test_skills_executor.py tests/motion/test_skills_schedule.py tests/motion/test_emit_lead_derivation.py tests/motion/test_magazine_throw.py tests/ros/test_install_segment.py -q -p no:cacheprovider -n 4 --dist loadfile`): **671 passed, 1 skipped in 687.24 s**. The default gate (`./run_tests.sh`) was not run (Night Shift unit rule); `executor.py` and `trajectory_node.py` are tier 1, so the gate is owed before merge.
 - Not flown. Held for a Sitting (BUG-140's `## Sitting` section).
+
+## Audit fixes (2026-11-28)
+
+Owner answer TKT-99, option 1: apply both behaviour-affecting audit findings, re-audit, keep held for a Sitting. This also corrects the Discussion's claim that the band REST's origin is "bit-identical" through the 1e-9 guard: that held only at small clock values.
+
+1. **Float rounding in the slide at a large clock.** `rebase_slide_knots` guarded `ceil` with an absolute 1e-9 knot, but the error of `(t0_wire - t0)/dt` is a few ulps of the `perf_counter` magnitude (about 2e-9 knot at 1e6 s, more beyond), so after days of uptime an exact whole-knot gap ceiled one knot late. For the band REST that put the origin one Knot past the slide `BAND_REST_SLIDE_CAP_KNOTS` had just checked. Fix: (a) `install_segment` passes the band REST's already-computed integer slide to `_rebase_fresh_rest(..., slide_knots=...)`, which uses it verbatim (no recomputation from times, so the origin is exactly the capped slide); (b) for the non-band path `rebase_slide_knots` uses a relative guard, `max(1e-9, 4*eps*max(|t0_wire|, |t0|)/dt)`, documented in its body. At small clocks both give the old values.
+   **Confirmed recipe** (probe `/tmp/probe_bug140.py`, 2026-11-28, old formula `ceil((e + k*dt - e)/dt - 1e-9)`, anchors `e` = clock + a 0.0001237 s sweep, dt 25 ms): k+1 returned for k = 2, 7 at 1e6 s; k = 1, 2, 6, 7, 11 at 1e7 s; every anchor at k = 8 (the cap) for clocks 3e6 to 8e6 s, a slide of 9, one past the cap, after the cap check passed 8. Tests: `tests/motion/test_skills_executor.py::test_a_band_rest_at_a_large_clock_starts_exactly_the_slide_the_cap_checked` ((t0, slide) = (1e6, 7), (3e6, 8), (1e7, 7)), and `tests/motion/test_skills_rebase_continuity.py::test_the_slide_guard_scales_with_the_clock_magnitude` (k = 0..12 at 1e6, 3e6, 1e7 s).
+2. **Float `k` in the I-WIRE-7 harness patch.** `test_no_accepted_install_changes_a_knot_already_on_the_wire` monkeypatched `rebase_slide_knots` to a float-returning lambda; an in-motion trial would have sliced with a float `k_cut`. The patch is gone: the real int helper stays and the old off-grid origin is restored by wrapping `_rebase_fresh_rest` (held, `k_cut == 0` only; each trial now asserts `'from rest'`, so the seed holds still). The loop moved to `_assert_no_wire_knot_rewritten`, and a sibling, `test_no_accepted_splice_after_an_on_grid_rebased_rest_changes_a_knot_on_the_wire`, runs the same trials WITHOUT any patch (on-grid REBASED record).
+
+INVARIANTS.md not touched: its wording (`executor.rebase_slide_knots`, "the one spelling for both branches") still names the two seed branches of the non-band REBASE, which is true.
+
+### Verification
+
+- Fail-before (2026-11-28, executor.py temporarily restored to HEAD, `night_shift_nonet.sh python -m pytest tests/motion/test_skills_executor.py -q -k large_clock`): 3 failed (slides 8, 9, 8 knots for expected 7, 8, 7; the 3e6 case is the cap + 1); with the fix: 3 passed. The guard-scaling test (`-k scales_with`, 39 passed) and the sibling harness test (`-k wire`, 13 passed) pass with the fix; the guard test was not run on HEAD.
+- Scoped run (2026-11-28, `night_shift_nonet.sh python -m pytest tests/motion/test_skills_rebase_continuity.py tests/ros/test_install_segment.py tests/motion/test_skills_executor.py tests/motion/test_magazine_throw.py tests/motion/test_skills_install_origin.py -q`): see the unit report for the result. The default gate was not run (Night Shift unit rule); still owed before merge.

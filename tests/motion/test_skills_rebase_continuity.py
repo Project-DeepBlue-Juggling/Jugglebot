@@ -375,3 +375,17 @@ def test_the_in_motion_past_its_own_end_boundary_is_unchanged(limits, geom):
     assert '%d knot(s) dropped' % (n - 2) in res.message
     _r, res, _s = _install(limits, geom, seed, solve_ok + DT)
     assert res.accepted is False and res.code == ex.ORIGIN_TOO_LATE, res.message
+
+
+@pytest.mark.parametrize('clock_s', (1.0e6, 3.0e6, 1.0e7))
+@pytest.mark.parametrize('k', range(0, 13))
+def test_the_slide_guard_scales_with_the_clock_magnitude(clock_s, k):
+    """(BUG-140 audit fix 1, non-band path) An exact whole-knot gap stays that
+    many knots at a large perf_counter value: ``clock + k*dt`` rounds to the
+    clock's ulp (~1e-10 s at 1e6 s, 2e-9 knot), more than the old absolute
+    1e-9 knot guard, so ``ceil`` returned ``k + 1`` (probe 2026-11-28: k = 2, 7
+    at 1e6 s; 1, 2, 6, 7, 11 at 1e7 s; every k=8 anchor tested at 3e6 s).  A
+    gap one tenth of a knot over still ceils up."""
+    t0 = clock_s + 0.0001237
+    assert ex.rebase_slide_knots(t0, t0 + k * DT, DT) == k
+    assert ex.rebase_slide_knots(t0, t0 + (k + 0.1) * DT, DT) == k + 1

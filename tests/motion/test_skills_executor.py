@@ -8242,6 +8242,33 @@ def test_a_band_rest_one_knot_past_the_slide_cap_is_refused_splice_too_late(
     assert code == ex.SPLICE_TOO_LATE
 
 
+@pytest.mark.parametrize('t0_s, past_end_s, knots', [
+    (1.0e6, 0.090, 7), (3.0e6, 0.120, 8), (1.0e7, 0.090, 7)])
+def test_a_band_rest_at_a_large_clock_starts_exactly_the_slide_the_cap_checked(
+        limits, geom, sites, t0_s, past_end_s, knots):
+    """BUG-140 audit fix 1: the band REST's slide is the whole-knot integer
+    ``install_segment`` computed and capped, passed straight through; it is
+    never recomputed from the float times.  Confirmed recipe (probe
+    2026-11-28, ``ceil((e + k*dt - e)/dt - 1e-9)`` with the old absolute
+    guard, anchors ``e`` = the clock value + a 0.0001237 s sweep): the
+    rounding of ``e + k*dt`` at the clock magnitude exceeds 1e-9 knot, so the
+    recomputation returned ``k + 1`` for k = 7 at 1e6 s and 1e7 s (and 6, 11,
+    1, 2 there), and for k = 8 (the cap itself) at 3e6 s: a slide of 9 knots,
+    one past :data:`ex.BAND_REST_SLIDE_CAP_KNOTS`, after the cap check passed
+    8.  (``(t0, k)`` = (1e6, 7), (3e6, 8), (1e7, 7) are exactly those.)  The
+    origin must be the anchor + k·dt, never k + 1."""
+    record, term, t_now = _bug95_band(limits, geom, sites, t0=t0_s)
+    past = past_end_s - ex.EMIT_LEAD_KNOTS * DT
+    new, res, _seg = ex.install_segment(
+        record, None, sg.REST, term, t_now, limits=limits, geom=geom,
+        t_install_s=record.end_s + past)
+    assert res.accepted, res.message
+    anchor = ex._ceil_to_knot_grid(record.end_s)
+    assert (new.t0_s - anchor) / DT == pytest.approx(knots, abs=1e-3), (
+        (new.t0_s - anchor) / DT, knots)
+    assert knots <= ex.BAND_REST_SLIDE_CAP_KNOTS
+
+
 def test_a_non_band_fresh_rest_rebase_is_not_capped(limits, geom, sites):
     """The cap is the band REST's alone: a fresh REST with no running record
     REBASED +0.475 s (a 400 ms solve) installs as before (I-PLAN-12)."""
