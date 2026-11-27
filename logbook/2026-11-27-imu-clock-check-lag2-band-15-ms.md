@@ -31,6 +31,16 @@ The band was failing a healthy clock for a Leg-following lag it was never meant 
 The larger Leg-following lag is a separate question (new firmware since FW 49, or the motion flown) and is filed as
 its own Item.
 
+## Correction (same day, BUG-151)
+
+The comparison above ("12.8 to 15.2 ms on 2026-11-27 against 6.4 to 11.0 ms on the earlier rows") is not a change in
+the Legs. Measured directly from the bags (commanded against encoder position, no IMU; 10 oval Attempts on
+2026-11-27, 22 on 11-18, 11-20 and 11-23), the Legs trail the command by 13.2 ms (sd 0.5) and, method for method, by
+1.4 ms less than before (CI95 -2.1 to -0.7). Bags recorded before 2026-11-23 21:52 have no `bridge_stamp` on
+`/robot_state`; the pairing fallback stamps about a quarter of the encoder samples one tick early and reads the lag
+5.6 ms short. The earlier rows carry that bias. The 15 ms bound stands for a different reason than the one given: a
+healthy lag2 is about 9 to 12 ms, so the old 10 ms bound sat in the middle of the healthy range.
+
 ## Verification
 
 - 2026-11-27, `python -m pytest -q tests/sim/test_imu_clock_check.py`: passed (in the 115 of the scoped run with the

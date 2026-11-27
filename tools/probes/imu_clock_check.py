@@ -15,9 +15,10 @@ axes, 2 ms grid then 0.2 ms refinement):
         nearest bag log time). This isolates the IMU clock (P) from the
         bridge/Teensy clock (B).
   lag2  IMU gyro vs the body rate of the ``/leg_cmd_executed`` FK orientation
-        (bridge-stamped, the COMMAND). The Legs follow the command within a few
-        ms, so a healthy IMU reads a small POSITIVE lag2; an IMU that leads
-        the command is impossible, so a clearly negative lag2 means the IMU
+        (bridge-stamped, the COMMAND). The Legs trail the command by about
+        13 ms (measured directly, 2026-11-27, BUG-151), so a healthy IMU reads
+        lag2 of roughly +9 to +12 ms; an IMU that leads the command is
+        impossible, so a clearly negative lag2 means the IMU
         stamps are early.
 
 WHY THE ENCODERS ARE RESTAMPED
@@ -65,10 +66,14 @@ The three 2026-11-22 captures were taken after the Platform RX-queue delay
 grew; the defect is fixed in Platform FW 15 (BUG-132).
   capture (platform FW 15, Sitting 2026-11-27)
   20261127 33D0 / 33D1 / 33D2    -3.2/-3.8/-2.0   +12.0/+9.0/+10.6
-lag1 is the clock measure and reads as it did before the defect. lag2 also
-holds how far the Legs trail the command, which was 13 to 15 ms that day
-against 6 to 11 ms on the FW 12-14 rows, so its upper bound is 15 ms (owner,
-2026-11-27; it was 10).
+lag1 is the clock measure. lag2 also holds how far the Legs trail the command
+(about 13 ms), so its upper bound is 15 ms (owner, 2026-11-27; it was 10).
+The FW 12-14 rows above come from bags without RobotState.bridge_stamp, where
+the encoder samples are stamped by pairing (tools/probes/_bag_time.py); that
+stamps about a quarter of them one 10 ms tick early and reads the Legs about
+5.6 ms quicker than they are. Their small lag2 is that bias plus the IMU
+clock of the time, not quicker Legs (BUG-151): do not compare lag2 minus lag1
+across the two kinds of bag.
 
 Usage
 -----
