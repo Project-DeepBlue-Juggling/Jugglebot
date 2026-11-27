@@ -694,7 +694,12 @@ FW_OP_INFO = 0x05
 #: THROW_ABORTED_BY_HOST) and answers CMD_RESULT command_type CANCEL (OK /
 #: CANCEL_TOO_LATE / CANCEL_NOTHING_PENDING). Additive: an FW 8 board ignores
 #: the id (no CMD_RESULT), so the host's cancel times out instead of answering.
-BB_FW_VERSION_EXPECTED = 9
+#: 10 (2026-11-26, BUG-133) = builds against the can-bridge's patched FlexCAN_T4
+#: (RX pop with the CAN interrupt masked) and sends an unsolicited CMD_RESULT
+#: command_type STATUS every 500 ms (RX ring depth min/max, leak, FIFO overruns,
+#: uptime; jugglebot.can.ball_butler_status). Additive: a host older than this
+#: drops the unknown command_type; this host reports the fields 'absent' on FW 9.
+BB_FW_VERSION_EXPECTED = 10
 
 
 def decode_platform_fw_reply(data: bytes):
@@ -1106,7 +1111,7 @@ EXPECTED_BRIDGE_FW_VERSION = 53
 # because Armed implies the Platform is posed. A Hand IDLE is untouched (the Hand is
 # exempt from both).
 _ODRIVE_STATE_IDLE = 1
-ARMED_REFUSAL_HINT = ('refused while Armed (can-bridge FW 52, BUG-99): the bridge does not '
+ARMED_REFUSAL_HINT = ('refused while Armed (can-bridge since FW 52, BUG-99): the bridge does not '
                       're-zero, re-tune, re-mode or reboot an ODrive under a live stream; disarm first')
 
 

@@ -103,10 +103,10 @@ class BallTrackerNode(Node):
 
         # FEAT-27 (2026-11-26): gravity's horizontal part in the Mocap world
         # frame, mm/s^2, for the Fit and every published landing. Config
-        # default [0, 0] (the pre-FEAT-27 Tracker bit for bit); a declared
-        # parameter so the Sitting can A/B the measured value without a
-        # relaunch: `ros2 param set /ball_tracker_node
-        # gravity_world_xy_mmps2 "[43.0, 83.0]"` (and "[0.0, 0.0]" back).
+        # default is the measured [43.0, 83.0] since 2026-11-27 ([0, 0] is the
+        # pre-FEAT-27 Tracker bit for bit); a declared parameter so a Sitting
+        # can A/B it without a relaunch: `ros2 param set /ball_tracker_node
+        # gravity_world_xy_mmps2 "[0.0, 0.0]"` (and "[43.0, 83.0]" back).
         self.declare_parameter(
             'gravity_world_xy_mmps2',
             [float(v) for v in hw.TRACKING_GRAVITY_WORLD_XY_MMPS2])

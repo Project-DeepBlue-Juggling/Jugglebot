@@ -17,9 +17,9 @@ steps:
   - {id: P3, title: JP-10 turned Columns, kind: rung, status: complete, effort: s, hardware: robot}
   - {id: P4, title: Per-Site Apex, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P5, title: JP-9 high-low Columns, kind: rung, status: not_started, effort: s, hardware: robot}
-  - {id: P6, title: Per-Beat Sites dependency owned by PWAY-2, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P6, title: Per-Beat Sites dependency owned by PWAY-2, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P7, title: JP-5 polygon walk, kind: rung, status: complete, effort: s, hardware: robot}
-  - {id: P8, title: JP-11 rotating Columns, kind: rung, status: not_started, effort: l, hardware: robot}
+  - {id: P8, title: JP-11 rotating Columns, kind: rung, status: in_progress, effort: l, hardware: robot}
   - {id: P9, title: Centre and orbit compile, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P10, title: JP-14 Centre and orbit, kind: rung, status: not_started, effort: m, hardware: robot}
 related_logbook:
@@ -126,6 +126,7 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (IDEA-17), n
 - Not built here; owned by PWAY-2 (`plans/archived/learner-generalisation.md`): Learner core P1, online admissibility P3, `BeatEvent` stream P4. This Pathway waits on it and adds no box key of its own.
 - Gate (Phase check): PWAY-2 P1, P3 and P4 complete; (date, command, result) is recorded in that plan - to be linked.
 - Depends on: PWAY-2. Items consumed: PWAY-2. Owner decision: D-d at PWAY-2's P2.
+- Satisfied (owner, 2026-11-27): PWAY-2 P1, P3 and P4 were completed on 2026-11-06 (step list of `plans/archived/learner-generalisation.md`). The per-Beat yaw remainder was retired with E3 of `learner-efficacy.md` on 2026-11-25; P8 does not need it, because the rotation is written as explicit per-Beat Sites.
 
 ### P7: JP-5 polygon walk
 
@@ -139,6 +140,8 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (IDEA-17), n
 - Adds: two-ball per-Beat Sites, the smallest two-ball move (11 mm per Beat at 5 deg, inside the Learner's 20 mm lateral clamp). A Ladder of 5, 10 and 20 deg per Beat in one Sitting.
 - Rung gate: one full turn of the pair at 10 deg per Beat without a drop (about 36 consecutive Catches).
 - Depends on: P7. Items consumed: IDEA-12. Plus the three standing Rung preconditions.
+- Design agreed with the owner 2026-11-27: built on the held Centre and orbit branch (label `columns_rotating`, a `step_deg` on the Pattern); a command-time admissibility rule for rotating Throws is added, amending I-ADMIT-1, with its wording shown to the owner before it merges; the Apex (0.95 or 0.975) is chosen from the full-turn margins; the shared Memory is used and the Learner is unchanged.
+- The Learner follows only part of the pull that turns with the pair (about 40 % by estimate); the rest, 5 to 9 mm inward, is left to the Catch. Accepted by the owner 2026-11-27.
 
 ### P9: Centre and orbit compile
 

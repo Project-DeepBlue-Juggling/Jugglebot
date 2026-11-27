@@ -201,9 +201,10 @@ def test_predict_landing_state_zero_vector_is_bit_identical():
 
 # ── wiring: config -> BallTracker -> every FlightFit and the KF fallback ──────
 
-def test_config_default_is_zero_so_the_fit_is_unchanged_until_switched_on():
+def test_config_default_is_the_measured_vector():
+    # Owner decision 2026-11-27 (FEAT-27): the measured value is the default.
     import jugglebot.hardware_config as hw
-    assert list(hw.TRACKING_GRAVITY_WORLD_XY_MMPS2) == [0.0, 0.0]
+    assert list(hw.TRACKING_GRAVITY_WORLD_XY_MMPS2) == [43.0, 83.0]
 
 
 def _confirmed_tracker(g):

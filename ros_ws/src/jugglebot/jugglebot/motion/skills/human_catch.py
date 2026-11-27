@@ -31,6 +31,14 @@ node runs.
   only when the Platform returns (RETURNING) and only when it moved at least
   ``wait_deadband_mm``.  DEFAULT (owner, 2026-11-21): ``wait_radius_mm`` 0, so
   the Site is FIXED at home and the mean is inert; a radius above 0 turns it on.
+* Edge aim (owner, 2026-11-27, plan ``human-partner-juggling.md`` P3): at the
+  plan instant a Fit Landing outside the cup workspace box by at most
+  ``edge_aim_mm`` (Euclidean distance to the box) is aimed at the NEAREST
+  point of the box edge (:meth:`HumanCatchPolicy.edge_aim`); farther out it is
+  passed unchanged and the install's gate refuses it ``SETTLE_SITE`` as
+  before.  A live re-aim's target gets the same rule
+  (:meth:`HumanCatchPolicy.reaim_target`).  Nothing outside the box is ever
+  aimed at: the box, the gate and every limit are untouched.
 * G, Memory: this Pattern writes none.  :attr:`HumanCatchPolicy.writes_memory`
   is ``False`` and the node builds no Learner for it.
 
@@ -170,8 +178,13 @@ class Decision:
     lead_s: float = float('nan')
     dist_mm: float = float('nan')
     log: Optional[str] = None
-    #: On PLAN: the revision to compile from (the LATEST one received).
+    #: On PLAN: the revision to compile from (the LATEST one received), its
+    #: Landing already through :meth:`HumanCatchPolicy.edge_aim`.
     evt: Optional['HumanThrowEvt'] = None
+    #: On a PLAN aimed at the box edge: the Fit's own Landing (``evt`` holds
+    #: the clipped aim) and how far outside the box it was (mm); else None/0.
+    fit_mm: Optional[Tuple[float, float, float]] = None
+    outside_mm: float = 0.0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -240,6 +253,18 @@ class HumanCatchPolicy:
         every Landing or settle Site outside it is refused ``SETTLE_SITE``
         whatever the lead, so the wait Site is additionally clipped into it
         (a W outside the box would make its own REST unplannable).
+    :param edge_aim_mm: DECIDED (owner, 2026-11-27, plan P3) 35 mm: a Fit
+        Landing at most this far outside the ``workspace_half_mm`` box (the
+        Euclidean distance to the box, so a corner counts both axes) is aimed
+        at the nearest point of the box edge instead of being refused
+        ``SETTLE_SITE``; farther out is refused as before.  Source: the Cup's
+        capture radius, ``hand_radius_mm`` = ``GEOM_HAND_RADIUS_MM`` 35 mm
+        (``config/hardware_config.yaml``), the same 35 mm the replay's D10
+        "inside the Cup" criterion uses: a Cup at the edge still covers a Ball
+        landing where the Fit says.  Evidence: the 2026-11-27 lob bag, three
+        in-reach lobs refused with the Fit 1 to 11 mm outside (replay, 7 to 9
+        of 14 inside 35 mm).  0 turns the edge aim off.  NOT a widening of
+        the box: the aim never leaves it.
     """
 
     #: Rule G: this Pattern writes no Memory row (no Throw, no row).
@@ -260,7 +285,8 @@ class HumanCatchPolicy:
                  nominal_apex_m: float = 1.9,
                  n_throws: int = 0,
                  catch_plane_z_mm: float = 830.0,
-                 workspace_half_mm: float = 150.0):
+                 workspace_half_mm: float = 150.0,
+                 edge_aim_mm: float = 35.0):
         self.home_xy_mm = np.asarray(home_xy_mm, dtype=float)[:2].copy()
         self.first_lead_s = float(first_lead_s)
         self.plan_lead_s = float(plan_lead_s)
@@ -282,13 +308,15 @@ class HumanCatchPolicy:
         self.workspace_half_mm = float(workspace_half_mm)
         if not self.workspace_half_mm > 0.0:
             raise ValueError('workspace_half_mm must be > 0')
+        self.edge_aim_mm = float(edge_aim_mm)
         if np.any(np.abs(self.home_xy_mm) > self.workspace_half_mm):
             raise ValueError('home_xy_mm %r is outside the +-%.0f mm cup '
                              'workspace' % (tuple(self.home_xy_mm),
                                             self.workspace_half_mm))
         for name in ('first_lead_s', 'max_fit_age_s', 'assoc_radius_mm',
                      'reaim_authority_mm', 'wait_radius_mm',
-                     'wait_deadband_mm', 'clear_s', 'return_s'):
+                     'wait_deadband_mm', 'clear_s', 'return_s',
+                     'edge_aim_mm'):
             v = getattr(self, name)
             if not (math.isfinite(v) and v >= 0.0):
                 raise ValueError('%s must be finite and >= 0, got %r'
@@ -310,6 +338,8 @@ class HumanCatchPolicy:
         #: the held key's LATEST revision (plan window not yet reached)
         self.pending: Optional[HumanThrowEvt] = None
         self.claimed = 0
+        #: PLANs aimed at the box edge (:meth:`edge_aim`), for the debrief
+        self.edge_aims = 0
         self._empty_since_s: Optional[float] = None
         #: bounded: an until-Stop Attempt must not grow it without limit
         self.declines: 'collections.deque' = collections.deque(maxlen=256)
@@ -399,12 +429,67 @@ class HumanCatchPolicy:
                 if first else None)
         return self._claim(evt, lead, dist)
 
+    def edge_aim(self, evt: HumanThrowEvt
+                 ) -> Tuple[HumanThrowEvt, float, bool]:
+        """THE edge-aim rule (owner, 2026-11-27): ``(aimed, outside_mm,
+        clipped)``.  ``outside_mm`` is the Euclidean distance of the Fit's
+        Landing xy from the ``+-workspace_half_mm`` box (0 inside).  Inside:
+        ``evt`` itself.  Outside by at most ``edge_aim_mm``: a copy whose
+        Landing xy is the nearest point of the box edge (per-axis clip; z,
+        arrival velocity and landing time are the Fit's), ``clipped`` True.
+        Farther out: ``evt`` itself, so the install's gate refuses it
+        ``SETTLE_SITE`` exactly as before.  The aim is therefore always
+        either the Fit or a point inside the box.  Pure; the one place the
+        rule lives (the first plan, :meth:`_claim`; a re-aim,
+        :meth:`reaim_target`; the replay drives both)."""
+        xy = np.asarray(evt.landing_mm, dtype=float)[:2]
+        h = self.workspace_half_mm
+        edge = np.clip(xy, -h, h)
+        outside = float(np.linalg.norm(xy - edge))
+        if not 0.0 < outside <= self.edge_aim_mm:
+            return evt, outside, False
+        z = float(evt.landing_mm[2])
+        return (dataclasses.replace(
+            evt, landing_mm=(float(edge[0]), float(edge[1]), z)),
+            outside, True)
+
+    def reaim_target(self, evt: HumanThrowEvt
+                     ) -> Tuple[HumanThrowEvt, Optional[str]]:
+        """A later revision of the CLAIMED key, as the live CATCH's re-aim
+        should see it: :meth:`edge_aim` applied (the same rule as the first
+        plan), and a log line the first time this key's re-aim target is
+        clipped (None otherwise; revisions arrive every Mocap frame)."""
+        aimed, outside, clipped = self.edge_aim(evt)
+        if not clipped or (evt.key, 'EDGE_REAIM') in self._logged:
+            return aimed, None
+        self._logged.add((evt.key, 'EDGE_REAIM'))
+        return aimed, (
+            'HUMAN-CATCH-EDGE-REAIM id %d seq %d rev %d: Fit Landing '
+            '(%.0f, %.0f) mm is %.1f mm outside the +-%.0f mm box; the re-aim '
+            'target is the box edge (%.0f, %.0f) mm (logged once per Throw)'
+            % (evt.key[0], evt.key[1], evt.revision, evt.landing_mm[0],
+               evt.landing_mm[1], outside, self.workspace_half_mm,
+               aimed.landing_mm[0], aimed.landing_mm[1]))
+
     def _claim(self, evt, lead, dist) -> Decision:
         self._seen[evt.key] = PLAN
         self.claimed_key = evt.key
         self.claimed += 1
         self.phase = CATCHING
-        return Decision(PLAN, 'OK', evt.key, lead, dist, None, evt=evt)
+        aimed, outside, clipped = self.edge_aim(evt)
+        if not clipped:
+            return Decision(PLAN, 'OK', evt.key, lead, dist, None, evt=evt)
+        self.edge_aims += 1
+        return Decision(
+            PLAN, 'OK', evt.key, lead, dist,
+            ('HUMAN-CATCH-EDGE-AIM id %d seq %d rev %d: Fit Landing '
+             '(%.0f, %.0f) mm is %.1f mm outside the +-%.0f mm box; the '
+             'Catch aims at the box edge (%.0f, %.0f) mm'
+             % (evt.key[0], evt.key[1], evt.revision, evt.landing_mm[0],
+                evt.landing_mm[1], outside, self.workspace_half_mm,
+                aimed.landing_mm[0], aimed.landing_mm[1])),
+            evt=aimed, fit_mm=tuple(float(v) for v in evt.landing_mm),
+            outside_mm=outside)
 
     def poll(self, now_s: float) -> Optional[Decision]:
         """The plan window for a held key, called every tick: None while

@@ -496,6 +496,9 @@ class _ScriptedWaiter:
     def wait(self, can_id, expected_dlc, timeout):
         return self.replies.pop(0) if self.replies else None
 
+    def take(self, can_id, expected_dlc, timeout):        # BEGIN / COMMIT read arrival order (BUG-147)
+        return self.wait(can_id, expected_dlc, timeout)
+
 
 class _RecordingRpc:
     def __init__(self):

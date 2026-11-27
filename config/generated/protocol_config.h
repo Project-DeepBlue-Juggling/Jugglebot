@@ -197,6 +197,7 @@ namespace BallButlerCommandType {
   constexpr uint8_t CALIBRATE = 2;
   constexpr uint8_t HOME = 3;
   constexpr uint8_t CANCEL = 4;
+  constexpr uint8_t STATUS = 5;
 }
 
 // Command outcomes — CMD_RESULT byte 1 (shared base 0x00-0x0F + per-command ext >=0x20)

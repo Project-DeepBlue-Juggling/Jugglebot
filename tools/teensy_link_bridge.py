@@ -167,8 +167,10 @@ _FW_REPLY_TIMEOUT_S = 1.0   # a sector flush can stall the board tens of ms
 #: only when no decisive reply comes (a frame really is missing on the board).
 _FW_REPLY_SETTLE_S = 0.1
 #: Reply opcodes (byte 0 of 0x6F1 / 0x7D7), the receiver's OP_* echoed back.
+_FW_OP_BEGIN = 0x01
 _FW_OP_DATA = 0x02
 _FW_OP_VERIFY = 0x03
+_FW_OP_COMMIT = 0x04
 _FW_WINDOW_RETRIES = 1      # retry a stalled window once before aborting
 _FW_SECTOR_BYTES = 4096     # the receiver flushes a 4 KB sector when its buffer fills
 #: Pause after the frame that fills a sector. The flush (erase 45 ms typ /
@@ -503,21 +505,31 @@ def _wait_for_window_reply(waiter: PlatformFrameWaiter, reply_id: int,
 
 
 def _wait_for_op_reply(waiter: PlatformFrameWaiter, reply_id: int, opcode: int,
-                       timeout: float) -> Optional[bytes]:
+                       timeout: float, monotonic=None) -> Optional[bytes]:
     """The first reply carrying ``opcode``; DATA stragglers still draining from
     the bridge's relay ring are skipped, never read as this op's answer
     (2026-11-19: VERIFY read a DATA BAD_SEQ as its verdict; the receiver's
-    VERIFY handler has no BAD_SEQ path). None on timeout."""
-    deadline = time.monotonic() + timeout
+    VERIFY handler has no BAD_SEQ path). BEGIN and COMMIT use it too (BUG-147):
+    a frame of another opcode is skipped against the SAME overall deadline, so a
+    stream of them cannot extend the timeout. None on timeout. ``monotonic`` is
+    injectable for tests."""
+    now_fn = monotonic if monotonic is not None else time.monotonic
+    deadline = now_fn() + timeout
+    warned = False
     while True:
-        remaining = deadline - time.monotonic()
+        remaining = deadline - now_fn()
         if remaining <= 0.0:
             return None
         reply = waiter.take(reply_id, expected_dlc=8, timeout=remaining)
         if reply is None:
             continue
-        if rpc_args.decode_platform_fw_reply(reply)[0] == opcode:
+        got = rpc_args.decode_platform_fw_reply(reply)[0]
+        if got == opcode:
             return reply
+        if not warned:
+            warned = True
+            logging.info("fw-update: skipping a reply with opcode 0x%02X while waiting "
+                         "for opcode 0x%02X", got, opcode)
 
 
 class _DataSender:
@@ -640,7 +652,8 @@ def _begin_session(rpc: RpcClient, waiter: PlatformFrameWaiter, target: _FwTarge
         attempt += 1
         waiter.clear(target.reply_id)
         rpc.call(target.rpc_begin, rpc_args.encode_platform_fw_begin(total))
-        reply = waiter.wait(target.reply_id, expected_dlc=8, timeout=_FW_REPLY_TIMEOUT_S)
+        reply = _wait_for_op_reply(waiter, target.reply_id, _FW_OP_BEGIN,
+                                   _FW_REPLY_TIMEOUT_S, monotonic=now_fn)
         if reply is None:
             if target.begin_retry_s > 0.0 and now_fn() < silence_deadline:
                 logging.info("fw-update: BEGIN attempt %d — no reply from the %s yet "
@@ -740,7 +753,7 @@ def _run_fw_update_session(rpc: RpcClient, waiter: PlatformFrameWaiter,
     # COMMIT
     waiter.clear(reply_id)
     rpc.call(target.rpc_commit, rpc_args.encode_platform_fw_commit())
-    reply = waiter.wait(reply_id, expected_dlc=8, timeout=_FW_REPLY_TIMEOUT_S)
+    reply = _wait_for_op_reply(waiter, reply_id, _FW_OP_COMMIT, _FW_REPLY_TIMEOUT_S)
     if reply is None:
         logging.error("fw-update: COMMIT — no reply from the %s", target.label)
         return 1

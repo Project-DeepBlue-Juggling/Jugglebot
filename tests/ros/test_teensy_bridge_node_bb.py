@@ -1128,3 +1128,98 @@ def test_bb_fw_non_info_reply_on_0x7d7_is_ignored():
         assert node._bb_fw_version is None
     finally:
         _teardown(teensy, client, node)
+
+
+# ── Ball Butler STATUS frame (BB FW 10, BUG-133) ─────────────────────────────
+# FW 10 sends an unsolicited CMD_RESULT type STATUS every 500 ms; /link_status
+# carries it as the bb_status keys. FW 9 never sends one: the keys read 'absent'.
+
+_BB_STATUS_KEYS = ('bb_uptime_s', 'bb_rx_ring_depth_min', 'bb_rx_ring_depth_max',
+                   'bb_rx_ring_leak_max', 'bb_rx_fifo_overflows', 'bb_status_age_s')
+
+
+def _inject_bb_status(teensy, *, depth_min=0, depth_max=0, leak=0, uptime_s=0, fifo=0):
+    payload = bytes([int(BallButlerCommandType.STATUS), depth_min, depth_max, leak,
+                     uptime_s & 0xFF, (uptime_s >> 8) & 0xFF, (uptime_s >> 16) & 0xFF,
+                     fifo])
+    cf = p.CmdResultFrame(t_bridge_us=1, can_id=0x7D5, dlc=8, data=tuple(payload))
+    teensy.send_to_jetson(int(MsgType.CMD_RESULT), cf.pack())
+
+
+def _link_kvs(node):
+    node._publish_link_status()
+    return {kv.key: kv.value for kv in node.link_status_pub.published[-1].values}
+
+
+def test_bb_status_keys_absent_for_an_fw9_board():
+    """FW 9: heartbeats and THROW / CANCEL CMD_RESULTs only. Every bb_status key is
+    present and reads 'absent', never a zero that would pass for a clean ring."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _inject_cmd_result(teensy, cmd_type=int(BallButlerCommandType.THROW),
+                           outcome=int(BallButlerCommandOutcome.OK))
+        _inject_cmd_result(teensy, cmd_type=int(BallButlerCommandType.CANCEL),
+                           outcome=int(BallButlerCommandOutcome.OK))
+        time.sleep(0.2)                  # let the RX thread drain both frames
+        kvs = _link_kvs(node)
+        assert {k: kvs[k] for k in _BB_STATUS_KEYS} == {k: 'absent' for k in _BB_STATUS_KEYS}
+        assert node._bb_status is None
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_status_frame_renders_on_link_status_and_logs_once():
+    teensy, client, node = _node()
+    node._logger = MagicMock()
+    try:
+        _inject_bb_status(teensy, depth_min=0, depth_max=4, leak=0,
+                          uptime_s=0x012345, fifo=2)
+        assert _wait_until(lambda: node._bb_status is not None)
+        _inject_bb_status(teensy, depth_min=1, depth_max=6, leak=0,
+                          uptime_s=0x012346, fifo=2)
+        assert _wait_until(lambda: node._bb_status.uptime_s == 0x012346)
+        kvs = _link_kvs(node)
+        assert kvs['bb_uptime_s'] == str(0x012346)
+        assert kvs['bb_rx_ring_depth_min'] == '1'
+        assert kvs['bb_rx_ring_depth_max'] == '6'
+        assert kvs['bb_rx_ring_leak_max'] == '0'
+        assert kvs['bb_rx_fifo_overflows'] == '2'
+        assert 0.0 <= float(kvs['bb_status_age_s']) < 5.0
+        first = [m for m in _messages(node._logger.info) if 'BB_STATUS: first frame' in m]
+        assert len(first) == 1
+        assert not [m for m in _messages(node._logger.warning) if 'BB_STATUS' in m]
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_status_leak_warns_advisory():
+    teensy, client, node = _node()
+    node._logger = MagicMock()
+    try:
+        _inject_bb_status(teensy, depth_min=3, depth_max=9, leak=2, uptime_s=7200)
+        assert _wait_until(lambda: node._bb_status is not None)
+        warns = [m for m in _messages(node._logger.warning) if 'BB_STATUS' in m]
+        assert len(warns) == 1 and 'leak 2' in warns[0]
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_status_frame_never_answers_a_waiting_throw():
+    """A STATUS frame landing while a throw waits on its CMD_RESULT is not that
+    throw's outcome: the waiter stays unset."""
+    teensy, client, node = _node()
+    try:
+        with node._bb_throw_lock:
+            node._bb_throw_active = True
+            node._bb_throw_result = None
+        node._bb_throw_event.clear()
+        _inject_bb_status(teensy, uptime_s=12)
+        assert _wait_until(lambda: node._bb_status is not None)
+        assert not node._bb_throw_event.is_set()
+        assert node._bb_throw_result is None
+    finally:
+        with node._bb_throw_lock:
+            node._bb_throw_active = False
+        _teardown(teensy, client, node)

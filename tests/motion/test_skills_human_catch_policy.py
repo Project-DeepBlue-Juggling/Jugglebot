@@ -556,3 +556,133 @@ def test_a_held_key_makes_a_second_ball_busy():
 def test_the_plan_window_cannot_open_below_the_floor():
     with pytest.raises(ValueError):
         hc.HumanCatchPolicy(first_lead_s=0.55, plan_lead_s=0.5)
+
+
+# -- the edge aim (owner, 2026-11-27, plan human-partner-juggling.md P3) ------------------
+
+def _plan(p, x, y, lead=0.62, **kw):
+    d = p.on_event(_evt(x, y, lead, **kw), now_s=0.0)
+    assert d.kind == hc.PLAN, d
+    return d
+
+
+def test_the_edge_aim_default_is_the_cups_capture_radius():
+    """DECIDED 35 mm, sourced from the Cup radius (``hand_radius_mm``): if
+    either moves, this asks whether the other should."""
+    import jugglebot.hardware_config as hw
+    assert hc.HumanCatchPolicy().edge_aim_mm == 35.0
+    assert hc.HumanCatchPolicy().edge_aim_mm == float(hw.GEOM_HAND_RADIUS_MM)
+
+
+@pytest.mark.parametrize('fit, edge', [
+    ((160.0, 0.0), (150.0, 0.0)),          # +x, 10 mm out
+    ((-50.0, -180.0), (-50.0, -150.0)),    # -y, 30 mm out
+    ((-185.0, 20.0), (-150.0, 20.0)),      # -x, exactly 35 mm out (inclusive)
+    ((151.0, 145.0), (150.0, 145.0)),      # the 2026-11-27 bag's first refused lob
+])
+def test_a_fit_up_to_35mm_outside_aims_at_the_nearest_edge_point(fit, edge):
+    p = _waiting()
+    d = _plan(p, *fit)
+    assert d.evt.landing_mm == pytest.approx((edge[0], edge[1], 830.0), abs=1e-12)
+    assert d.evt.landing_vel_mm_s == VEL and d.evt.landing_time_s == 0.62
+    assert d.fit_mm == (fit[0], fit[1], 830.0)
+    assert d.outside_mm == pytest.approx(np.hypot(fit[0] - edge[0], fit[1] - edge[1]))
+    assert d.log.startswith('HUMAN-CATCH-EDGE-AIM id 1 seq 0 rev 0: Fit Landing (%.0f, %.0f) mm'
+                            % fit)
+    assert 'aims at the box edge (%.0f, %.0f) mm' % edge in d.log
+    assert p.edge_aims == 1 and p.phase == hc.CATCHING
+
+
+def test_a_corner_counts_the_distance_to_the_box_not_each_axis():
+    # (170, 170): 28.3 mm from the corner -> the corner
+    d = _plan(_waiting(), 170.0, 170.0)
+    assert d.evt.landing_mm[:2] == (150.0, 150.0)
+    assert d.outside_mm == pytest.approx(20.0 * math.sqrt(2.0))
+    # (175, -180): 25 and 30 mm per axis, 39.1 mm from the corner -> refused as before
+    e = _evt(175.0, -180.0, 0.62)
+    d = _waiting().on_event(e, now_s=0.0)
+    assert d.evt is e and d.log is None and d.fit_mm is None
+
+
+def test_a_fit_35_1mm_outside_is_passed_on_unchanged_and_the_box_refuses_it():
+    """Farther out than ``edge_aim_mm`` the policy hands on the Fit itself,
+    so the install's gate refuses it ``SETTLE_SITE`` exactly as before (the
+    real planner, the reach probe's context)."""
+    reach = _probe()
+    p = _waiting()
+    e = _evt(185.1, 0.0, 0.62)
+    d = p.on_event(e, now_s=0.0)
+    assert d.kind == hc.PLAN and d.evt is e and d.log is None
+    assert d.outside_mm == 0.0 and p.edge_aims == 0
+    r = reach.check_reach(185.1 - HOME[0], 0.0, 0.62)
+    assert not r.ok and r.code == 'SETTLE_SITE'
+
+
+def test_inside_the_box_the_aim_is_the_fit_itself():
+    for x, y in ((149.9, -150.0), (150.0, 150.0), (-3.0, 77.7)):
+        e = _evt(x, y, 0.62)
+        d = _waiting().on_event(e, now_s=0.0)
+        assert d.evt is e and d.log is None and d.fit_mm is None
+
+
+def test_an_edge_aim_plans_from_the_latest_revision_at_the_window():
+    p = _waiting(plan_lead_s=0.62)
+    assert p.on_event(_evt(140.0, 0.0, 0.80), now_s=0.0).kind == hc.PENDING
+    assert p.on_event(_evt(170.0, 0.0, 0.80, rev=1), now_s=0.05).kind == hc.PENDING
+    d = p.poll(0.20)                     # lead 0.60, inside the window
+    assert d.kind == hc.PLAN and d.evt.revision == 1
+    assert d.evt.landing_mm[:2] == (150.0, 0.0) and 'EDGE-AIM' in d.log
+
+
+def test_the_edge_aimed_catch_passes_the_real_gate_where_the_fit_is_refused():
+    """The aim exactly on the box edge passes ``_gate_settle_site`` (``>``, not
+    ``>=``) and the command-time admissibility check (real planner)."""
+    reach = _probe()
+    d = _plan(_waiting(), 160.0, 0.0)
+    ok = reach.check_reach(d.evt.landing_mm[0] - HOME[0], d.evt.landing_mm[1], 0.62)
+    assert ok.ok and ok.code == 'OK', (ok.code, ok.margin)
+    raw = reach.check_reach(160.0 - HOME[0], 0.0, 0.62)
+    assert not raw.ok and raw.code == 'SETTLE_SITE'
+
+
+def test_a_reaim_target_gets_the_same_rule_and_is_logged_once_per_throw():
+    p = _waiting()
+    _plan(p, 0.0, 0.0)
+    a, line = p.reaim_target(_evt(165.0, 10.0, 0.62, rev=1))
+    assert a.landing_mm[:2] == (150.0, 10.0) and a.revision == 1
+    assert line.startswith('HUMAN-CATCH-EDGE-REAIM id 1 seq 0 rev 1: Fit Landing (165, 10) mm')
+    a2, line2 = p.reaim_target(_evt(170.0, 10.0, 0.62, rev=2))
+    assert a2.landing_mm[:2] == (150.0, 10.0) and line2 is None
+    far = _evt(190.0, 10.0, 0.62, rev=3)                  # 40 mm out: unchanged
+    assert p.reaim_target(far) == (far, None)
+    inside = _evt(100.0, 10.0, 0.62, rev=4)
+    assert p.reaim_target(inside) == (inside, None)
+
+
+def test_edge_aim_zero_is_the_old_behaviour_and_a_bad_value_refuses():
+    e = _evt(151.0, 0.0, 0.62)
+    d = _waiting(edge_aim_mm=0.0).on_event(e, now_s=0.0)
+    assert d.evt is e and d.log is None
+    for bad in (-1.0, float('nan'), float('inf')):
+        with pytest.raises(ValueError):
+            hc.HumanCatchPolicy(edge_aim_mm=bad)
+
+
+def test_the_clip_lives_in_the_policy_only_compile_and_gate_are_unchanged():
+    """Every other Pattern's SETTLE_SITE behaviour is untouched: the settle
+    gate still refuses a hair past the box and passes its edge, and
+    ``compile_human_catch`` still puts the Site at the Landing it is given,
+    bit for bit, outside the box too (it never clips)."""
+    from jugglebot.motion.skills import schedule as sc
+    from jugglebot.motion.trajectory import cup_cycle as cc
+    cfg = CupCycleConfig()
+    z = 0.5 * (cfg.z_min_m + cfg.z_max_m)
+    cc._gate_settle_site(np.array([0.15, -0.15, z]), cfg)
+    for xy in ((0.1500001, 0.0), (0.0, -0.1500001)):
+        with pytest.raises(cc.CupCycleInfeasible) as ei:
+            cc._gate_settle_site(np.array([xy[0], xy[1], z]), cfg)
+        assert ei.value.reason == 'SETTLE_SITE'
+    s = sc.compile_human_catch(np.array([171.3, -160.7, 830.0]), np.array(VEL),
+                               10.62, 10.0, 0.035)
+    assert tuple(s.skills[0].site.cup_mm[:2]) == (171.3, -160.7)
+    assert tuple(s.skills[0].landing_prior.pos_mm[:2]) == (171.3, -160.7)

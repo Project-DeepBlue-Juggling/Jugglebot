@@ -158,6 +158,7 @@ from teensy_link.deactivate import (
     DeactivateMonitor, AxisStatus as DeactivateAxisStatus,
 )
 from jugglebot.can import catching_cone
+from jugglebot.can.ball_butler_status import BallButlerStatus
 from jugglebot.can import odrive
 from jugglebot.can import wave_camera
 from jugglebot.can.motor_state import MotorStateTracker
@@ -2121,6 +2122,13 @@ class TeensyBridgeNode(Node):
         self._bb_fw_version = None
         self._bb_fw_version_unavailable = None
         self._bb_fw_info_asks = 0
+        # Ball Butler receive-path status (BB FW 10+, BUG-133): the latest
+        # CMD_RESULT type STATUS frame (every 500 ms) and the monotonic time it
+        # landed. None until the first one: an FW 9 board never sends it, and
+        # /link_status then reports the bb_status keys as 'absent', never 0.
+        # Written on the RX thread, read on the link_status timer: self._lock.
+        self._bb_status = None
+        self._bb_status_mono = 0.0
 
         # ── F3/C2: per-(axis, error-code) log throttle for _log_odrive_errors ──
         # A SECOND tracker, deliberately NOT self._versions. The tracker above is
@@ -3770,6 +3778,9 @@ class TeensyBridgeNode(Node):
             detail0 = int.from_bytes(data[2:4], 'little', signed=True)
             detail1 = int.from_bytes(data[4:6], 'little', signed=True)
         except Exception:  # noqa: BLE001
+            return
+        if BallButlerStatus.is_status_frame(data):
+            self._record_bb_status(data)   # BB FW 10 receive-path status, no waiter
             return
         if cmd_type == int(proto.BallButlerCommandType.CANCEL):
             with self._bb_throw_lock:
@@ -5442,6 +5453,61 @@ class TeensyBridgeNode(Node):
                 f'refused; re-flash with tools/teensy_link_bridge.py --fw-update '
                 f'--target bb or update BB_FW_VERSION_EXPECTED.')
 
+    #: /link_status keys of the Ball Butler STATUS frame, in render order.
+    _BB_STATUS_KEYS = ('bb_uptime_s', 'bb_rx_ring_depth_min', 'bb_rx_ring_depth_max',
+                       'bb_rx_ring_leak_max', 'bb_rx_fifo_overflows', 'bb_status_age_s')
+
+    def _record_bb_status(self, data: bytes):
+        """Keep the latest Ball Butler STATUS frame (RX thread; never raises).
+
+        Logs the first frame once (uptime and ring numbers at launch) and warns,
+        throttled, when ``rx_ring_leak_max`` is above 0: the patched FlexCAN_T4
+        pop cannot strand a frame, so a leak means the board is not running the
+        FW 10 build. A standing queue (``rx_ring_depth_min`` above 0) is data
+        for the BUG-133 analysis, not a warning: a long blocking step in the
+        Ball Butler loop raises it without any leak. Advisory only.
+        """
+        try:
+            st = BallButlerStatus.from_cmd_result(data)
+        except Exception:  # noqa: BLE001 — never kill the RX thread
+            return
+        with self._lock:
+            first = self._bb_status is None
+            self._bb_status = st
+            self._bb_status_mono = time.monotonic()
+        if first:
+            self.get_logger().info(
+                f'BB_STATUS: first frame: uptime {st.uptime_s} s, RX ring depth '
+                f'min {st.rx_ring_depth_min} / max {st.rx_ring_depth_max}, leak '
+                f'{st.rx_ring_leak_max}, FIFO overruns {st.fifo_overflows}')
+        if st.rx_ring_leak_max > 0:
+            self.get_logger().warning(
+                f'BB_STATUS: Ball Butler RX ring leak {st.rx_ring_leak_max} frame(s) '
+                f'(uptime {st.uptime_s} s): stranded frames delay its clock and '
+                f'every command (BUG-133). Advisory only.',
+                throttle_duration_sec=30.0)
+
+    def _bb_status_kvs(self) -> list:
+        """/link_status rows for the latest Ball Butler STATUS frame.
+
+        Every key is present on every publish. Before the first frame each reads
+        ``absent`` (an FW 9 board never sends one, or no Ball Butler), never 0.
+        ``bb_status_age_s`` is the time since that frame landed, so a board that
+        went quiet shows its last numbers with a growing age.
+        """
+        with self._lock:
+            st = self._bb_status
+            mono = self._bb_status_mono
+        if st is None:
+            return [KeyValue(key=k, value='absent') for k in self._BB_STATUS_KEYS]
+        values = (st.uptime_s, st.rx_ring_depth_min, st.rx_ring_depth_max,
+                  st.rx_ring_leak_max, st.fifo_overflows)
+        rows = [KeyValue(key=k, value=str(int(v)))
+                for k, v in zip(self._BB_STATUS_KEYS, values)]
+        rows.append(KeyValue(key='bb_status_age_s',
+                             value=f'{time.monotonic() - mono:.1f}'))
+        return rows
+
     def _bb_fw_version_str(self) -> str:
         """``/link_status`` rendering of Ball Butler's Teensy FW_VERSION.
 
@@ -5584,7 +5650,7 @@ class TeensyBridgeNode(Node):
         service called while Armed, or None when disarmed (on both sides)."""
         if not self._armed_anywhere():
             return None
-        return (f'{what} REFUSED: the robot is Armed. The can-bridge (FW 52, BUG-99) refuses '
+        return (f'{what} REFUSED: the robot is Armed. The can-bridge (since FW 52, BUG-99) refuses '
                 f'gain, mode, state (other than IDLE), absolute-position and SDO writes and ODrive '
                 f'reboots under a live stream. Disarm first (/set_setpoint_output false), then retry.')
 
@@ -7496,6 +7562,10 @@ class TeensyBridgeNode(Node):
                 # reason as the line above: a different board, a different ask.
                 KeyValue(key='bb_fw_version',
                          value=self._bb_fw_version_str()),
+                # Ball Butler receive-ring health + uptime (BB FW 10, BUG-133):
+                # 'absent' until the first STATUS frame (an FW 9 board never
+                # sends one), so a missing number never reads as a clean ring.
+                *self._bb_status_kvs(),
                 # Hand ball-present sensor: tri-state word + miss count + the
                 # RAW get_gpio_states word in hex. Rendered unconditionally
                 # (never-seen reads 'unknown (never seen)') so an unflashed or

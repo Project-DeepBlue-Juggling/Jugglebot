@@ -4,7 +4,7 @@ kind: feature
 title: 'Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows'
 status: in_progress
 created: '2026-11-24'
-updated: '2026-11-25T17:40:29Z'
+updated: '2026-11-26T17:23:54Z'
 owners:
 - night-shift
 priority: medium
@@ -64,3 +64,4 @@ Recommendation: 1, because the replay differences between laws are 0.1 to 0.3 mm
 ## Progress
 
 - 2026-11-26: Night Shift 2026-11-26: held on night-shift/2026-11-26-FEAT-65: built per TKT-94; replay misses the Apex gate (+0.67 mm rms), jitter 24 to 65 percent lower; unblocked by your answer in TKT-97
+- 2026-11-27: Night Shift 2026-11-27: rebuilt per TKT-97 (x and y shrinkage, Apex recent-16); misses the gate on x and y on the 5455-row Memory; 1 audit finding open; unblocked by TKT-100

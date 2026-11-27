@@ -87,6 +87,7 @@ Every Rung needs its Sitting section dress-rehearsed on the loaded Jetson, `./ru
 - Starts with a data row, before any live `human_catch` Attempt: single Balls lobbed at the Cup (the wait Site), one Ball in the air at a time, Platform Level and NOT armed, `ros2 param set /ball_tracker_node detect_human_throws true`, about five minutes (roughly 15 to 20 lobs at lead 0.7 s or more); the bag is replayed through `tools/probes/human_catch_replay.py` and scored against D10 first. This is the population the three existing bags lack.
 - Checks the first live Attempt needs: the Cup sensor reporting before the first lob (every verdict abstains and reads as caught when its history is blind); both ROS packages rebuilt (`jugglebot_interfaces` and `jugglebot`) because of the new message; the Sitting section dress-rehearsed on the loaded Jetson per the standing rule.
 - Rung gate (proposed): 10 Catches of 15 lobs in one Attempt, with no Catch planned on a phantom.
+- Owner, 2026-11-27: fly the first live Attempt at the next Sitting as a data Attempt with the P1 and P2 checks unmet; the gate counts the node's planned Throws ("C of 15"), with the lob count recorded by hand; when the Fit is up to 35 mm outside the settle box, aim at the box edge (a unit builds this first); the 35 ms delay on `/human_throws` is diagnosed after the first flight.
 - Depends on: P2. Plus the three standing Rung preconditions.
 
 ### P4: Throw back to a fixed hand point

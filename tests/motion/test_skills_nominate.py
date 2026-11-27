@@ -623,3 +623,33 @@ def test_worst_rung_walk_equals_the_full_walk_on_the_probe_cases():
                               nm.LAUNCH_AIM, full=full)
             figs.append(rep.aim_worst().margin)
         assert figs[0] == pytest.approx(figs[1], abs=0.01)
+
+
+# ── BUG-148: the worst rung is not named by float noise ─────────────────────
+
+def test_worst_rung_is_independent_of_float_noise_between_tied_margins():
+    """The margin is flat across the rungs where one leg peak binds (skill 5
+    at P4: 0.3346982112 at all three, differing ~1e-10 with BLAS threading and
+    summation order).  A bare ``min`` named -20 % on a quiet one-thread run and
+    +10 % on a loaded box (BUG-148).  No wall clock is in the path (the only
+    ``perf_counter`` reads fill report timing fields); the noise is.  Driven
+    deterministically: re-order the noise over the SAME verdicts and the worst
+    must stay the first rung in walk order, whatever the noise says."""
+    nm.clear_cache()
+    try:
+        # the margins below are mutated on the CACHED report; the finally
+        # drops it so no later test in this process reads the edited values
+        rep = nm.nominate(C('columns', 0.95, 125.0, 0.27), P4, search=False)
+        five = [v for v in rep.verdicts if v.idx == 5]
+        assert len(five) == 3
+        base = min(v.margin for v in rep.verdicts)
+        for noise in ((0.0, 4e-11, 2e-10), (2e-10, 4e-11, 0.0), (4e-11, 0.0, 2e-10)):
+            for v, e in zip(five, noise):
+                v.margin = base + e
+            w = rep.worst()
+            assert (w.idx, w.flight_frac) == (5, -0.20), noise
+        # a REAL gap still wins over the tie rule
+        five[2].margin = base - 1e-3
+        assert rep.worst().flight_frac == 0.10
+    finally:
+        nm.clear_cache()

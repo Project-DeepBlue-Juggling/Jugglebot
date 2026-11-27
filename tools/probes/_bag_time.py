@@ -30,7 +30,7 @@ import numpy as np
 # fit, position fit 13.3 ms sd 0.7) after the bridge-stamped /leg_cmd_executed once the
 # bridge-to-Jetson clock error (err_us) is removed, from body motion against the FK of the
 # executed command. It therefore includes QTM latency PLUS the Legs' own tracking lag
-# behind the command (1.3 to 3 ms modelled), so QTM's true latency against physical
+# behind the command (1.3 to 3 ms modelled; about 13 ms MEASURED on the bridge tick, 2026-11-27, BUG-151, and the pairing fallback below reads it about 5.6 ms short), so QTM's true latency against physical
 # truth is only bounded to about 4 to 13 ms (a Ball Butler yaw cross-check disagrees).
 # Do NOT apply it to the live Mocap stamp: the Ball Butler release constants and the
 # bb_calibration lag advisory rest on the uncorrected stamp.

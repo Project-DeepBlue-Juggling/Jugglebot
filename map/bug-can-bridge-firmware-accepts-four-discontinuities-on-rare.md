@@ -4,7 +4,7 @@ kind: bug
 title: can-bridge firmware accepts four discontinuities on rare paths and has no armed interlock on reconfiguration RPCs (to confirm)
 status: inbox
 created: '2026-11-14'
-updated: '2026-11-26T01:17:11Z'
+updated: '2026-11-27T04:12:10Z'
 owners: []
 priority: medium
 effort: m
@@ -16,9 +16,9 @@ area: firmware
 blocked_by: []
 links: []
 filed_by: claude
-night_skip: frozen-path
-night_skip_on: '2026-11-22'
-night_skip_note: can-bridge firmware, frozen at night; each of the four reports needs confirming by a firmware read first.
+night_skip: sitting
+night_skip_on: '2026-11-27'
+night_skip_note: FW 52 flashed with D1 to D5 and row 2 accepted; open until a powered Sitting confirms nothing regressed.
 ---
 
 Four can-bridge firmware paths the 2026-11-13 maintainer review (Opus read of the firmware) reported as accepting a discontinuity or lacking an interlock. None was re-read by the coordinating Session, so each needs confirming before any change. All are on rare paths.
@@ -46,3 +46,4 @@ Confirm each row against the code and the native tests, then decide per row: fix
 
 - 2026-11-25: FW 52 flashed 20:54 (BridgeIdentity 52/14, unpowered launch check clean). It carries the stamp bound, the lead-clamp assert and the pins (FW 50) and the owner decisions D1 to D5: Armed refusals, per-axis clear scope, held clock offset, Jetson-only UDP. Contract row I-FW-18. Open until a powered Sitting confirms nothing regressed.
 - 2026-11-26: row 2 measured from 9 bags (clock_diag): the offset slews at most 1.25 ms once per 30 s; worst applied 0.77 ms, about 1.3 mm at the Hand at 50 rev/s (computed). Accepted with that bound, no rate limit. /link_status now carries the eight promo fields so a powered Sitting records the counters. Steps over 20 ms were seen only at bag start.
+- 2026-11-27: Powered Sitting 2026-11-27 on FW 53 (which includes FW 52): five launches, 11 rises and Stows, 14 Attempts, no new refusal, HELD bit or Guard latch beyond a launch before the 45 V supply was on and the FAULT after a commanded drive reboot. The Armed refusal was exercised once (drive reboot refused at the Active pose).

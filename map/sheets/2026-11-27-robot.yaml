@@ -20,6 +20,8 @@ omitted:
   reason: not chosen for this Sitting (60 min)
 - item: BUG-144
   reason: its fix is on a Night Shift branch that this sheet does not build
+- item: BUG-140
+  reason: its branch still has two open audit findings; the owner chose to have them fixed before it flies (TKT-99), and that is not built yet
 - item: BUG-95
   reason: not chosen for this Sitting
 - item: FEAT-49

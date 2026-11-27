@@ -2,15 +2,16 @@
 id: BUG-32
 kind: bug
 title: Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff
-status: inbox
+status: in_progress
 created: '2026-10-28'
-updated: '2026-11-26T03:18:28Z'
+updated: '2026-11-27T06:40:43Z'
 owners: []
 priority: medium
 effort: l
 hardware: robot
 owner: hands
 radius: subsystem
+diagnosis: confirmed
 area: skill-stack
 blocked_by: []
 links:
@@ -18,8 +19,8 @@ links:
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
 night_skip: sitting
-night_skip_on: '2026-11-22'
-night_skip_note: A flown CPU measurement on the robot, owner hands.
+night_skip_on: '2026-11-27'
+night_skip_note: Warm start held on offline/bug32-warm; its Sitting section flies it and A/Bs cpu_partition on the Catch solve wall time.
 ---
 
 21:02 Sitting 2026-10-28, starvation fixed (CATCH wall/CPU 1.27): 3 of 109 oval throws still had a re-aim refused SPLICE_TOO_LATE.
@@ -40,17 +41,10 @@ night_skip_note: A flown CPU measurement on the robot, owner hands.
 
 temp/probes/solve-starvation-2026-10-28-2102.txt
 
-## Sitting
+## Sitting result (2026-11-27 15:08)
 
-- setup: level, armed, bb-fed
-- why: offline, the warm start cut the oval CATCH solve CPU by about 10 ms and pinning the worker cut loaded wall time; only a flown oval Attempt shows either on the robot.
-- do:
-  - Launch with `cpu_partition:=false` and fly one `oval_1ball_fed` Attempt at the usual working point for at least 20 Catches.
-  - Relaunch with `cpu_partition:=true` and fly the same Attempt again.
-- pass: the launch log's CATCH solve CPU p50 (CATCH solves after the first) is at most 72 ms in both arms, against 78 to 81 ms on the 11-20 to 11-23 launches, with no new refusal codes; the partition arm's wall p95 is reported against the other arm's.
-- record: per arm the CATCH solve CPU p50 and p95, wall p50 and p95, the count of SPLICE_TOO_LATE and refused re-aims, and the launch log path.
-- minutes: 20
-- branch: offline/bug32-warm
+- verdict: fail
+- notes: No issues. Not really visibly distinguishable from the Launch 3 attempt (sheet 2026-11-27-robot, step 30) [derived: CATCH solve CPU p50 78.2 ms (launch 3, cpu_partition off) and 77.8 ms (launch 4, on), n 30 each, against the 72 ms bar; the same day without the warm start read 77.3 and 76.7 ms. No new refusal code. Wall p95 143.9 ms off against 202.9 ms on; solves at or past 150 ms: 1 against 4. All 64 Throws caught.]
 
 ## Progress
 
@@ -60,3 +54,6 @@ temp/probes/solve-starvation-2026-10-28-2102.txt
 - 2026-11-26: Built on held branch offline/bug32-warm: a Segment carries one QP warm start per window kind, so the oval steady QP starts from the previous beat's (46 to 12 iterations); a warm solve that refuses is re-solved cold. Plans agree with cold to 2e-10. Offline CPU p50: oval 61.9 to 52.0 ms, Columns 36.5 to 34.3 ms. Not flown.
 - 2026-11-26: Scheduling: nothing is partitioned at runtime. cpu_partition defaults off; its one A/B (2026-11-18) measured bridge drops, not solve wall time, and showed no effect. Offline, pinning the worker cut loaded wall p50 100.6 to 81.0 ms. The Sitting section adds a partition arm. Worker FIFO stays off (owner, 2026-10-28).
 - 2026-11-26: Owner decisions: the warm start covers every window kind, and the Sitting keeps its cpu_partition:=true arm as an A/B on the Catch solve wall time.
+- 2026-11-27: Failed at the Sitting of 2026-11-27: CATCH solve CPU p50 78.2 and 77.8 ms against 72; main the same day 77.3 and 76.7. The warm start ran but its key (the STEADY window's knot count) matched only 9 of about 240 solves, because the window starts at the moving splice point; where it matched it saved 5 to 10 ms. The offline bench used one fixed seed. Do not merge as is.
+- 2026-11-27: New lead from 2026-11-27: install CPU grows about 1 ms per 100 record Knots (about +15 ms by Throw 32) on main and branch alike while check CPU stays flat; it tracks SPLICE_TOO_LATE rising with Throw index (0, 4, 6, 5 refusals per 16 Throws). Filed as its own Item. Owner decision on offline/bug32-warm: drop it, or rebuild as a shifted warm start.
+- 2026-11-27: Owner decision 2026-11-27: the warm-start branch is dropped (offline/bug32-warm, last tip 9d673052, local only, deleted). Its Sitting section is removed with it. The open lever on the re-aim cliff is BUG-149 (install cost growing through an Attempt); this Item needs a new Sitting section when a fix exists to fly.

@@ -15,9 +15,10 @@ axes, 2 ms grid then 0.2 ms refinement):
         nearest bag log time). This isolates the IMU clock (P) from the
         bridge/Teensy clock (B).
   lag2  IMU gyro vs the body rate of the ``/leg_cmd_executed`` FK orientation
-        (bridge-stamped, the COMMAND). The Legs follow the command within a few
-        ms, so a healthy IMU reads a small POSITIVE lag2; an IMU that leads
-        the command is impossible, so a clearly negative lag2 means the IMU
+        (bridge-stamped, the COMMAND). The Legs trail the command by about
+        13 ms (measured directly, 2026-11-27, BUG-151), so a healthy IMU reads
+        lag2 of roughly +9 to +12 ms; an IMU that leads the command is
+        impossible, so a clearly negative lag2 means the IMU
         stamps are early.
 
 WHY THE ENCODERS ARE RESTAMPED
@@ -44,7 +45,7 @@ with lag1 and its peak correlation r1, lag2 and r2, the mean
 (``/robot_state`` stamp minus paired bridge stamp) in ms, the sliding-window
 sd of lag1 (4 s windows, step 2 s, fixed rotation, r > 0.7), the capture's
 ``fw_version`` and ``flags.clock_suspect`` (None if the sidecar lacks it).
-Verdict: PASS when |lag1| <= --max-abs-ms AND 0 <= lag2 <= +10 ms; FAIL
+Verdict: PASS when |lag1| <= --max-abs-ms AND 0 <= lag2 <= +15 ms; FAIL
 otherwise; INSUFFICIENT_MOTION when the capture's gyro rms (after median bias
 removal and a 15 Hz low-pass, norm over 3 axes) is below ``MIN_GYRO_RMS_RPS``.
 Exit 0 PASS, 1 FAIL, 2 not measurable.
@@ -63,6 +64,16 @@ REFERENCE NUMBERS (measured 2026-11-23, this method, ms; negative = early)
   20261122 572E / 5730 / 5731   -48.8/-43.0/-40.0  -38.4/-33.2/-33.0
 The three 2026-11-22 captures were taken after the Platform RX-queue delay
 grew; the defect is fixed in Platform FW 15 (BUG-132).
+  capture (platform FW 15, Sitting 2026-11-27)
+  20261127 33D0 / 33D1 / 33D2    -3.2/-3.8/-2.0   +12.0/+9.0/+10.6
+lag1 is the clock measure. lag2 also holds how far the Legs trail the command
+(about 13 ms), so its upper bound is 15 ms (owner, 2026-11-27; it was 10).
+The FW 12-14 rows above come from bags without RobotState.bridge_stamp, where
+the encoder samples are stamped by pairing (tools/probes/_bag_time.py); that
+stamps about a quarter of them one 10 ms tick early and reads the Legs about
+5.6 ms quicker than they are. Their small lag2 is that bias plus the IMU
+clock of the time, not quicker Legs (BUG-151): do not compare lag2 minus lag1
+across the two kinds of bag.
 
 Usage
 -----
@@ -91,7 +102,7 @@ import _bag_time as bt  # noqa: E402
 
 MIN_GYRO_RMS_RPS = 0.02
 LAG2_LO_MS = 0.0
-LAG2_HI_MS = 10.0
+LAG2_HI_MS = 15.0
 DEFAULT_CAPTURE_DIRS = (
     os.path.join(REPO, "temp", "imu_capture"),
     os.path.expanduser("~/Desktop/Jugglebot/temp/imu_capture"),

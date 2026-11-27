@@ -132,7 +132,7 @@ VERSIONS_NOMINAL = {
     # Ball Butler's own Teensy (_bb_fw_version_str, BB_FW_INFO).  The same
     # board model as the Platform Teensy at a different number, on purpose: the
     # panel must keep them in separate groups (`family`) and raise no ODD.
-    "bb_fw_version": "9",
+    "bb_fw_version": "10",
 }
 # Never-seen: no BRIDGE_IDENTITY frame has ever arrived, the Platform relay
 # read failed, and the bus-paced Get_Version sweep has not run — all three of
@@ -167,7 +167,7 @@ VERSIONS_SKEW = dict(
     VERSIONS_NOMINAL,
     bridge_fw_version="15 (SKEW \u2014 expected v20, proto 6)",
     platform_fw_version="0 (PRE-VERSIONING)",
-    bb_fw_version="8 (SKEW — expected v9)",
+    bb_fw_version="9 (SKEW — expected v10)",
 )
 
 

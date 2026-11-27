@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-11 Rotating columns: the pair turns a few degrees every Beat'
 status: inbox
 created: '2026-10-30'
-updated: '2026-10-30T11:31:18Z'
+updated: '2026-11-27T08:59:06Z'
 owners: []
 priority: medium
 effort: l
@@ -36,3 +36,7 @@ Blocked on per-Beat Sites: the executor, admissible box and learner all assume a
 
 - The learner-generalisation plan P3 and P4 (online admissibility, per-Beat BeatEvent stream).
 - The cheaper pattern-relative admissible-box key proved by JP-10.
+
+## Progress
+
+- 2026-11-27: 2026-11-27 design (offline): JP-11 needs no yaw support; the rotation can be explicit per-Beat Sites on compile_beats, as the held Centre and orbit branch did. Every rotating Throw is cross-site and gets no command-time admissibility check; a new rule is proposed. The Learner follows about 40 % of the turning pull (estimate). Build of four units proposed; owner to decide.

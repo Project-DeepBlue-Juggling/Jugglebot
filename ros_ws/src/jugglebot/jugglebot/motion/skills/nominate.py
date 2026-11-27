@@ -932,6 +932,24 @@ def _landing(schedule, idx, sk, shifts: Optional[_AimShifts] = None):
 
 # ── the report ───────────────────────────────────────────────────────────────
 
+#: Margins closer than this are one value for choosing the WORST verdict.  The
+#: margin is flat across the flight-fraction rungs where one leg peak binds, and
+#: the rungs then differ only by float noise (~1e-10, BLAS thread count and
+#: summation order), so a bare ``min`` named a rung by noise (BUG-148: rung
+#: -20 % on one run, +10 % on a loaded one).  1e-8 is far under the 1e-3 the
+#: summary prints and the 1e-6 the margins are pinned to.
+WORST_TIE_TOL = 1e-8
+
+
+def _worst_of(vs):
+    """The lowest-margin verdict; among margins within :data:`WORST_TIE_TOL`
+    of it, the FIRST in walk order (deterministic, independent of float noise)."""
+    if not vs:
+        return None
+    lo = min(v.margin for v in vs)
+    return next(v for v in vs if v.margin <= lo + WORST_TIE_TOL)
+
+
 @dataclasses.dataclass
 class NominationReport:
     """The verdict on one configuration.  ``refusals`` = one line per refusal
@@ -969,13 +987,13 @@ class NominationReport:
 
     def worst(self) -> Optional[SegmentVerdict]:
         vs = [v for v in self.verdicts if v.solved and not math.isnan(v.margin)]
-        return min(vs, key=lambda v: v.margin) if vs else None
+        return _worst_of(vs)
 
     def aim_worst(self) -> Optional[SegmentVerdict]:
         """The worst margin with the Catch re-aim at its limit, or None."""
         vs = [v for v in self.aim_verdicts
               if v.solved and not math.isnan(v.margin)]
-        return min(vs, key=lambda v: v.margin) if vs else None
+        return _worst_of(vs)
 
     def aim_below_zero(self) -> bool:
         """True when an Attempt could end on an admissibility refusal at the

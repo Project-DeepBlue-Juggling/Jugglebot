@@ -42,16 +42,18 @@ def _plant(u, site_x, extra=(0.0, 0.0, 0.0)):
 
 
 def _trained(n=60, extra=(0.008, -0.006, 0.005), ctx=None, seed=0):
-    """A Learner whose f0 has converged on two Sites (plain rows) and whose memory holds ``n``
-    rows at ``ctx`` (default: a carried Throw) that carry a context residual ``extra``."""
+    """A Learner whose f0 has converged on two Sites (plain rows of ``ctx``'s release kind, since
+    f0's lateral law is per kind, BUG-138; thrown at 3.0 m/s, outside every test query's L2
+    support, so they converge f0 without entering the query's residual) and whose memory holds
+    ``n`` rows at ``ctx`` (default: a carried Throw) that carry a context residual ``extra``."""
     rng = np.random.default_rng(seed)
     L = Learner()
+    ctx = _ctx(-0.075, rel=(-0.06, 0.0, 0.4), vel=(0.1, 0.0, 4.4), kind='carried') if ctx is None else ctx
     for i in range(80):
         sx = (-0.125, 0.125)[i % 2]
-        c = _ctx(sx)
+        c = _ctx(sx, vel=(0.0, 0.0, 3.0), kind=ctx.release_kind)
         u = np.array([0.0, 0.0, rng.uniform(0.8, 1.2)])
         L.observe(_exp(c, u, _plant(u, sx) + rng.normal(0, 0.002, 3)))
-    ctx = _ctx(-0.075, rel=(-0.06, 0.0, 0.4), vel=(0.1, 0.0, 4.4), kind='carried') if ctx is None else ctx
     for i in range(n):
         u = np.array([0.0, 0.0, 0.9])
         L.observe(_exp(ctx, u, _plant(u, ctx.site_xy_m[0], extra) + rng.normal(0, 0.002, 3)))
@@ -148,7 +150,7 @@ def test_t_u3_rows_beyond_the_support_gate_contribute_nothing():
     for L, r in ((La, ra), (Lb, rb)):
         n = L._rows.n
         idx = [i for i in range(n) if L._rows.rel[i][0] == 0.0][-k:]
-        res = np.array([L._rows.y[i] - L.model.forward(L._rows.u[i], 0.0, 0) for i in idx])
+        res = np.array([L._rows.y[i] - L.model.forward(L._rows.u[i], 0.0, 0, 'carried') for i in idx])
         sw = float(k)
         corr = sw / (sw + w0) * res.mean(0)
         expect = -np.array([corr[0], corr[1], corr[2] / L.model.theta()[0]])
@@ -175,11 +177,15 @@ def test_t_u4_the_cap_holds_everywhere_about_the_model_command():
 
 def _opposed(cfg, n):
     """A Learner whose f0 cannot absorb the query's residual: rows at the query context (carried)
-    land +80/-80/+60 mm off, interleaved with rows at the SAME Site but release_kind free_cup that
-    land the opposite way, so f0's b and K average them out and L2 sees the residual."""
+    land +80/-80/+60 mm off, interleaved with rows of the SAME release kind at the SAME Site but a
+    release velocity outside the L2 support (dv 0.6 m/s: d^2 = 16 > 9) that land the opposite way,
+    so f0's b and K (which see the Site and the kind, not the velocity) average them out and L2
+    sees the residual. (Before BUG-138 the opposing rows were free_cup and the pooled lateral law
+    averaged them; the lateral law is per kind now.)"""
     L, ctx = _trained(n=0)
     L = Learner(L.model, cfg)
-    other = _ctx(ctx.site_xy_m[0], rel=ctx.release_m, vel=ctx.release_vel_mps, kind='free_cup')
+    vx, vy, vz = ctx.release_vel_mps
+    other = _ctx(ctx.site_xy_m[0], rel=ctx.release_m, vel=(vx, vy, vz + 0.6), kind=ctx.release_kind)
     u = np.array([0.0, 0.0, 0.9])
     for _ in range(n):
         L.observe(_exp(other, u, _plant(u, ctx.site_xy_m[0], (-0.08, 0.08, -0.06))))
@@ -209,7 +215,7 @@ def test_t_u4_zero_evidence_gives_exactly_the_model_command():
     assert L.evidence(elsewhere) == (0.0, 0)
     for y_d in (Y_D, np.array([0.01, -0.02, 1.2])):
         assert np.array_equal(L.command(elsewhere, y_d), L.model_command(elsewhere, y_d))
-        assert np.array_equal(L.predict(elsewhere, y_d), L.model.forward(y_d, 0.6, 0))
+        assert np.array_equal(L.predict(elsewhere, y_d), L.model.forward(y_d, 0.6, 0, 'carried'))
 
 
 # --------------------------------------------------------------------------- local_model, read-only
@@ -233,9 +239,10 @@ def _state_hash(L):
     for a in (R.rel, R.vel, R.dwell, R.u, R.y, R.site_x, R.ball, R.kind, R.accepted):
         h.update(np.ascontiguousarray(a).tobytes())
     m = L.model
-    for f in (m._fa, m._fx, m._fy):
+    for f in (m._fa,) + tuple(g for lat in m._lat.values() for g in (lat.fx, lat.fy)):
         h.update(f.th.tobytes())
         h.update(f.P.tobytes())
+        h.update(f.P_unforgotten.tobytes())
     h.update(m.theta().tobytes())
     h.update(repr((R.n, m.n_accepted, m.n_rejected, m.last_rejection)).encode())
     return h.hexdigest()
@@ -251,8 +258,8 @@ def test_queries_do_not_change_state():
         L.predict(ctx, Y_D, Y_D)
         L.local_model(ctx, Y_D)
         L.evidence(ctx)
-        L.model.forward(Y_D, 0.0, 0)
-        L.model.inverse(Y_D, 0.0, 0)
+        L.model.forward(Y_D, 0.0, 0, 'free_cup')
+        L.model.inverse(Y_D, 0.0, 0, 'free_cup')
         L.model.summary()
     assert _state_hash(L) == before
 
@@ -451,3 +458,40 @@ def test_a_different_site_or_release_height_still_separates_rows():
     assert L.evidence(ctx)[1] > 0
     assert L.evidence(far_site)[0] < 1e-3 * L.evidence(ctx)[0] or L.evidence(far_site)[1] == 0
     assert L.evidence(high)[1] == 0
+
+
+# --------------------------------------------------------------------------- BUG-138
+def test_bug138_carried_rows_never_move_a_free_cup_commands_lateral_part():
+    """BUG-138 (option 3, TKT-93): f0's lateral law is per release kind and K is shared. A Columns
+    Learner (free_cup rows at the +-62.5 mm Sites, with residual-memory support at the query) then
+    observes 600 oval rows (carried, x = -0.075, the measured oval law b_x +179 mm, s +1.23 per m,
+    plus b_y +30 mm). The free_cup command's LATERAL part, both the model command and the capped
+    Learner command, is bit-identical before and after (tolerance 0: the lateral part of f0^-1 and
+    of the free_cup residual never read K, so only leakage could move it). Its apex part may move,
+    by design, as K follows the carried rows. Pooled (before the fix) the free_cup offsets moved."""
+    rng = np.random.default_rng(31)
+    L = Learner()
+    for i in range(400):
+        sx = (-0.0625, 0.0625)[i % 2]
+        c = _ctx(sx)
+        u = np.array([rng.uniform(-0.02, 0.02), rng.uniform(-0.02, 0.02), rng.uniform(0.8, 1.2)])
+        assert L.observe(_exp(c, u, _plant(u, sx) + rng.normal(0, [0.02, 0.02, 0.01])))
+    q = [_ctx(sx) for sx in (-0.0625, 0.0625, 0.0)]
+    y_d = np.array([0.01, -0.02, 0.9])
+    cmd0 = [L.command(c, y_d) for c in q]
+    mod0 = [L.model_command(c, y_d) for c in q]
+    assert L.evidence(q[1])[1] > 0                          # the residual memory is in play
+    oval = _ctx(-0.075, kind='carried')
+    acc = 0
+    for _ in range(600):
+        u = np.array([rng.uniform(-0.02, 0.02), rng.uniform(-0.02, 0.02), rng.uniform(0.8, 1.2)])
+        y = np.array([u[0] + 0.179 + 1.23 * -0.075, u[1] + 0.030, 1.08 * u[2]])
+        acc += L.observe(_exp(oval, u, y + rng.normal(0, [0.02, 0.02, 0.01])))
+    assert acc > 500
+    for c, c0, m0 in zip(q, cmd0, mod0):
+        assert L.command(c, y_d)[:2].tolist() == c0[:2].tolist()
+        assert L.model_command(c, y_d)[:2].tolist() == m0[:2].tolist()
+    # ... while the carried kind learned its own (large) lateral law from its own rows
+    u_c = L.model_command(oval, y_d)
+    assert u_c[0] == pytest.approx(y_d[0] - (0.179 + 1.23 * -0.075), abs=0.012)
+    assert u_c[1] == pytest.approx(y_d[1] - 0.030, abs=0.008)
