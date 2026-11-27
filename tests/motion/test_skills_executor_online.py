@@ -1134,3 +1134,263 @@ def test_a_hop_catch_model_command_passes_its_real_check(probe):
     assert v.ok and v.margin >= 0.0, v
     np.testing.assert_allclose(chk.calls[0][1].landing_mm,
                                c.site.catch_site_mm(), atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# (5) JP-11 rotating Columns: stand-in rule (iv), the next Catch turned back
+# (`motion/skills/INVARIANTS.md` I-ADMIT-1;
+# logbook/2026-11-27-jp11-rotating-standin-rule.md)
+# ---------------------------------------------------------------------------
+
+_ROT_SEP = 125.0
+
+
+def _rot_sites(step, n):
+    p1, p2 = st.columns_sites(_ROT_SEP)
+    return st.rotating_sites((p2, p1), step, n)
+
+
+def _rot(deg):
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    return np.array([[c, -s], [s, c]])
+
+
+def _rot_catch(step, k, T, label=sc.COLUMNS_ROTATING, land_off_mm=(0.0, 0.0)):
+    """ONE rotating-Columns Catch k at S(k), its Throw to S(k+2), on the
+    probe-cell clock; the tracker's ball arrives along the chord from S(k-2)
+    (``land_off_mm`` displaces where it lands)."""
+    S = _rot_sites(step, k + 4)
+    site, tgt, src = S[k], S[k + 2], S[k - 2]
+    tau = sc.transit_s(T, cell_dwell())
+    tt = sc.ThenThrow(t_release_abs_s=tau + cell_dwell(),
+                      y_d=(np.zeros(2), _APEX), target=tgt)
+    sk = Skill(kind=sg.CATCH, ball_id=0, site=site, t_abs_s=tau,
+               window_s=0.25, then_throw=tt)
+    sch = Schedule(pattern=label, skills=(sk,), flight_s=T, beat_s=T,
+                   transit_s=tau, dwell_s=cell_dwell(), t0_abs_s=0.0)
+    v0 = bal.launch_velocity(src.throw_site_mm(), site.catch_site_mm(), T)
+    landing = ex.Landing(
+        pos_mm=site.catch_site_mm() + np.array([land_off_mm[0],
+                                                land_off_mm[1], 0.0]),
+        vel_mm_s=bal.arrival_velocity(v0, T), t_land_abs_s=tau,
+        from_fit=True)
+    return sch, landing, S
+
+
+def _rot_seed(probe, step, k, limits):
+    """The post-release state of a Throw from rest at S(k-1) aimed at
+    S(k+1): the probe cell's seeding convention (a launch at the partner
+    Site), turned with the stream."""
+    S = _rot_sites(step, k + 4)
+    term = sg.ThrowTerminal(site_mm=S[k - 1].throw_site_mm(),
+                            target_mm=S[k + 1].throw_site_mm(),
+                            flight_s=sc.flight_s(_APEX),
+                            t_release_s=probe.asw.SINGLE_SITE_LAUNCH_S)
+    seg = sg.plan_segment(sg.THROW,
+                          probe.asw.rest_state(S[k - 1].rest_site_mm()),
+                          term, sg.SegmentConfig(planner_mode='pose'),
+                          limits, StewartGeometry())
+    return seg.release_state
+
+
+class _SeedChecker(_RealChecker):
+    """:class:`_RealChecker` from an explicit seed."""
+
+    def __init__(self, seed, limits):
+        super().__init__(dataclasses.make_dataclass('C', [
+            'seed', 'cfg', 'limits', 'geom'])(
+                seed, sg.SegmentConfig(planner_mode='pose'), limits,
+                StewartGeometry()))
+
+
+def test_a_rotating_columns_throw_is_checked_on_the_next_catch_turned_back():
+    """10 deg per Beat, Catch 4 at R4@30 throwing to R6@50 (20 deg on): ONE
+    check, of THIS Catch's Segment (clock, arrival velocity) with the landing
+    at R4 + R(-20 deg) y_hat and the Throw aimed at R6 + R(-20 deg) u; the
+    command sent is u itself at the real target, and the log names the
+    rule. Before rule (iv) this Throw had no stand-in: no check at all."""
+    T = sc.flight_s(_APEX)
+    sch, landing, S = _rot_catch(10.0, 4, T)
+    assert (S[4].name, S[6].name) == ('R4@30', 'R6@50')
+    chk = _ScriptedChecker()
+    inst = _Installer()
+    u = np.array([0.010, 0.004, _APEX])
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: landing, checker=chk,
+                         learner=_Learner(u, bias_xy=(0.006, -0.002)))
+    lines = x.tick(sch.skills[0].dispatch_s())
+    assert len(chk.calls) == 1
+    standin = chk.calls[0][1]
+    back = _rot(-20.0)
+    y_hat_mm = np.array([16.0, 2.0])                 # u + bias
+    want = S[4].catch_site_mm()[:2] + back @ y_hat_mm
+    np.testing.assert_allclose(standin.landing_mm[:2], want, atol=1e-9)
+    assert standin.landing_mm[2] == pytest.approx(S[4].catch_site_mm()[2])
+    np.testing.assert_allclose(standin.then_throw.site_mm[:2], want,
+                               atol=1e-9)            # release rides it
+    np.testing.assert_allclose(              # same apex: zero fly-back
+        standin.then_throw.target_mm[:2],
+        S[6].catch_site_mm()[:2] + back @ np.array([10.0, 4.0]), atol=1e-9)
+    assert standin.t_land_s == landing.t_land_abs_s
+    np.testing.assert_allclose(standin.landing_vel_mm_s, landing.vel_mm_s)
+    then = inst.calls[0][1].then_throw
+    np.testing.assert_allclose(then.target_mm[:2] - S[6].catch_site_mm()[:2],
+                               [10.0, 4.0], atol=1e-9)
+    assert any('ADMISSIBILITY skill 0: rotating stand-in (R4@30 -> R6@50, '
+               'next Catch turned back 20.0 deg): u=(+10.0, +4.0) mm apex '
+               '0.950 passed m=0.500' in ln for ln in lines), lines
+
+
+def test_the_rotating_standin_clamps_at_the_target_before_the_turn():
+    """With a lateral authority, the predicted landing is clamped as the NEXT
+    Catch will clamp it (about R6 + y_d, along R6's outward unit, in the
+    Robot frame) and only then turned back: the across-axis clip is a
+    per-axis box, so clamping after the turn would be a different clamp."""
+    T = sc.flight_s(_APEX)
+    sch, landing, S = _rot_catch(20.0, 4, T)
+    chk = _ScriptedChecker()
+    inst = _Installer()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: landing, checker=chk,
+                         learner=_Learner([0.004, 0.006, _APEX],
+                                          bias_xy=(0.014, 0.012)),
+                         lateral_authority_m=0.010)
+    x.tick(sch.skills[0].dispatch_s())
+    assert len(chk.calls) == 1
+    sent = (inst.calls[0][1].then_throw.target_mm[:2]
+            - S[6].catch_site_mm()[:2])
+    y_hat = sent + np.array([14.0, 12.0])
+    out_t = x._outward_unit_at(S[6])
+    clipped = x._lateral_clip_mm(y_hat, out_t)[0]
+    theta = math.degrees(math.atan2(
+        S[4].cup_mm[0] * S[6].cup_mm[1] - S[4].cup_mm[1] * S[6].cup_mm[0],
+        float(np.dot(S[4].cup_mm[:2], S[6].cup_mm[:2]))))
+    assert theta == pytest.approx(40.0, abs=1e-9)
+    want = S[4].catch_site_mm()[:2] + _rot(-theta) @ clipped
+    np.testing.assert_allclose(chk.calls[0][1].landing_mm[:2], want,
+                               atol=1e-9)
+    after = x._lateral_clip_mm(_rot(-theta) @ y_hat, _rot(-theta) @ out_t)[0]
+    assert np.linalg.norm(_rot(-theta) @ clipped - after) > 0.5  # order bites
+
+
+def test_an_out_of_margin_rotating_command_is_stepped_back_not_refused_at_install(
+        probe):
+    """REAL planner, OLD point (350 mm/s legs), 10 deg per Beat, Catch 4:
+    the Learner's +30 mm radial command (outward at R6) is refused on the
+    rotated stand-in (LIMIT_VEL) and stepped back toward the model command.
+    The TRUE next Catch (Catch 6 at R6, seeded the same way, the ball landing
+    where the command sends it) is refused at 100 % by the install gate
+    for the as-commanded landing and planned for the stepped one: without
+    rule (iv) this command was installed as commanded (no check) and its
+    ball's next Catch would have ended the Attempt at install."""
+    limits = probe.asw.sitting_limits(*_OLD_LIMITS)
+    T = sc.flight_s(_APEX)
+    sch, landing, S = _rot_catch(10.0, 4, T)
+    rad = S[6].cup_mm[:2] / np.linalg.norm(S[6].cup_mm[:2])
+    chk = _SeedChecker(_rot_seed(probe, 10.0, 4, limits), limits)
+    inst = _Installer()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: landing, checker=chk,
+                         learner=_Learner([0.030 * rad[0], 0.030 * rad[1],
+                                           _APEX]))
+    lines = x.tick(sch.skills[0].dispatch_s())
+    assert not x.attempt_ended, x.end_message
+    verdicts = [c[4] for c in chk.calls]
+    assert verdicts[0].code == 'LIMIT_VEL' and not verdicts[0].ok
+    assert verdicts[1].ok and len(verdicts) in (2, 3)      # never a fourth
+    sent = (inst.calls[0][1].then_throw.target_mm[:2]
+            - S[6].catch_site_mm()[:2])
+    assert float(np.dot(sent, rad)) < 30.0 - 1.0, sent
+    assert any('rotating stand-in (R4@30 -> R6@50' in ln
+               and 'refused LIMIT_VEL' in ln for ln in lines), lines
+
+    def true_next_catch(off_mm):
+        sch6, land6, _S = _rot_catch(10.0, 6, T, land_off_mm=off_mm)
+        inst6 = _Installer()
+        ex.SkillExecutor(sch6, inst6, tracker=lambda b: land6).tick(
+            sch6.skills[0].dispatch_s())
+        return ex.check_segment(None, _rot_seed(probe, 10.0, 6, limits),
+                                sg.CATCH, inst6.calls[0][1], 0.0,
+                                cfg=sg.SegmentConfig(planner_mode='pose'),
+                                limits=limits, geom=StewartGeometry())
+
+    as_commanded = true_next_catch(30.0 * rad)
+    assert not as_commanded.planned and as_commanded.code == 'LIMIT_VEL'
+    assert true_next_catch(sent).planned
+
+
+@pytest.mark.parametrize('label', ['columns', sc.COLUMNS_HIGHLOW,
+                                   sc.CENTRE_ORBIT, sc.POLYGON_WALK, 'hop',
+                                   'oval'])
+def test_the_same_turned_geometry_under_any_other_label_keeps_rule_iii(
+        label, env_spy):
+    """Rule (iv) is the ``columns_rotating`` label's alone: the identical
+    S(k) -> S(k+2) fold under any other label stays envelope-only, line
+    for line, with no checker call (Centre and orbit and polygon included:
+    their stand-in is a separate decision)."""
+    T = sc.flight_s(_APEX)
+    sch, landing, S = _rot_catch(10.0, 4, T, label=label)
+    spy = env_spy()
+    chk = _ScriptedChecker()
+    inst = _Installer()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: landing, checker=chk,
+                         learner=_Learner([0.010, 0.0, _APEX]))
+    lines = x.tick(sch.skills[0].dispatch_s())
+    assert chk.calls == [] and len(spy.calls) == 1 and len(inst.calls) == 1
+    assert ('ADMISSIBILITY skill 0: no stand-in for a cross-site Throw '
+            '(R4@30 -> R6@50): envelope only') in lines, lines
+
+
+def _compiled(step, n):
+    p1, p2 = st.columns_sites(_ROT_SEP)
+    pat = sc.Pattern(sites=(p2, p1), apex_m=_APEX, dwell_s=cell_dwell(),
+                     n_throws=n, step_deg=step)
+    tm = sc.columns_ball_timing(pat.apex_for(0), pat.apex_for(1),
+                                pat.dwell_s)
+    feed = sc.LandingPrior(pos_mm=pat.sites[1].catch_site_mm(),
+                           vel_mm_s=np.array([0.0, 0.0, -4000.0]),
+                           t_land_abs_s=10.0 + tm.transits[1])
+    return sc.compile_columns(pat, feed=feed, hop_entry=True)
+
+
+@pytest.mark.parametrize('step', [None, 5.0, 10.0, 20.0])
+def test_every_compiled_rotating_throw_but_the_stop_gets_rule_iv(step):
+    """Over a compiled Attempt: every carried Throw of a rotating stream
+    (the Feed Catch at P1 included) is rule (iv) except the Stop
+    (S(n-1) -> S(n), 180 + step deg), which keeps rule (iii); plain Columns
+    (``step`` None) is rule (i) then the Stop's reflection (ii), unchanged."""
+    sch = _compiled(step, 8)
+    x = ex.SkillExecutor(sch, _Installer())
+    rules = [x._standin_rule(sk) for sk in sch.skills
+             if sk.kind == sg.CATCH and sk.then_throw is not None]
+    if step is None:
+        assert rules == ['same'] * 6 + ['reflect']
+    else:
+        assert rules == ['rotate'] * 6 + ['none']
+        assert ex.STANDIN_ROTATE_MAX_DEG == 2.0 * st.ROTATING_STEP_RANGE_DEG[1]
+
+
+@pytest.mark.parametrize('step,bound_deg', [(5.0, 2.5), (10.0, 5.0),
+                                            (20.0, 9.0)])
+def test_the_catch_clamp_outward_unit_is_near_radial_on_rotating_streams(
+        step, bound_deg):
+    """FINDING pin (JP-11 U3): ``_outward_unit_at`` (away from the MEAN of
+    every other Site in the Schedule) is not exactly radial on a rotating
+    stream, because a partial turn's Sites do not average to the origin.
+    Measured 2026-11-27 over n_throws 4 .. a full turn: worst 2.48 / 4.85 /
+    8.88 deg at 5 / 10 / 20 deg per Beat, all at the shortest Attempt
+    (n = 4); a full turn is within 1.6 deg (0.26 deg at the Rung gate's
+    10 deg x 38). The bound is about half the step."""
+    full = int(round(360.0 / step)) + 2
+    worst_full = 0.0
+    for n in (4, 5, 8, full):
+        sch = _compiled(step, n)
+        x = ex.SkillExecutor(sch, _Installer())
+        for sk in sch.skills:
+            if sk.kind != sg.CATCH:
+                continue
+            o = x._outward_unit_at(sk.site)
+            r = np.asarray(sk.site.cup_mm[:2], dtype=float)
+            ang = math.degrees(math.acos(min(1.0, float(
+                np.dot(o, r / np.linalg.norm(r))))))
+            assert ang <= bound_deg, (step, n, sk.site.name, ang)
+            if n == full:
+                worst_full = max(worst_full, ang)
+    assert worst_full <= 1.6, worst_full

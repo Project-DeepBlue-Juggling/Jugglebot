@@ -267,6 +267,44 @@ STANDIN_SYMMETRY_TOL_MM = 1.0
 _STANDIN_SAME = 'same'          # (i) the target is this Catch's own Site
 _STANDIN_REFLECT = 'reflect'    # (ii) point-symmetric hop: reflect
 _STANDIN_NONE = 'none'          # (iii) no faithful stand-in: envelope only
+_STANDIN_ROTATE = 'rotate'      # (iv) rotating Columns: rotate back (JP-11)
+
+#: Stand-in rule (iv) (JP-11 rotating Columns, ``schedule.COLUMNS_ROTATING``):
+#: the largest turn, about the platform origin, from a Catch's Site to its
+#: Throw's target Site that the rotated-back stand-in is used for
+#: (:func:`_standin_rotation_deg`). A rotating Throw leaves S(k) for S(k+2),
+#: two Beats of turn: 2 x the top of ``sites.ROTATING_STEP_RANGE_DEG``
+#: (20 deg per Beat) = 40 deg. The leg layout is evaluated this far from
+#: where the Segment flies; the hop's rule (ii) already accepts 180 deg of
+#: the same kind of inexactness. The Stop (S(n-1) -> S(n), 180 + step deg)
+#: is past it and keeps rule (iii).
+STANDIN_ROTATE_MAX_DEG = 40.0
+
+
+def _standin_rotation_deg(site, target) -> Optional[float]:
+    """Rule (iv)'s turn: the signed angle (deg, counter-clockwise about the
+    platform origin) from ``site``'s xy to ``target``'s xy, when both lie on
+    one circle about the origin (radii equal within
+    :data:`STANDIN_SYMMETRY_TOL_MM`, neither at it) and
+    ``0 < |angle| <= STANDIN_ROTATE_MAX_DEG``; else ``None``. Pure."""
+    a = np.asarray(site.cup_mm, dtype=float)[:2]
+    b = np.asarray(target.cup_mm, dtype=float)[:2]
+    ra, rb = float(np.hypot(a[0], a[1])), float(np.hypot(b[0], b[1]))
+    if not (math.isfinite(ra) and math.isfinite(rb)) \
+            or min(ra, rb) <= STANDIN_SYMMETRY_TOL_MM \
+            or abs(ra - rb) > STANDIN_SYMMETRY_TOL_MM:
+        return None
+    deg = math.degrees(math.atan2(float(a[0] * b[1] - a[1] * b[0]),
+                                  float(np.dot(a, b))))
+    if deg == 0.0 or abs(deg) > STANDIN_ROTATE_MAX_DEG + 1e-9:
+        return None
+    return deg
+
+
+def _rot2(deg: float) -> np.ndarray:
+    """The 2x2 counter-clockwise rotation by ``deg``. Pure."""
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    return np.array([[c, -s], [s, c]])
 
 #: The wire-read budget — :data:`LEAD_KNOTS`, :data:`LEAD_S`,
 #: :data:`WIRE_READ_KNOTS` (= :data:`WIRE_READ_BASE_KNOTS` +
@@ -3602,6 +3640,7 @@ class SkillExecutor:
           carried Throw aimed by ``u`` (a same-site fold releases from the
           stand-in landing xy, a carried fold from the release site) -- rule
           (i) of :meth:`_catch_standin`; the hop REFLECTS this Segment (ii),
+          a rotating Columns Throw ROTATES the next Catch back onto it (iv),
           and a cross-site Throw with no faithful stand-in is admitted on the
           envelope alone, with no checker call (iii, :meth:`_standin_rule`); (3)
           ``self.checker(CATCH, standin, t_abs_s, ball_id=...)``. A checker
@@ -3657,13 +3696,21 @@ class SkillExecutor:
             res = self._catch_resolution(idx, skill, landing, t_abs_s,
                                          release_mm, x, u_cand,
                                          u_model=u_model, ctx=ctx)
-        if self._standin_rule(skill) == _STANDIN_NONE:
+        rule = self._standin_rule(skill)
+        if rule == _STANDIN_NONE:
             line = ('ADMISSIBILITY skill %d: no stand-in for a cross-site '
                     'Throw (%s -> %s): envelope only'
                     % (idx, skill.site.name, tt.target.name))
             if res.how != 'candidate':
                 line += ' -- ' + self._admissibility_line(
                     idx, u_cand, res).split(': ', 1)[1]
+        elif rule == _STANDIN_ROTATE:
+            line = ('ADMISSIBILITY skill %d: rotating stand-in (%s -> %s, '
+                    'next Catch turned back %.1f deg): %s'
+                    % (idx, skill.site.name, tt.target.name,
+                       _standin_rotation_deg(skill.site, tt.target),
+                       self._admissibility_line(idx, u_cand, res)
+                       .split(': ', 1)[1]))
         else:
             line = self._admissibility_line(idx, u_cand, res)
         self._note_once(idx, 'ADMISSIBILITY', line)
@@ -3802,9 +3849,16 @@ class SkillExecutor:
         (ii) :data:`_STANDIN_REFLECT` -- a same-site fold whose Throw goes to
             the OTHER Site of a point-symmetric pair (the hop: release Site
             xy == -target Site xy within :data:`STANDIN_SYMMETRY_TOL_MM`).
+        (iv) :data:`_STANDIN_ROTATE` -- a ``columns_rotating`` Schedule's
+            same-site fold whose Throw goes to a Site on the same circle
+            about the platform origin, turned at most
+            :data:`STANDIN_ROTATE_MAX_DEG` (S(k) -> S(k+2),
+            :func:`_standin_rotation_deg`). Every other Pattern never reaches
+            this test.
         (iii) :data:`_STANDIN_NONE` -- anything else (asymmetric Sites, a
-            carried fold aimed off its catch Site): no faithful stand-in
-            exists from the streaming seed, so the envelope alone admits it.
+            carried fold aimed off its catch Site, a rotating Attempt's
+            Stop): no faithful stand-in exists from the streaming seed, so
+            the envelope alone admits it.
         """
         tt = skill.then_throw
         if tt.target.name == skill.site.name:
@@ -3815,6 +3869,10 @@ class SkillExecutor:
                     + np.asarray(tt.target.cup_mm, dtype=float)[:2])
             if float(np.max(np.abs(asym))) <= STANDIN_SYMMETRY_TOL_MM:
                 return _STANDIN_REFLECT
+            if (self.schedule.pattern == sch.COLUMNS_ROTATING
+                    and _standin_rotation_deg(rel_site, tt.target)
+                    is not None):
+                return _STANDIN_ROTATE
         return _STANDIN_NONE
 
     def _catch_standin(self, skill: Skill, landing: Landing, u,
@@ -3856,6 +3914,22 @@ class SkillExecutor:
             that flies keeps its 100 % install-time gate. It is the seeding
             convention the offline sweep and the probe already use for
             Columns (the partner's release at the mirrored Site).
+        (iv) rotating Columns (S(k) -> S(k+2), turned ``theta`` = 2 x the
+            step about the platform origin): the ball's next Catch is rule
+            (i) at the TARGET -- landing = target + ``y_hat_xy(u)``, clamped
+            about target + ``y_d`` along the TARGET's outward unit, its
+            Throw aimed by ``u`` (at S(k+4)) -- and that whole Segment turned
+            back by ``theta`` is THIS Segment's shape: its seed Site S(k+1)
+            maps to S(k-1), the one this Segment's seed really leaves, the
+            arrival chord S(k) -> S(k+2) to S(k-2) -> S(k), this Catch's own.
+            So ``landing_mm`` = this Site + R(-theta)(clamped landing -
+            target), the release riding it, the Throw aimed at the commanded
+            target with ``R(-theta) u_dy`` (same apex). Clamping before the
+            turn keeps the next Catch's own clamp exact (the across-axis clip
+            is a per-axis box, so it does not commute with a turn). Exact in
+            the platform frame; the leg layout is evaluated ``theta`` early
+            (<= :data:`STANDIN_ROTATE_MAX_DEG`), the inexactness (ii) accepts
+            at 180 deg.
         """
         tt = skill.then_throw
         rule = self._standin_rule(skill)
@@ -3885,6 +3959,16 @@ class SkillExecutor:
             clipped, _a, _o, _i = self._lateral_clip_mm(pos[:2] - centre_xy,
                                                         out_u)
             pos[:2] = centre_xy + clipped
+        if rule == _STANDIN_ROTATE:
+            # (iv): everything above is rule (i) at the TARGET Site in the
+            # Robot frame (the next Catch's own clamp, about its own outward
+            # unit); map it onto THIS Catch rigidly, turning offsets back by
+            # the Site-to-target angle (S(k+2) -> S(k), S(k+4) -> S(k+2)).
+            rot = _rot2(-_standin_rotation_deg(skill.site, tt.target))
+            site_pt = np.asarray(skill.site.catch_site_mm(), dtype=float)
+            d = pos - target_pt
+            pos = site_pt + np.array([*(rot @ d[:2]), d[2]])
+            aim_u = (rot @ u_xy, float(u[1]))
         if carried:
             s_release = np.asarray(rel_site.throw_site_mm(), dtype=float)
         else:
