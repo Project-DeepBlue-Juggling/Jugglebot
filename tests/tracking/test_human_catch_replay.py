@@ -144,3 +144,43 @@ def test_d10_xy_bar_is_35_mm_decided_2026_11_21():
     rows = [_row(0, 'PLANNED', dist=34.0, dt=5.0, xy=(0.0, 0.0)),
             _row(1, 'PLANNED', dist=36.0, dt=5.0, xy=(0.0, 0.0))]
     assert H.score_rows(rows, [])['n_d10_good'] == 1
+
+
+# -- transport delay (PWAY-11 P3 readiness, 2026-11-27) --------------------
+# The live `/human_throws` reached the bag recorder a median 43.8 ms after its frame stamp on
+# the 2026-11-27 lob bag; at 0 ms the replay plans from a revision no live node has yet.
+
+def _ev(stamp, rev=0):
+    return dict(track_id=1, flight_seq=0, revision=rev, stamp=stamp, landing=[0.0, 0.0, 830.0],
+                vel=[0.0, 0.0, -5000.0], t_land=stamp + 0.6, fit_age=0.0, final=False, k=0)
+
+
+def test_delay_events_moves_only_the_stamp():
+    evs = [_ev(10.0), _ev(10.04, rev=1)]
+    out = H.delay_events(evs, 0.044)
+    assert [e['stamp'] for e in out] == pytest.approx([10.044, 10.084])
+    assert [e['t_land'] for e in out] == [e['t_land'] for e in evs]     # the Fit is untouched
+    assert [e['fit_age'] for e in out] == [0.0, 0.0]
+    assert evs[0]['stamp'] == 10.0                                      # copies, input unchanged
+    with pytest.raises(ValueError):
+        H.delay_events(evs, -0.01)
+
+
+def test_transport_ms_reaches_the_run_and_names_the_report(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(H, 'load_frames', lambda *a: ([(0.0, [], [])], None))
+    monkeypatch.setattr(H, 'build_stream', lambda fr: dict(
+        events=[_ev(5.0)], truth=[dict(t_cross=5.6)], t0=0.0, span=1.0))
+
+    def fake_run_bag(S, *a):
+        seen['stamps'] = [e['stamp'] for e in S['events']]
+        return [], [], {}
+    monkeypatch.setattr(H, 'run_bag', fake_run_bag)
+    H.main([str(tmp_path / 'bag'), '--frame', 'hand', '--out-dir', str(tmp_path / 'o'),
+            '--transport-ms', '44'])
+    assert seen['stamps'] == pytest.approx([5.044])
+    rep = tmp_path / 'o' / 'bag_tr44ms_replay.md'
+    assert rep.exists()
+    assert 'transport delay 44.0 ms' in rep.read_text()
+    cached = pickle.load(open(tmp_path / 'o' / 'bag_stream.pkl', 'rb'))
+    assert cached['events'][0]['stamp'] == 5.0                          # the cache stays undelayed

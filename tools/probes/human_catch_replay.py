@@ -37,8 +37,16 @@ touch-down; a Catch whose planned Cup is within the capture radius and ``--time-
 of truth counts as CAUGHT, otherwise MISSED_CATCH; the cup then reads EMPTY after
 ``--hold-s``.
 
+Transport delay (``--transport-ms``, default 0): an event reaches the policy this long after its
+frame stamp.  At 0 the policy sees each revision at the instant of the Mocap frame that produced
+it, which no live node can.  On the 2026-11-27 bag the recorder received ``/human_throws`` a
+median 43.8 ms (p90 50.8) after ``header.stamp``, against 8.5 ms for ``/mocap_data``; at the plan
+window the policy then plans from a revision about that much older, and the Fit error there
+falls by roughly 1 to 2 mm per 10 ms of lead.  Pass the measured delay to score what the node
+would see.
+
 usage: python tools/probes/human_catch_replay.py BAG [--frames-pkl F] [--t-start HH:MM:SS
-          --t-end HH:MM:SS] [--frame hand|robot] [--sweep] [--out-dir DIR]
+          --t-end HH:MM:SS] [--frame hand|robot] [--sweep] [--transport-ms MS] [--out-dir DIR]
 """
 from __future__ import annotations
 
@@ -248,6 +256,16 @@ def build_stream(frames):
     return dict(events=events, truth=[{k: x[k] for k in keep} for x in th],
                 t0=float(frames[0][0]), span=float(frames[-1][0] - frames[0][0]),
                 rejections=dict(ems['default'].rejections))
+
+
+def delay_events(events, transport_s):
+    """Copies of ``events`` with ``stamp`` (the instant the policy first sees each revision)
+    moved ``transport_s`` later.  The Fit itself (``landing``, ``t_land``, ``fit_age``) is left
+    alone: the node receives the same revision, only later, and the policy reads no stamp."""
+    d = float(transport_s)
+    if not (np.isfinite(d) and d >= 0.0):
+        raise ValueError('transport delay must be finite and >= 0, got %r' % (transport_s,))
+    return [dict(e, stamp=float(e['stamp']) + d) for e in events]
 
 
 # ---------------------------------------------------------------------------
@@ -678,6 +696,9 @@ def main(argv=None):
     ap.add_argument('--sweep', action='store_true', help='run the one-at-a-time variants')
     ap.add_argument('--hold-s', type=float, default=1.0)
     ap.add_argument('--cap-mm', type=float, default=CAP_RADIUS_MM)
+    ap.add_argument('--transport-ms', type=float, default=0.0,
+                    help='delay from an event\'s frame stamp to the policy seeing it (0 = none; '
+                         'measured 44 ms median on the 2026-11-27 bag)')
     ap.add_argument('--out-dir', default=str(_REPO / 'temp' / 'probes' / 'p2'))
     a = ap.parse_args(argv)
     out = Path(a.out_dir)
@@ -701,6 +722,10 @@ def main(argv=None):
         S['wall0'] = frames_wall
         pickle.dump(S, open(cache, 'wb'))
     print('stream: %d events, %d truth Throws' % (len(S['events']), len(S['truth'])), flush=True)
+    # The cached stream stays undelayed (its name carries no delay); the shift is per run.
+    S = dict(S, events=delay_events(S['events'], a.transport_ms / 1000.0))
+    if a.transport_ms:
+        stem += '_tr%.0fms' % a.transport_ms     # never overwrite the zero-delay report
     robot = None
     if a.frame in ('robot', 'both'):
         robot = robot_frame_info(bag, S.get('wall0'))
@@ -709,6 +734,8 @@ def main(argv=None):
                   math.degrees(math.atan2(robot[0].R[1, 0], robot[0].R[0, 0])),
                   np.round(robot[0].t, 1), np.round(robot[1], 1), robot[2]), flush=True)
     lines = ['## %s' % bag.name, '',
+             'transport delay %.1f ms (events seen this long after their frame stamp)' % a.transport_ms,
+             '',
              '| variant | Throws (crossing) | planned (admitted) | planned Cup vs truth xy p50 / p90 | |dt| p50 / p90 | within %.0f mm and %.0f ms | D10 good / in reach | declined / refused by reason | re-aims | phantom streams |'
              % (a.cap_mm, 20.0), '|' + '---|' * 10]
     modes = ['hand', 'robot'] if a.frame == 'both' else [a.frame]
