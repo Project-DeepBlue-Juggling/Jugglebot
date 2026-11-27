@@ -25,7 +25,7 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 **Attached inbox items:**
 
-- bug: BUG-146 [Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-aimed-throw-from-a-level-rest-is-refused-hand-limit-c2-past.md) (inbox)
+- bug: BUG-146 [Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-aimed-throw-from-a-level-rest-is-refused-hand-limit-c2-past.md) (in_progress)
 
 ## Two-ball oval
 
@@ -263,7 +263,7 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | BUG-140 | bug | [Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-fresh-rest-rebases-outside-the-band-are-uncapped-up-to-1-0-s.md) | in_progress | medium | s | robot | decision | subsystem | skill-stack | — | filed 2026-11-25 |
 | BUG-142 | bug | [Hand park reports already parked on a Hand that is Idle on its bottom stop](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-park-reports-already-parked-on-a-hand-that-is-idle-on.md) | inbox | medium | xs | robot | hands | local | hand | — | filed 2026-11-25 |
 | BUG-144 | bug | [Juggle action feedback and status topics are in the bag record list but have never been recorded](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-juggle-action-feedback-and-status-topics-are-in-the-bag.md) | in_progress | medium | xs | robot | none | local | tests-tooling | — | filed 2026-11-25 |
-| BUG-146 | bug | [Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-aimed-throw-from-a-level-rest-is-refused-hand-limit-c2-past.md) | inbox | medium | s | robot | decision | subsystem | skill-stack | Human-partner juggling | filed 2026-11-26 |
+| BUG-146 | bug | [Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-aimed-throw-from-a-level-rest-is-refused-hand-limit-c2-past.md) | in_progress | medium | s | robot | none | subsystem | skill-stack | Human-partner juggling | filed 2026-11-26 |
 | FEAT-69 | feature | [can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-can-bridge-fw-53-a-leg-leaves-closed-loop-only-at-stow-i-fw.md) | in_progress | high | l | robot | hands | normative | can-bridge | — | filed 2026-11-26 |
 | FEAT-70 | feature | [can-bridge reports each Leg's measured Closed-loop engage time](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-can-bridge-reports-each-leg-s-measured-closed-loop-engage.md) | inbox | medium | s | none | none | subsystem | can-bridge | — | filed 2026-11-27 |
 | BUG-149 | bug | [CATCH install CPU grows about 1 ms per 100 record Knots through an Attempt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-catch-install-cpu-grows-about-1-ms-per-100-record-knots.md) | in_progress | medium | s | none | none | subsystem | skill-stack | — | filed 2026-11-27 |
