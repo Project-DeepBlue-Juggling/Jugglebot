@@ -1990,11 +1990,12 @@ def rebase_discontinuity(plan: CyclePlan, ref_pose, ref_twist,
 def rebase_slide_knots(t0_before_solve: float, t0_wire_s: float,
                        dt: float) -> int:
     """The whole knots a fresh REST's REBASE slides its origin: the fewest
-    ``k`` with ``t0_before_solve + k·dt >= t0_wire_s`` (``ceil`` with the
-    ``_ceil_to_grid`` 1e-9 guard, in knots, so an exact multiple stays put).
-    The ONE spelling of the REBASE's grid arithmetic (BUG-140), read by
-    :func:`_rebase_fresh_rest` for both seed branches; no cap (the band REST's
-    cap is :func:`band_rest_slide_refusal`, applied before this)."""
+    ``k`` with ``t0_before_solve + k·dt >= t0_wire_s`` (``ceil`` with a guard
+    of ``max(1e-9, 4·eps·|clock|/dt)`` knots, so an exact multiple stays put
+    at any clock magnitude).  The grid arithmetic of the non-band REBASE
+    (BUG-140), read by :func:`_rebase_fresh_rest` for both seed branches; the
+    band REST does not call it but passes its already-capped integer slide
+    (:func:`band_rest_slide_refusal` checked that very value).  No cap here."""
     gap_s = float(t0_wire_s) - float(t0_before_solve)
     # The guard is RELATIVE: the float error of `t0_wire_s - t0_before_solve`
     # is a few ulps of the clock magnitude (perf_counter grows with box
@@ -2021,8 +2022,9 @@ def _rebase_fresh_rest(seg, seed: uc.CycleState, t0_before_solve: float,
     The ORIGIN is the same for both seeds (BUG-140, owner answer to TKT-96:
     option 2, snap only, 2026-11-27): ``t0 = t0_before_solve + k·dt`` with
     ``k = ceil((t0_wire_s - t0_before_solve)/dt)``, the first knot of the
-    solve's own grid at or after ``t0_wire_s`` (to within the 1e-9 knot
-    guard), so not before the wire-read margin and never more than one knot
+    solve's own grid at or after ``t0_wire_s`` (to within the relative knot
+    guard of :func:`rebase_slide_knots`; the band REST passes its capped
+    integer slide instead), so not before the wire-read margin and never more than one knot
     after it.  On the live path
     ``t0_before_solve`` is the node's ``_snap_t0_to_grid(t_now)``, a node of
     the emitter's absolute knot grid, so the origin is on that grid and the

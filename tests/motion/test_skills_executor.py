@@ -8252,8 +8252,8 @@ def test_a_band_rest_at_a_large_clock_starts_exactly_the_slide_the_cap_checked(
     2026-11-28, ``ceil((e + k*dt - e)/dt - 1e-9)`` with the old absolute
     guard, anchors ``e`` = the clock value + a 0.0001237 s sweep): the
     rounding of ``e + k*dt`` at the clock magnitude exceeds 1e-9 knot, so the
-    recomputation returned ``k + 1`` for k = 7 at 1e6 s and 1e7 s (and 6, 11,
-    1, 2 there), and for k = 8 (the cap itself) at 3e6 s: a slide of 9 knots,
+    recomputation returned ``k + 1`` for k = 7 at 1e6 s and 1e7 s (and for
+    k = 1, 2, 6, 11 at 1e7 s), and for k = 8 (the cap itself) at 3e6 s: a slide of 9 knots,
     one past :data:`ex.BAND_REST_SLIDE_CAP_KNOTS`, after the cap check passed
     8.  (``(t0, k)`` = (1e6, 7), (3e6, 8), (1e7, 7) are exactly those.)  The
     origin must be the anchor + k·dt, never k + 1."""
