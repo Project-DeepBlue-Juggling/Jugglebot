@@ -87,5 +87,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- TKT-98 BUG-146: fix the Hand C2 artefact with spline knot rates, a fourth-order stencil, exact tilt rates, or leave it? (parent BUG-146)
 - TKT-99 BUG-140 held on night-shift/2026-11-27-BUG-140: apply the audit's 2 fixes before the Sitting, fly it as is, or drop it? (parent BUG-140)
