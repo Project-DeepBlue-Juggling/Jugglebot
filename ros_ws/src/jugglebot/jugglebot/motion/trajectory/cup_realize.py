@@ -1650,7 +1650,8 @@ def _knot_derivative(values: np.ndarray, dt: float) -> np.ndarray:
     return d
 
 
-def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
+def decompose(cup_plan, tilts, cfg=None, *,
+              seed_at_rest: bool = False) -> RealizedCycle:
     """Cup track + tilt schedule → per-knot platform pose and slider.
 
     The whole-series generalisation of ``sim/juggle_tilt.py::realize_tilted``.  Per
@@ -1685,6 +1686,23 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
     The slider rate is forced to zero at a saturated knot — the stroke clamp is a
     real wall, and pretending the hand still moves there would hand the wire a
     velocity the machine cannot follow.
+
+    **``seed_at_rest`` — knot 0 is the seed's own rate (I-PLAN-17, BUG-152).**
+    The finite-differenced terms above are a second-order ONE-SIDED stencil at
+    knot 0, which answers the knots after it, not the state the plan was seeded
+    from.  When the caller seeds the plan from REST (a fresh origin: the hop
+    entry's opening THROW, a reload or Feed THROW, a fresh REST), the seed's
+    rate is exactly zero, so ``seed_at_rest=True`` sets knot 0's tilt rate, the
+    cup-axis rate it drives (the ``arm·axis_dot`` term in the xy and slider
+    rates) and the z-float rate to zero: what is left at knot 0 is the cup
+    plan's own analytic velocity, which the QP seeded from the same rest.
+    MEASURED before the flag (2026-11-27, Sep. 125 / Apex 0.95 fed Columns):
+    the opening THROW's knot 0 carried x −1.1305 mm/s and ry −0.01803 rad/s
+    from the stencil over a 0, −0.0002, +0.00012 rad Banking start, and
+    ``CyclePlan.state_at(t <= 0)`` streamed it beside a held position, so the
+    firmware's Hermite rippled each Leg ±8.6 µm before the start time.  Only
+    knot 0 changes; every other knot, and every caller that passes nothing,
+    is bit-identical.
     """
     cfg = RealizeConfig() if cfg is None else cfg
 
@@ -1775,6 +1793,13 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
     axis_dot = _knot_derivative(axis, dt)                  # (n, 3)
     dz_dot = _knot_derivative(dz, dt)                      # (n,)
     tilt_dot = _knot_derivative(tilt_arr, dt)              # (n, 2)
+    if seed_at_rest:
+        # I-PLAN-17: knot 0 is the rest seed, whose rate is zero in every
+        # finite-differenced channel (see the docstring); the analytic cup
+        # terms below already carry the seed's own (zero) velocity.
+        axis_dot[0] = 0.0
+        dz_dot[0] = 0.0
+        tilt_dot[0] = 0.0
 
     # d(arm)/dt == d(cup_z_mm)/dt == vz_mm exactly (arm is cup_z minus a constant).
     shift_dot = vz_mm[:, None] * axis[:, :2] + arm[:, None] * axis_dot[:, :2]
