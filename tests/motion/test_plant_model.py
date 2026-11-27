@@ -229,7 +229,8 @@ def test_a_far_site_gets_no_axis0_correction_until_a_second_site_fixes_the_line(
 
 @pytest.mark.parametrize('n', [60, 150, 300, 1500])
 def test_bug137_a_long_single_site_memory_never_applies_an_offset_at_a_far_site(n):
-    """BUG-137: b is forgotten (lambda 0.99) and s is not, so in the forgetting filter's
+    """BUG-137: b is now a random walk (it was forgotten by lambda 0.99 before
+    BUG-139) and s is not forgotten, so in the forgetting filter's
     covariance I_ss keeps growing at one Site while I_bb saturates: s's sd fell from 0.24 (30 rows)
     to 0.096 (150) and 0.008 (1500) with no excitation, and from ~150 rows on an invented slope was
     applied at a far Site (orchestrator probe 2026-11-25, 10 seeds: 10/10 applied, -53..+60 mm
@@ -273,19 +274,112 @@ def test_bug137_after_a_long_single_site_memory_a_second_site_still_fixes_the_li
         assert 's' not in m.at_prior() and 'b_x' not in m.at_prior()
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    'BUG-137 residue, open: the guard is fixed but the forgetting filter VALUE of s is still '
-    'corrupted by the information its per-parameter forgetting manufactures during a long '
-    'single-Site run (sd_s 0.008 after 1500 rows), so when a second Site arrives s barely moves '
-    'and the far-Site line is off by up to ~25 mm after 60 second-Site rows and by ~50 mm after 1 to 5 '
-    'second-Site rows (probe 2026-11-25). '
-    'Fixing it changes the forgetting itself (e.g. process noise on b instead of P / sqrt(lam '
-    'lam)), which moves the probe pin: a design decision for the owner.'))
 def test_bug137_residue_the_slope_value_recovers_after_a_long_single_site_memory():
+    """BUG-137 residue, fixed by BUG-139 (2026-11-27; was ``xfail(strict=True)``, assertion
+    unchanged): with b forgotten by per-parameter lambda the VALUE of s was corrupted by the
+    information that forgetting manufactured during the single-Site run, and after 60 second-Site
+    rows the far-Site line was off by up to 27 mm (10 seeds, ``/tmp/probe_bug139.py``). With b a
+    random walk it is off by at most 6.4 mm over the same 10 seeds."""
     for seed in range(6):
         m = _one_site(seed, 1500)
         _second_site(m, 60, 100 + seed)
         assert m.offset_x(0.125)[0] == pytest.approx(0.018 - 0.09 * 0.125, abs=0.012)
+
+
+def test_bug139_the_slope_after_a_second_site_does_not_depend_on_the_single_site_length():
+    """BUG-139: what a second Site teaches about s must not depend on how long the Memory sat at
+    the first one (no information about s was received there, so none may be credited). 300 vs
+    1500 single-Site rows, then the same 60 second-Site rows: the far-Site offset differs by under
+    4 mm per seed and s's VALUE is within 0.06 /m of the truth (the residue test's 12 mm at
+    x = +0.125 over the 0.2 m lever from the first Site). Measured 2026-11-27 on seeds 0-5: new
+    <= 1.5 mm apart, s within 0.03 /m; old 0.2-22 mm apart (seed 2: +2.9 vs +24.9 mm)."""
+    for seed in range(6):
+        far, s = [], []
+        for n in (300, 1500):
+            m = _one_site(seed, n)
+            _second_site(m, 60, 100 + seed)
+            far.append(m.offset_x(0.125)[0])
+            s.append(m.raw()[3])
+        assert abs(far[1] - far[0]) < 0.004, (seed, far)
+        assert s[1] == pytest.approx(-0.09, abs=0.06), (seed, s)
+
+
+@pytest.mark.parametrize('n', [150, 1500])
+def test_bug139_forgetting_never_holds_more_information_than_the_rows_gave(n):
+    """The class invariant behind BUG-137 and BUG-139: forgetting may only REMOVE information, so
+    the forgetting filter's covariance is never below the unforgotten one in PSD order
+    (P - P_unforgotten >= 0), on every filter, and in particular s's sd is never below what the
+    rows determine. Old per-parameter lambda broke it after ~150 single-Site rows (s's sd 0.096 at
+    150 rows, 0.008 at 1500, against an unforgotten ~0.24). The invariant holds inside EACH
+    release kind's lateral pair (BUG-138 x BUG-139, merged 2026-11-27): the carried kind gets its
+    own single-Site stretch at its own law."""
+    for seed in range(3):
+        m = _one_site(seed, n)
+        rng = np.random.default_rng(900 + seed)
+        for _ in range(n):
+            u = _cmd(rng)
+            y = np.array([u[0] + 0.179 - 1.23 * 0.075, u[1] + 0.004, 1.08 * u[2]]) \
+                + rng.normal(0, [0.020, 0.020, 0.010])
+            m.observe(u, y, -0.075, 0, 'carried')
+        assert m._lat['carried'].n_accepted > 0.9 * n
+        filters = [m._fa] + [f for lat in m._lat.values() for f in (lat.fx, lat.fy)]
+        for f in filters:
+            assert np.linalg.eigvalsh(f.P - f.P_unforgotten).min() >= -1e-15
+        for name in ('s', 's@carried'):
+            i = m.param_names.index(name)
+            assert m.sd()[i] >= m.sd_unforgotten()[i] - 1e-15
+
+
+def test_bug139_a_lambda_on_a_multi_parameter_filter_is_refused():
+    """The per-parameter lambda that manufactured information cannot come back by construction:
+    the filter takes lambda only when it has one parameter (K), process noise q otherwise."""
+    from jugglebot.motion.skills.plant_model import _Filter
+    _Filter([1.0], [0.1], 1e-4, lam=0.99)
+    _Filter([0.0, 0.0], [0.03, 0.3], 4e-4, q=[4e-8, 0.0])
+    with pytest.raises(ValueError, match='1-parameter'):
+        _Filter([0.0, 0.0], [0.03, 0.3], 4e-4, lam=0.99)
+
+
+def test_bug139_q_is_derived_from_lambda_and_can_be_overridden():
+    cfg = PlantModelConfig()
+    assert cfg.q_b_m2 == pytest.approx((1 - 0.99) ** 2 * 0.020 ** 2 / 0.99, rel=1e-12)
+    assert PlantModelConfig(forgetting=1.0).q_b_m2 == 0.0
+    assert PlantModelConfig(process_noise_b_m2=1e-7).q_b_m2 == 1e-7
+    for bad in (-1e-9, float('nan'), float('inf'), True, '1e-8'):
+        with pytest.raises(ValueError, match='process_noise_b_m2'):
+            PlantModelConfig(process_noise_b_m2=bad)
+
+
+@pytest.mark.parametrize('axis', [0, 1])
+def test_bug139_b_tracks_a_step_at_the_rate_lambda_gave(axis):
+    """The random walk forgets b at lambda's rate: q = (1 - lam)^2 R / lam is the q whose steady
+    gain is 1 - lam (``PlantModelConfig.q_b_m2``), an exponential memory of 1 / (1 - lam) = 100
+    rows. After 600 two-Site rows a +20 mm step in b: the 10-seed mean estimate covers 63 % of the
+    step in 100 rows +- a factor 1.5 (measured 2026-11-27: 101 rows on axis 0 and 99 on axis 1, the
+    same as the old lambda's 101 / 99, ``/tmp/probe_bug139.py``), and b_y's steady posterior variance
+    is (1 - lam) R within 5 %."""
+    step = np.array([0.020, 0.0] if axis == 0 else [0.0, 0.020])
+    curves = []
+    for seed in range(10):
+        rng = np.random.default_rng(500 + seed)
+        m = PlantModel()
+        for i in range(600):
+            sx = (-0.075, 0.075)[i % 2]
+            u = _cmd(rng)
+            m.observe(u, _plant((1.08, 0.010, 0.012, -0.09), u, sx, 0) + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0)
+        if axis == 1:
+            assert m.sd()[2] ** 2 == pytest.approx(0.01 * 0.020 ** 2, rel=0.05)
+        c = []
+        for i in range(250):
+            sx = (-0.075, 0.075)[i % 2]
+            u = _cmd(rng)
+            y = _plant((1.08, 0.010, 0.012, -0.09), u, sx, 0) + np.append(step, 0.0)
+            m.observe(u, y + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0)
+            c.append(m.raw()[1] - 0.010 if axis == 0 else m.raw()[2] - 0.012)
+        curves.append(c)
+    mean = np.mean(curves, axis=0)
+    n63 = int(np.argmax(mean >= 0.632 * 0.020)) + 1
+    assert mean.max() >= 0.632 * 0.020 and 67 <= n63 <= 150, n63
 
 
 def test_bug137_unforgotten_covariance_is_the_lambda_one_filter_and_rejected_rows_leave_it_alone():
@@ -420,16 +514,23 @@ def test_the_summary_names_the_parameters_still_at_their_prior():
 
 # --------------------------------------------------------------------------- production vs probe
 # PlantModel.theta() after the first 400 corpus rows (generated 2026-11-06; recipe at the top).
-PIN_THETA_OFFSETS = [1.079487609514168, 0.00701510259549045, 0.00765143243009404,
-                     -0.11448831811970676, 0.04233194336535344, 0.05126206317651464]
-PIN_THETA_DEFAULT = [1.079487609514168, 0.01005758462615316, 0.01115381863081433,
-                     -0.13023172853598408]
+# Re-pinned 2026-11-27 for BUG-139 (b forgotten by a random walk, the probe's '+pn'): K and the
+# rejected rows are unchanged; b and Delta moved by <= 0.26 mm and s by 0.0083 per m (offsets
+# model), b by <= 0.35 mm and s by 0.0008 per m (default). Was: OFFSETS [1.079487609514168,
+# 0.00701510259549045, 0.00765143243009404, -0.11448831811970676, 0.04233194336535344,
+# 0.05126206317651464], DEFAULT [1.079487609514168, 0.01005758462615316, 0.01115381863081433,
+# -0.13023172853598408]. Generated by ``/tmp/probe_bug139_pin.py`` (the body of this test, printing).
+PIN_THETA_OFFSETS = [1.079487609514168, 0.007032853070803385, 0.007635110614636432,
+                     -0.10616568732048332, 0.04258676484666085, 0.05122841883854835]
+PIN_THETA_DEFAULT = [1.079487609514168, 0.010403155186884177, 0.01113536814774612,
+                     -0.12942244913900142]
 PIN_REJECTED = [0, 55, 57, 72, 73, 114, 122, 180, 330, 333, 364, 396]
 
 
 def test_pin_production_equals_the_probe_prototype_on_400_corpus_rows(monkeypatch):
     """The settings under which the design's rule and the probe prototype coincide: the probe's
-    'mband+struct' rule (model-relative band; s and Delta unforgotten), lambda 0.99, unbounded P,
+    'mband+struct+pn' rule (model-relative band; s and Delta unforgotten; b forgotten by the
+    random walk q = (1 - lambda)^2 R / lambda, BUG-139), lambda 0.99 on K, unbounded P,
     with the probe's forgetting on REJECTED rows disabled (the design forgets per accepted row
     only), and ``ball_offsets=True`` (the probe always fits Delta). The design's apex band
     max(0.09 K, 3 sd_K) equals the probe's fixed 9 % once K's sd is under 0.03 K, i.e. from the
@@ -443,7 +544,7 @@ def test_pin_production_equals_the_probe_prototype_on_400_corpus_rows(monkeypatc
     d['ball1'] = (d.ball_id == 1).astype(float)
     d['inlier'] = probe.mr.inlier_mask(d).values
     monkeypatch.setattr(probe.Filt, 'forget_only', lambda self: None)
-    hist, _sd, raw, acc, _nz = probe.run_rls(d, 0.99, False, 'mband+struct')
+    hist, _sd, raw, acc, _nz = probe.run_rls(d, 0.99, False, 'mband+struct+pn')
     U = d[['u0', 'u1', 'u2_apex_m']].values
     Y = d[['y0', 'y1', 'y2_apex_m']].values
     models = (PlantModel(PlantModelConfig(ball_offsets=True)), PlantModel())

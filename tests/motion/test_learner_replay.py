@@ -14,6 +14,8 @@ Recipe (2026-11-06, Jetson, worktree Jugglebot-p3):
  -> 3276 rows, 3233 inliers, cold start (9 first appearances with earlier accepted data) apex
     74.5 mm identity vs 12.9 mm production, steady state 19.8 / 19.5 / 13.9 mm RMS, 0.49 % of
     inliers at the lateral cap, model accepted 99.1 %, K 1.0792; 8.8 s.
+    Re-run 2026-11-27 for BUG-139 (b forgotten by a random walk): identical except 0.53 % at the
+    cap (the same command, worktree BUG-139; 29.0 s on a loaded box).
     OPENBLAS_NUM_THREADS=1 python -m pytest tests/motion/test_learner_replay.py -q \
         -p no:cacheprovider -m nightly   (2026-11-06: see the unit report for the result).
 
@@ -107,6 +109,9 @@ def test_headline_values_are_pinned(replay):
     c = h['cold_start_with_earlier_accepted']
     assert c['production']['apex_mean_abs_mm'] == pytest.approx(12.9, abs=2.0)
     assert c['identity']['apex_mean_abs_mm'] == pytest.approx(74.5, abs=2.0)
-    assert 100 * h['share_at_cap_inliers'] == pytest.approx(0.49, abs=0.5)
+    # Re-pinned 2026-11-27 for BUG-139 (b forgotten by a random walk, not lambda): 0.49 -> 0.53 %.
+    # Every other headline is unchanged at the printed precision (steady 19.8 / 19.5 / 13.9 mm,
+    # cold-start apex 12.9 / 74.5 mm, 3244 accepted, K 1.0792); s at the end -0.0738 -> -0.0828 /m.
+    assert 100 * h['share_at_cap_inliers'] == pytest.approx(0.53, abs=0.5)
     assert h['model_accepted'] == pytest.approx(3244, abs=15)
     assert h['K'] == pytest.approx(1.0792, abs=0.003)

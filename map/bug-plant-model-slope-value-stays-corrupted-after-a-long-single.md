@@ -17,6 +17,7 @@ area: learner
 blocked_by: []
 links:
 - bug-learner-far-site-guard-fails-on-long-single-site-memories
+- logbook/2026-11-27-plant-model-process-noise-on-b.md
 parent: learner-generalisation
 filed_by: claude
 ---
