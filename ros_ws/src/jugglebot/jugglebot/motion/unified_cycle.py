@@ -3291,7 +3291,8 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
     # Re-measure the twins on the JOINT clock: a release that had no
     # deceleration inside its own window has one now.
     # BUG-149: only the marks whose measurement can READ a knot at or beyond the
-    # seam are re-measured (`_remeasure_marks`); every other head mark keeps the
+    # seam are re-measured (`_release_twin_needs_remeasure`,
+    # `_catch_twin_needs_remeasure`); every other head mark keeps the
     # value it already carries, so the install's cost is flat in the chain depth.
     n_head_rel, n_head_cat = len(meta_a.releases), len(meta_a.catches)
     releases = tuple(

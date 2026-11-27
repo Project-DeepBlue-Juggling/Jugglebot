@@ -137,7 +137,8 @@ def test_the_streamed_head_is_bit_identical_below_the_seam(chain):
 def test_twin_measurements_per_splice_do_not_grow_with_record_length(chain):
     """(b) Scaling: counted calls of ``plan_stroke_clear_s`` + ``plan_arm_lead_s``
     during one install.  Before the fix this was one per mark of the whole
-    record (~2 per install of depth: 4, 6, ... 30); now it is the new
+    record (~2 per install of depth; the logbook's fail-before run measured
+    9, 11, 13, 15, 17, 19, ... with a max of 35); now it is the new
     segment's own marks plus the few head marks near the seam."""
     totals = [s + a for _o, _n, s, a in chain]
     deep = chain[-1][1].plan.n_knots
