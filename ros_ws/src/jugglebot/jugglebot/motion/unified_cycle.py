@@ -2794,7 +2794,10 @@ def _seam_velocity(cup_joined, tilts_joined, k_s: int, limits):
     path re-decomposed the joint cup+tilt series and took knot ``k_s`` from it.
     Same quantity here, over a 3-knot
     window: ``_knot_derivative`` is central at the middle knot of three, so the
-    middle knot of ``[k_s−1, k_s, k_s+1]`` is bit-for-bit the full-series value,
+    middle knot of ``[k_s−1, k_s, k_s+1]`` is bit-for-bit the full-series value
+    (Hand channel excepted since BUG-146: its interior rate is the whole-series
+    clamped spline, which this window matches to about 1e-6 rev/s; the pose
+    channels are still bit-for-bit),
     and the cost is one ``decompose`` over three knots instead of over the plan.
 
     **Only a TRUNCATED head is stale, and that is why this is not applied to a

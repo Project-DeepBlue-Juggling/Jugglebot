@@ -8,6 +8,7 @@ related_issues: [BUG-146, TKT-98]
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cup_realize.py
   - tests/motion/test_hand_drop_rate_c2.py
+  - tests/motion/test_unified_cycle_splice.py
 ---
 
 # Hand drop-term knot rates from a clamped spline (BUG-146)
@@ -20,9 +21,13 @@ files_changed:
 
 **Why option 1 over the alternatives.** The five-point stencil (option 2) cuts the jump only about 3.6× and still fails near the 12 deg cap. Exact tilt-rate derivatives (option 3) leave 0.16 to 0.24 rev/s² and need `tilt_schedule` to return derivatives. Option 1 gives an exact zero inside a window for about 30 lines.
 
-**Control walk-through.** At an interior knot the Hand's Hermite acceleration is now continuous, so the torque feedforward `τ = K·J·2π·a_cmd` has no step there. The rate change is at most 0.0094 rev/s at 6 deg and 0.021 at 9 deg (`dv` column), against Hand rates of several rev/s. The position change between knots is under dt·δv/4 ≈ 6e-5 rev. At a seam (knot 0, a splice or extend seed under I-PLAN-11, and the last knot, a rest or release seam) the rate is the old value exactly. `HELD_SLEW_LANDS_BEFORE_RELEASE_KNOTS` keeps its meaning because the release knot's own rate is a pinned end.
+**Control walk-through.** At an interior knot the Hand's Hermite acceleration is now continuous, so the torque feedforward `τ = K·J·2π·a_cmd` has no step there. The rate change is at most 0.0094 rev/s at 6 deg and 0.021 at 9 deg (`dv` column of an uncommitted probe, `/tmp/probe_bug146b.py`, which was not preserved; the numbers are from its run on 2026-11-28), against Hand rates of several rev/s. The position change between knots is under dt·δv/4 ≈ 6e-5 rev. At a seam (knot 0, a splice or extend seed under I-PLAN-11, and the last knot, a rest or release seam) the rate is the old value exactly. `HELD_SLEW_LANDS_BEFORE_RELEASE_KNOTS` keeps its meaning because the release knot's own rate is a pinned end.
 
 **What is left.** The joined LAUNCH + SETTLE plan keeps one residual at the knot after the release (a pure extend): 0.21 / 0.87 / 1.32 / 2.29 / 3.11 rev/s² at 3 / 6 / 6.82 / 9 / 10.5 deg (Apex 1.5 m, window 0.4 s, 45 deg: 3.97 at 10.5 deg, refused `LIMIT_JERK` there first; 12 deg is `TILT_PIN`). This is 80 × the mismatch between the two windows' one-sided end rates at the release knot. The mismatch was there before the change, partly hidden under the interior steps (pre-fix joined peaks 1.04 / 4.17 / 5.38 / 9.34 / 12.7 rev/s²), and the clamps keep it on purpose. Closing it means seeding the SETTLE window's knot-0 drop rate with the LAUNCH window's last rate. That touches the extend seam in `unified_cycle`, so it is a follow-up and not part of this change. Also a follow-up and **out of scope**: the same finite-difference class in the Platform channels (`shift_dot`, `tilt_dot`, `dz_dot`), which feeds Leg jerk.
+
+Extrapolation: the joined-plan residual at release+1 scales as about 0.023 to 0.028 × tilt² (0.21 / 0.87 / 1.32 / 2.29 / 3.11 rev/s² at 3 / 6 / 6.82 / 9 / 10.5 deg), so about 3.3 to 4.1 rev/s² at the 12 deg `TILT_PIN` cap against the 4.5 gate. The joined-plan test bound 0.04 × tilt² is 1.5 to 1.9× looser than measured.
+
+The audit left one finding open: there is no direct unit test of `_clamped_spline_rates` at n = 0..5 against a dense reference solve. The branch is held for that and for its Sitting.
 
 **Tests.** New `tests/motion/test_hand_drop_rate_c2.py`: the 6.82 deg case is accepted; each realised window's Hand C2 is below 1e-6 rev/s² at 3 / 6 / 9 deg, and the joined plan is below 0.04·θ²; knot-0 and last-knot rates match the old formula to 1e-12 and positions are bitwise equal, with an interior spline relation on the drop channel; a saturated knot still reports a zero rate; a level plan never solves the spline and keeps its rates element for element.
 
