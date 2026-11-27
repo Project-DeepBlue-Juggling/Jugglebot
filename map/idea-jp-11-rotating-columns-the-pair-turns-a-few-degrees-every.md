@@ -16,9 +16,9 @@ blocked_by: []
 links: []
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 parent: pattern-progression-columns-to-centre-and-orbit
-night_skip: low-priority
-night_skip_on: '2026-11-22'
-night_skip_note: Feasibility is in the body; robot, owner hands.
+night_skip: owner-session
+night_skip_on: '2026-11-28'
+night_skip_note: The 2026-11-27 day Session proposed a four-unit build for you to decide; BUG-152 blocks its sim gate.
 ---
 
 Columns whose Site pair rotates about +z continuously. Pose-only.

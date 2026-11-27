@@ -20,8 +20,8 @@ links:
 - logbook/2026-11-20-sitting-debrief.md
 filed_by: jugglebot-b1
 night_skip: sitting
-night_skip_on: '2026-11-22'
-night_skip_note: One more trapped-Ball stall 2026-11-20; the live warning it needs is FEAT-50, held for a Sitting.
+night_skip_on: '2026-11-28'
+night_skip_note: One stall confirmed on 2026-11-27; you chose no automatic response. The slow next launch is unconfirmed until another stall is recorded.
 ---
 
 Four times in the captures, the Hand stopped dead mid-dive and pressed down at the 70 A clamp for about 100 ms, with no fault. The owner believes a Ball was stuck under the Hand at the 2026-11-07 event, though not with certainty. For the three stalls of 2026-11-13 the cause is confirmed (see Progress): a Ball trapped under the Hand, seen in raw mocap markers and in the replay. The four earlier events remain unmeasured.

@@ -16,9 +16,9 @@ area: firmware
 blocked_by: []
 links: []
 filed_by: claude
-night_skip: sitting
-night_skip_on: '2026-11-27'
-night_skip_note: FW 52 flashed with D1 to D5 and row 2 accepted; open until a powered Sitting confirms nothing regressed.
+night_skip: owner-session
+night_skip_on: '2026-11-28'
+night_skip_note: The 2026-11-27 powered Sitting on FW 53 met its open condition (nothing regressed); closing it is yours.
 ---
 
 Four can-bridge firmware paths the 2026-11-13 maintainer review (Opus read of the firmware) reported as accepting a discontinuity or lacking an interlock. None was re-read by the coordinating Session, so each needs confirming before any change. All are on rare paths.

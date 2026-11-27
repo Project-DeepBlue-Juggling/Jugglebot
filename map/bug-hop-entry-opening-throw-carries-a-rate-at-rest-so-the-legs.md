@@ -17,6 +17,10 @@ blocked_by: []
 links: []
 parent: pattern-progression-columns-to-centre-and-orbit
 filed_by: claude
+night_skip: input-decision
+night_skip_on: '2026-11-28'
+night_skip_note: Builds the fix you choose with a Hop-entry Leg mirror test and a Sitting section, then holds it for a Sitting.
+night_skip_input: 'Pick 1-3 in TKT-101: seed the Hop entry''s first-Knot rate from rest, fly JP-11 with it open, or fix the whole Platform rate class after BUG-146.'
 ---
 
 Found 2026-11-27 while gating JP-11 rotating Columns (IDEA-12) in the sim.

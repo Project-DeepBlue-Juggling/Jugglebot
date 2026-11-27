@@ -18,10 +18,6 @@ blocked_by: []
 links: []
 parent: human-partner-juggling
 filed_by: claude
-night_skip: input-decision
-night_skip_on: '2026-11-27'
-night_skip_note: Builds the fix you choose with a C2 test and a splice-seam test, writes its Sitting section, then holds it for a Sitting.
-night_skip_input: 'Pick option 1-4 in TKT-98: spline knot rates for the drop term, a fourth-order stencil, exact tilt rates, or leave the reach capped near 6.2 deg.'
 ---
 
 An aimed THROW from a level rest is refused `HAND_LIMIT_C2` once the release tilt passes about 6.3 to 6.9 deg. Found 2026-11-26 by the PWAY-11 P4 design sweep (`executor.check_segment`, the context of `tools/probes/human_catch_reach.py`).
