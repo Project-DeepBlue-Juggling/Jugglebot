@@ -2,9 +2,9 @@
 id: TKT-98
 kind: ticket
 title: 'BUG-146: fix the Hand C2 artefact with spline knot rates, a fourth-order stencil, exact tilt rates, or leave it?'
-status: open
+status: complete
 created: '2026-11-27'
-updated: '2026-11-26T15:59:02Z'
+updated: '2026-11-27T00:14:44Z'
 owners: []
 priority: medium
 effort: xs
@@ -32,3 +32,7 @@ BUG-146: an aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.
 1, 2 or 3: the next night builds it on a branch, with the C2 test and a splice-seam test, writes the Sitting section, and holds it for a Sitting. 4: the Item is closed as accepted and the reach table stands for PWAY-11.
 
 Recommendation: 1, because it removes the artefact at its source and leaves every Hand position unchanged.
+
+## Answer
+
+Agreed. Go Option 1
