@@ -4,7 +4,7 @@ kind: bug
 title: Hand stalls at the 70 A clamp mid-dive, probably on a Ball under the Cup, and the next launch comes up slow
 status: inbox
 created: '2026-11-07'
-updated: '2026-11-20T04:13:10Z'
+updated: '2026-11-27T04:12:05Z'
 owners: []
 priority: medium
 effort: m
@@ -53,3 +53,4 @@ Sources: `~/.ros/log/2026-11-07-16-15-21-645789-jetson-2503132/launch.log`, `tem
 - 2026-11-13: The 13:15:22 one latched the Hand MAX_DEVIATION guard and self-recovered in 7.2 s. Found with tools/trapped_ball_finder.py; the Tracker-only read had missed it (it drops a Ball after it jostles on the Platform).
 - 2026-11-18: 2026-11-18 debrief: no Hand stall at the current clamp in any of the five bags (trapped_ball_finder on all five); no event today, which is no evidence either way.
 - 2026-11-20: Sitting of 2026-11-20: one new instance, launch 2 13:52:36.69, Hand at 2.08 rev, 72.3 A for 0.09 s with a trapped marker coinciding (temp/logs/trapped_2026-11-20_13-48-32.txt). Launch 1's scan sees no trapped marker at any stall (cannot see).
+- 2026-11-27: Confirmed for one event, Sitting 2026-11-27 14:04:14: a missed Columns Ball rolled under the Hand and the Hand stalled on it at 72.6 A peak (pos 1.27 against cmd 0.07 rev); trapped_ball_finder matches the marker to that Ball. The live warning (FEAT-50) fired at 14:04:13.971, 0.16 s before the stall, and nothing acts on it.

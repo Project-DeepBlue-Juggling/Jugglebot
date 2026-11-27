@@ -4,7 +4,7 @@ kind: idea
 title: JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-26T01:17:25Z'
+updated: '2026-11-27T04:11:10Z'
 owners: []
 priority: medium
 effort: xl
@@ -130,6 +130,11 @@ Not checked: a replay on the candidate Tracker, a replay with a lowered floor, w
   - Started at 12:52 and finished at 12:56. I wasn't keeping track of how many throws I made, but I think it was around 40-50. Only the very first throw landed in the cup. After that one, I realised it would be difficult for me to reliably throw into the cup, so I caught the rest by hand, near where the cup usually sits (though I dropped a few) (sheet 2026-11-20-robot, step 7) [derived:
   - temp/probes/human_catch_2026-11-20/2026-11-20_12-49-25_replay.md (bag 2026-11-20_12-49-25, 12:52-12:57): the replay ran and reported 55 lobs, 49 crossing the Catch plane, 23 inside the Cup's reach, 16 of those with an admitted plan; planned Cup centre to real crossing median 30.5 mm, worst 52.0 mm. Derived as data, not pass: this is the plan's data row, and most Balls were caught by hand above the Cup, which the replay does not model.]
 
+## Sitting result (2026-11-27 15:08)
+
+- verdict: pass
+- notes: Threw approximately 35 lobs (sheet 2026-11-27-robot, step 11) [derived: Bag ~/Desktop/rosbags/2026-11-27_13-49-34 replayed through human_catch_replay.py (13:50:30 to 13:54:30): 33 lobs, 26 crossed the Catch plane, 12 inside reach, 9 of those with an admitted plan; planned Cup centre to real crossing median 28 mm, p90 48 mm over the 14 planned lobs.]
+
 ## Progress
 
 - 2026-11-03: Human-throw bench landed: two human-only Sittings scored, owner decisions recorded, data Sitting section written (detail below)
@@ -144,3 +149,4 @@ Not checked: a replay on the candidate Tracker, a replay with a lowered floor, w
 - 2026-11-21: Same sweep: the 30 mm median error is the Fit's convergence at 0.62 s of lead (39/30/22/15 mm at 0.70/0.62/0.55/0.45 s); the gate admits plans only at 0.55-0.62 s. D10 good of 23: 8 at 30 mm, 10 at 35, 13 at 40. The 80 % target (19) is out of reach while 7 in-reach lobs get no plan.
 - 2026-11-21: 2026-11-21: owner ruled the defaults: clear 0.3 s, return 1.0 s, plan window 0.62 s, first lead 0.55 s, fixed wait Site, D10 bar 35 mm. On the 2026-11-20 lobs these plan 21 and score 13 good of 23 in reach. Other D2-D11 parameters stay proposed.
 - 2026-11-26: the untraced 250 to 300 mm aimed-Throw reach is reproduced at Apex 1.5 m (250 mm, refused at 300); 400 mm at 1.8 m, 550 mm at 2.1 m, the same in all directions. The Hand C2 check binds past about 6.3 deg of release tilt, not tilt authority. P4 design note: temp/probes/pway11-p4/design.md.
+- 2026-11-27: Sitting 2026-11-27 lob row flown: 33 single lobs replayed (human_catch_replay.py). 26 crossed the Catch plane, 12 inside the Cup's reach, 9 of those had an admitted plan; planned Cup centre to real crossing median 28 mm, p90 48 mm over 14 planned lobs. The 19 rejected tracks were under 500 mm/s (hand motion), no real lob lost.

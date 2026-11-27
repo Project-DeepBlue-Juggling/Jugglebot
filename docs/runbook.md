@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (21 Items, 654 min)
+## Robot  (20 Items, 650 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -18,19 +18,18 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0) | 45 | armed, bb-fed, bridge-cycled | - | - |
 | FEAT-39 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30 | 50 | level, armed, bb-fed, bridge-cycled | - | - |
 | FEAT-68 Launch baseline on the robot's Hand: launch scatter of a settled ball and of running Throws at Dwell 0.27, 0.50 and 1.00 (learner-efficacy E1) | 60 | level, armed | - | - |
-| FEAT-69 can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19) | 25 | level, bridge-cycled | - | 2026-11-27-robot |
-| BUG-132 Platform IMU capture timestamps run 23 to 55 ms early against Mocap and the encoders | 10 | level, armed, bb-fed | - | 2026-11-27-robot |
-| BUG-133 Ball Butler firmware builds against the unpatched FlexCAN_T4 and stamps the sync at dispatch | 20 | bb-fed, bridge-cycled | `offline/bb-uptime` | 2026-11-27-robot |
+| FEAT-69 can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19) | 25 | level, bridge-cycled | - | - |
+| BUG-132 Platform IMU capture timestamps run 23 to 55 ms early against Mocap and the encoders | 10 | level, armed, bb-fed | - | - |
 | BUG-140 Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid | 10 | level, armed, bb-fed | `night-shift/2026-11-27-BUG-140` | - |
 | BUG-144 Juggle action feedback and status topics are in the bag record list but have never been recorded | 5 | level, armed, bridge-cycled | `night-shift/2026-11-26-BUG-144` | - |
-| BUG-32 Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff | 20 | level, armed, bb-fed | `offline/bug32-warm` | 2026-11-27-robot |
+| BUG-32 Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff | 20 | level, armed, bb-fed | `offline/bug32-warm` | - |
 | BUG-95 A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads | 35 | level, bb-fed | - | - |
-| FEAT-27 Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | 30 | level, armed | - | 2026-11-27-robot |
+| FEAT-27 Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | 30 | level, armed | - | - |
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | - | - |
-| IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | 2026-11-27-robot |
-| IDEA-25 Minimise the Platform IMU upload time after an Attempt | 1 | level, armed, bb-fed | - | 2026-11-27-robot |
-| IDEA-27 Measure the Platform ring at Dwell 0.40 with the IMU | 8 | level, armed, bb-fed | - | 2026-11-27-robot |
+| FEAT-71 Hold the Hand when a marker dwells under it | 10 | level, armed, bb-fed | - | - |
+| IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | - |
+| IDEA-27 Measure the Platform ring at Dwell 0.40 with the IMU | 15 | level, armed, bb-fed | - | - |
 
 ## Bench leg  (1 Item, 30 min)
 

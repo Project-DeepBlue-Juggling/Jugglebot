@@ -1,3 +1,120 @@
+closed:
+  at: 2026-11-27 15:08
+  items:
+  - BUG-132
+  - BUG-133
+  - BUG-32
+  - FEAT-27
+  - FEAT-69
+  - IDEA-16
+  - IDEA-25
+  - IDEA-27
+confirmed:
+  at: 2026-11-27 15:08
+  changed:
+  - BUG-133
+derived:
+  7:
+    FEAT-69:
+      by: sitting-debrief 2026-11-27
+      criterion: the cycle completes with `legs_held` none and `rig_bench` 0; every
+        Leg confirms Closed-loop in under 190 ms; every Leg rests above -0.11 rev;
+        `disarm_reason` reads 0 after an ordinary Idle; `/reboot_odrives` is refused
+        while posed and accepted at Stow.
+      evidence: 'Launch 1, bag ~/Desktop/rosbags/2026-11-27_13-46-08. Four clauses
+        pass: legs_held none and rig_bench 0 throughout; Legs rest at -0.066 to -0.090
+        rev after Homing; disarm_reason 0 on all six; /reboot_odrives refused Armed
+        at 13:47:52 and accepted at Stow at 13:48:31 (then FAULT, BOOT, Homing by
+        itself in 4.1 s, IDLE). The engage clause cannot be measured: the bag has
+        no bridge send stamp; host command to all six Closed-loop took 266, 332 and
+        377 ms, inside the firmware 400 ms bound.'
+      verdict: inconclusive
+  11:
+    IDEA-16:
+      by: sitting-debrief 2026-11-27
+      criterion: the bag replays through `tools/probes/human_catch_replay.py` and
+        reports, for the lobs that crossed inside the Cup's reach, how many had an
+        admitted plan and how far the planned Cup centre was from the real crossing.
+      evidence: 'Bag ~/Desktop/rosbags/2026-11-27_13-49-34 replayed through human_catch_replay.py
+        (13:50:30 to 13:54:30): 33 lobs, 26 crossed the Catch plane, 12 inside reach,
+        9 of those with an admitted plan; planned Cup centre to real crossing median
+        28 mm, p90 48 mm over the 14 planned lobs.'
+      verdict: pass
+  15:
+    IDEA-25:
+      by: sitting-debrief 2026-11-27
+      criterion: The line reads "complete yes, crc ok"; at the debrief the capture
+        file's `block_gap_10us` is 63.
+      evidence: Launch 2 log line 106 reads complete yes, crc ok (capture 20261127T025628Z_33D0);
+        temp/imu_capture/20261127T025628Z_33D0.json block_gap_10us is 63.
+      verdict: pass
+  16:
+    IDEA-27:
+      by: sitting-debrief 2026-11-27
+      criterion: Either the rehearsal refuses Dwell 0.40, or the Attempt's "Platform
+        IMU upload finished" line reads "complete yes, crc ok". The ring numbers are
+        computed at the debrief.
+      evidence: 'Both Dwell 0.40 Attempts (13:57:49, 1 of 2 caught; 13:58:24, 8 of
+        8) ended with an upload line reading complete yes, crc ok (captures 33D1 and
+        33D2). The rehearsal answer is not in the log and ring numbers: the 8 of 8
+        Attempt shows no growth (peak 15 +/- 9 mm/s against 13 +/- 3 at Dwell 0.50
+        the same day, n 7), the 1 of 2 Attempt rang 58 to 74 mm/s at release.'
+      verdict: pass
+  19:
+    FEAT-27:
+      by: sitting-debrief 2026-11-27
+      criterion: both lines lean toward +x by 4.4 mrad and toward +y by 8.5 mrad,
+        each within 1.5 mrad. With the vector on, Catches are no worse than with it
+        off, re-aims per Catch fall, and the robot's own recorded landing error returns
+        below 2 mm by Throw 40.
+      evidence: 'Plumb lines: no data (step 12 skipped). Vector on from 14:01:33:
+        94 of 96 caught against 17 of 18 off; landing rms 29.0 mm on against 29.2
+        mm over 728 earlier vector-off Columns Throws; re-aims per Catch 1.31 on,
+        1.47 off today, 1.28 historical. Recorded landing error mean 6.4 mm over Throws
+        31 to 50 and 1.6 mm over Throws 51 to 90, against about 20 mm sd per axis:
+        below 2 mm by Throw 40 is not shown.'
+      verdict: inconclusive
+  30:
+    BUG-32:
+      by: sitting-debrief 2026-11-27
+      criterion: the launch log's CATCH solve CPU p50 (CATCH solves after the first)
+        is at most 72 ms in both arms, against 78 to 81 ms on the 11-20 to 11-23 launches,
+        with no new refusal codes; the partition arm's wall p95 is reported against
+        the other arm's.
+      evidence: 'CATCH solve CPU p50 78.2 ms (launch 3, cpu_partition off) and 77.8
+        ms (launch 4, on), n 30 each, against the 72 ms bar; the same day without
+        the warm start read 77.3 and 76.7 ms. No new refusal code. Wall p95 143.9
+        ms off against 202.9 ms on; solves at or past 150 ms: 1 against 4. All 64
+        Throws caught.'
+      verdict: fail
+  37:
+    BUG-133:
+      by: sitting-debrief 2026-11-27
+      criterion: the Ball Butler reports FW 10; Feeds land as before; `bb_rx_ring_leak_max`
+        is 0 in every frame; `bb_rx_ring_depth_min` is 0 in every frame of the idle
+        stretch; `bb_uptime_s` rises with no reset; Feed arrival minus `landing_time`
+        shows no upward slope against `bb_uptime_s` (under about 3 ms per hour).
+      evidence: 'Bag ~/Desktop/rosbags/2026-11-27_14-17-33, 7105 /link_status frames:
+        bb_fw_version 10, bb_rx_ring_leak_max 0 and bb_rx_ring_depth_min 0 in every
+        frame (depth max 1, overflows 0), bb_uptime_s 32 to 742 s with no reset, five
+        ovals 8 of 8. The slope clause cannot be decided at 9.8 min of uptime with
+        no Feed after the rest: +11 +/- 62 ms per hour against 3, n 5. Hex sha256
+        e49156f1...cff89ffe. Derived inconclusive; the owner flipped it to pass on
+        2026-11-27: the ring counters measure the delay-line mechanism directly, so
+        the slope clause is taken as met without its own number.'
+      verdict: pass
+  40:
+    BUG-132:
+      by: sitting-debrief 2026-11-27
+      criterion: The upload line reads "complete yes, crc ok". The probe exits 0 (floor
+        excess at most 5 ms; FW 14 read 37 ms). At the debrief the capture json shows
+        `header.fw_version` 15, `flags.clock_suspect` false and `header.rx_ring_leak_max`
+        0, and `python tools/probes/imu_clock_check.py --capture <stem>` prints PASS.
+      evidence: 'Upload line complete yes, crc ok; probe floor excess 1.72 ms (limit
+        5.0); capture 33D0 header fw_version 15, clock_suspect false, rx_ring_leak_max
+        0. But imu_clock_check.py on 33D0 prints FAIL: lag2 12.0 ms outside 0 to 10
+        ms (33D1 passes at 9.0 ms, 33D2 fails at 10.6 ms; FW 14 read -4 to -43 ms).'
+      verdict: fail
 schema: 2
 steps:
   1:

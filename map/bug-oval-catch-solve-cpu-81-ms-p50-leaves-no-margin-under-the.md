@@ -2,15 +2,16 @@
 id: BUG-32
 kind: bug
 title: Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff
-status: inbox
+status: in_progress
 created: '2026-10-28'
-updated: '2026-11-26T03:18:28Z'
+updated: '2026-11-27T04:11:45Z'
 owners: []
 priority: medium
 effort: l
 hardware: robot
 owner: hands
 radius: subsystem
+diagnosis: confirmed
 area: skill-stack
 blocked_by: []
 links:
@@ -52,6 +53,11 @@ temp/probes/solve-starvation-2026-10-28-2102.txt
 - minutes: 20
 - branch: offline/bug32-warm
 
+## Sitting result (2026-11-27 15:08)
+
+- verdict: fail
+- notes: No issues. Not really visibly distinguishable from the Launch 3 attempt (sheet 2026-11-27-robot, step 30) [derived: CATCH solve CPU p50 78.2 ms (launch 3, cpu_partition off) and 77.8 ms (launch 4, on), n 30 each, against the 72 ms bar; the same day without the warm start read 77.3 and 76.7 ms. No new refusal code. Wall p95 143.9 ms off against 202.9 ms on; solves at or past 150 ms: 1 against 4. All 64 Throws caught.]
+
 ## Progress
 
 - 2026-11-26: Profile done offline (scripts in temp/probes/bug32-profile/): oval_1ball_fed CATCH CPU p50 is still 78 to 81 ms (launch logs 11-20 to 11-23); Columns CATCH is now 45 ms, not 65. Oval wall p95 is 160 to 168 ms, past the 6-knot cliff. No two-ball oval log exists.
@@ -60,3 +66,5 @@ temp/probes/solve-starvation-2026-10-28-2102.txt
 - 2026-11-26: Built on held branch offline/bug32-warm: a Segment carries one QP warm start per window kind, so the oval steady QP starts from the previous beat's (46 to 12 iterations); a warm solve that refuses is re-solved cold. Plans agree with cold to 2e-10. Offline CPU p50: oval 61.9 to 52.0 ms, Columns 36.5 to 34.3 ms. Not flown.
 - 2026-11-26: Scheduling: nothing is partitioned at runtime. cpu_partition defaults off; its one A/B (2026-11-18) measured bridge drops, not solve wall time, and showed no effect. Offline, pinning the worker cut loaded wall p50 100.6 to 81.0 ms. The Sitting section adds a partition arm. Worker FIFO stays off (owner, 2026-10-28).
 - 2026-11-26: Owner decisions: the warm start covers every window kind, and the Sitting keeps its cpu_partition:=true arm as an A/B on the Catch solve wall time.
+- 2026-11-27: Failed at the Sitting of 2026-11-27: CATCH solve CPU p50 78.2 and 77.8 ms against 72; main the same day 77.3 and 76.7. The warm start ran but its key (the STEADY window's knot count) matched only 9 of about 240 solves, because the window starts at the moving splice point; where it matched it saved 5 to 10 ms. The offline bench used one fixed seed. Do not merge as is.
+- 2026-11-27: New lead from 2026-11-27: install CPU grows about 1 ms per 100 record Knots (about +15 ms by Throw 32) on main and branch alike while check CPU stays flat; it tracks SPLICE_TOO_LATE rising with Throw index (0, 4, 6, 5 refusals per 16 Throws). Filed as its own Item. Owner decision on offline/bug32-warm: drop it, or rebuild as a shifted warm start.

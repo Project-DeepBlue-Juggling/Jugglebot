@@ -2,9 +2,9 @@
 id: IDEA-25
 kind: idea
 title: Minimise the Platform IMU upload time after an Attempt
-status: in_progress
+status: complete
 created: '2026-11-19'
-updated: '2026-11-23T04:00:13Z'
+updated: '2026-11-27T04:11:15Z'
 owners: []
 priority: low
 effort: m
@@ -18,11 +18,9 @@ links:
 - logbook/2026-11-20-sitting-debrief-robot-2.md
 - logbook/2026-11-21-platform-imu-upload-hole-fill.md
 - logbook/2026-11-21-platform-imu-fw13-chaining-pacing-2khz.md
+- logbook/2026-11-27-sitting-debrief.md
 parent: two-ball-oval
 filed_by: claude
-night_skip: owner-session
-night_skip_on: '2026-11-24'
-night_skip_note: Gap 63 is now the default; the bridge receive-loss inquiry is held by the owner for a future Session (2026-11-23).
 ---
 
 Keep this area open (owner, 2026-11-19): once the MVP works, explore shortening the post-Attempt IMU upload. Three levers: tighter sample packing or compression; a slower setpoint heartbeat while holding (the 500 Hz stream stays as is for now: it feeds the ODrive watchdog and avoids a rate switch on the Leg path); a higher measured rate from the P4 ramp.
@@ -71,6 +69,11 @@ Held by the owner on 2026-11-23 for a future Session; nothing is scheduled.
 - verdict: fail
 - notes: First upload took 57.7 sec, while second took 49.3. (pasted log lines are in the sheet results file) (sheet 2026-11-23-robot, step 6) [derived: 57.7 s at gap 80 (limit 57), 49.3 s at gap 63 (limit 48); both 32000 samples, crc ok; bridge minus Jetson frames 0; Platform sent 66518 of 66518, bridge received 66116: the bridge CAN receive loses the frames]
 
+## Sitting result (2026-11-27 15:08)
+
+- verdict: pass
+- notes: (sheet 2026-11-27-robot, step 15) [derived: Launch 2 log line 106 reads complete yes, crc ok (capture 20261127T025628Z_33D0); temp/imu_capture/20261127T025628Z_33D0.json block_gap_10us is 63.]
+
 ## Progress
 
 - 2026-11-20: Sitting 2026-11-20: Armed uploads took 79 s (ring) and 84 s (32 s span) against 56 s at rest, with 14651-19974 duplicate frames (158 at rest), up to 6 block timeouts, CAN1 at 74-77 %. A juggle goal was refused 7 s into a 37 s upload. Diagnosis in logbook 2026-11-20-sitting-debrief-robot-2.
@@ -79,3 +82,4 @@ Held by the owner on 2026-11-23 for a future Session; nothing is scheduled.
 - 2026-11-22: Sitting 2026-11-22, FW 13 Armed: whole ring 59.7 s (24 duplicates) and 63.3 s (1694) against 79 to 84 s on 2026-11-20. Gap 63 gave no gain per sample (2.08 ms against 1.87 to 1.98): lost frames and refills ate it. 2 kHz Attempt upload 71.7 s, 723 lost frames against 5 at rest. Why duplicates vary 24 to 1694 is unexplained.
 - 2026-11-23: Sitting 2026-11-23, FW 14 Armed: whole ring 57.7 s at gap 80 and 49.3 s at gap 63 (limits 57 and 48 missed). Refill reads now about 20 ms each. The Platform sent every frame (66518 of 66518, error counters 0); the bridge counted about 400 fewer: its CAN receive loses them. Logbook 2026-11-23-sitting-debrief-robot.
 - 2026-11-23: Owner decisions: the faster pace (gap 63) is now the default (logbook 2026-11-23-platform-imu-upload-pace-default-63); the bridge receive loss is held as an open inquiry (section above), nothing scheduled.
+- 2026-11-27: Passed at the Sitting of 2026-11-27: the Attempt upload read complete yes, crc ok and the capture's block_gap_10us is 63; all 14 uploads of the Sitting completed with crc ok.

@@ -2,9 +2,9 @@
 id: IDEA-27
 kind: idea
 title: Measure the Platform ring at Dwell 0.40 with the IMU
-status: inbox
+status: in_progress
 created: '2026-11-23'
-updated: '2026-11-23T05:07:19Z'
+updated: '2026-11-27T04:11:20Z'
 owners: []
 priority: low
 effort: s
@@ -31,14 +31,25 @@ Fly it on Platform FW 15 (BUG-132 fixed) and analyse on the bridge clock: check 
 ## Sitting
 
 - setup: level, armed, bb-fed
-- why: one Attempt at Dwell 0.40 with the ZVD rows off tells whether the ring after release grows as the old landings suggested. It rides on any robot Sitting.
+- why: Attempts at Dwell 0.40 with the ZVD rows off tell whether the ring after release grows as the old landings suggested. It rides on any robot Sitting.
 - do:
   - After Level, rehearse (moves nothing): `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'oval_1ball_fed,apex_m=1.00,separation_mm=150.0,dwell_s=0.40'}"`. If it reports a refusal, write the refusal down and skip the next two steps.
   - `ros2 param set /skill_node plant_id ring-dwell040-<date>`, then read it back.
-  - Fly one Attempt: `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 8}" --feedback`. Wait for "recording" on the GUI IMU panel.
+  - Fly four Attempts, the last one after a pause of two minutes, waiting for "recording" between them: `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: oval_1ball_fed, apex_m: 1.00, separation_mm: 150.0, dwell_s: 0.40, num_cycles: 8}" --feedback`. Wait for "recording" on the GUI IMU panel.
   - `ros2 param set /skill_node plant_id jugglebot` and read it back.
 - pass:
   - Either the rehearsal refuses Dwell 0.40, or the Attempt's "Platform IMU upload finished" line reads "complete yes, crc ok". The ring numbers are computed at the debrief.
 - record:
   - The rehearsal's answer, and the caught count. The upload line is in the launch log.
-- minutes: 8
+- minutes: 15
+
+## Sitting result (2026-11-27 15:08)
+
+- verdict: pass
+- notes (split into bullets):
+  - First attempt ended with a missed throw. Second worked perfectly. (sheet 2026-11-27-robot, step 16) [derived: Both Dwell 0.40 Attempts (13:57:49, 1 of 2 caught; 13:58:24, 8 of 8) ended with an upload line reading complete yes, crc ok (captures 33D1 and 33D2).
+  - The rehearsal answer is not in the log and ring numbers: the 8 of 8 Attempt shows no growth (peak 15 +/- 9 mm/s against 13 +/- 3 at Dwell 0.50 the same day, n 7), the 1 of 2 Attempt rang 58 to 74 mm/s at release.]
+
+## Progress
+
+- 2026-11-27: Sitting 2026-11-27 ring numbers: the 8 of 8 Attempt at Dwell 0.40 shows no growth (peak 15 +/- 9 mm/s against 13 +/- 3 at Dwell 0.50 the same day, n 7), but the 1 of 2 Attempt rang 58 to 74 mm/s at release and missed both Catches. One Attempt cannot decide; the Sitting section now flies four, then unpark or archive carry-ring-zvd.

@@ -4,7 +4,7 @@ kind: bug
 title: Catch re-aim refused INFEASIBLE on 8.4 % of Throws at the P2 Sitting, 15 of 69 on the turned pair
 status: backlog
 created: '2026-11-06'
-updated: '2026-11-26T05:49:00Z'
+updated: '2026-11-27T04:12:00Z'
 owners: []
 priority: medium
 effort: s
@@ -213,3 +213,5 @@ From TKT-59. You chose option 1 and will run it yourself: a day Session runs the
 - 2026-11-26: What-if, not proposed: at 80 mm/s the 2026-11-06 90 deg diagonal case goes 56.5 to 81.5 % (one group only). Flown second re-aims are small: median 12 mm, p90 about 20 mm. Options for the owner: enable the bump for second re-aims, send no second re-aim, or revisit the bound. The re-aim direction is not logged; logging it would settle which row applies.
 - 2026-11-26: Re-aim log lines now end in dx and dy (new landing minus installed landing, Robot frame, signed mm) on RESEND, RESEND-REFUSED and RESEND-SKIPPED, not on the BUMP lines. parse_resends.py and label_rows.py read them; bump_replay.py still tries four directions.
 - 2026-11-26: Owner decision: no change to second re-aims for now. Read the logged direction from the next Sitting's launch log first, then choose between the bump for second re-aims, no second re-aim, or a new launch bound.
+- 2026-11-27: Sitting 2026-11-27, first logged re-aim directions (638 lines, sign checked against the code): on the oval a second re-aim reversed the first in 54 of 75 Catches, taking back about 22 % of it; Columns 21 of 37. Second re-aims partly undo noise in the first, they do not chase fresh noise. Refusals: oval 16 SPLICE_TOO_LATE, 2 INFEASIBLE; Columns 3 LIMIT_JERK, 1 REPLAN_WINDOW.
+- 2026-11-27: Columns re-aims go through the BUMP path, whose declined lines carry no direction (29 SPLICE_TOO_LATE, 20 BUMP-WINDOW, 15 BUMP-LAUNCH declines on 2026-11-27). One missed Catch (14:02:50) was a 60 mm Throw error whose bump was declined at the launch bound (61.4 against 50 mm/s).

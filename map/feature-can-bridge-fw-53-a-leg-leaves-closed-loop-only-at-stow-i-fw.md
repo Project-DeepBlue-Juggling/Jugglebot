@@ -2,9 +2,9 @@
 id: FEAT-69
 kind: feature
 title: 'can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19)'
-status: inbox
+status: in_progress
 created: '2026-11-26'
-updated: '2026-11-26T00:02:08Z'
+updated: '2026-11-27T04:11:05Z'
 owners: []
 priority: high
 effort: l
@@ -33,11 +33,21 @@ FW 53 puts every Leg set-state, reboot and SDO write behind one predicate in `le
 
 Nothing in FW 53 has run with motor power. Unverified on hardware: a Leg's mid-move re-target (the return to Stow), the re-engage of a dropped Leg under load, the Closed-loop engage time against the 400 ms bound, and each Leg's rest position on its stop against the Stow window.
 
+## Sitting result (2026-11-27 15:08)
+
+- verdict: inconclusive
+- notes (split into bullets):
+  - (sheet 2026-11-27-robot, step 7) [derived: Launch 1, bag ~/Desktop/rosbags/2026-11-27_13-46-08.
+  - Four clauses pass: legs_held none and rig_bench 0 throughout; Legs rest at -0.066 to -0.090 rev after Homing; disarm_reason 0 on all six; /reboot_odrives refused Armed at 13:47:52 and accepted at Stow at 13:48:31 (then FAULT, BOOT, Homing by itself in 4.1 s, IDLE).
+  - The engage clause cannot be measured: the bag has no bridge send stamp; host command to all six Closed-loop took 266, 332 and 377 ms, inside the firmware 400 ms bound.]
+
 ## Progress
 
 - 2026-11-26: built as units U1 to U9 with an independent audit (nothing blocking), full-tier gate green, flashed 11:04 (BridgeIdentity 53/14; unpowered launch check clean; `rig_bench` 0, `legs_held` none). Host side live after the rebuild. Open until the Sitting below is flown.
 - 2026-11-27: Sitting section cut to the plain cycle. The fault-injection steps cannot be flown: no service, GUI control or RPC raises a Soft E-stop or trips the Guard while the ladders run disarmed, and every way to disarm one Leg is refused away from Stow. The rise also lasts about 1 s, so a hand-timed abort is not possible.
 - 2026-11-27: The abort paths (return to Stow from a rise, a descent that continues through a Guard trip, the one-Leg recovery) stay verified by the native tests only until a firmware test hook exists. A reboot refused at the Active pose is refused by the host, not by the Stow gate.
+- 2026-11-27: Sitting 2026-11-27, first powered run of FW 53: 11 rises and 11 Stows over five launches, none refused or held; Legs rest at -0.066 to -0.090 rev; disarm_reason 0; drive reboot refused Armed, accepted at Stow (then FAULT, BOOT, Homing by itself, IDLE). Engage under 190 ms cannot be read from the bag: host command to six Closed-loop took 266 to 389 ms.
+- 2026-11-27: Still unflown after 2026-11-27: the Stow gate's own refusal (the posed reboot was refused by the Armed rule, I-FW-18, before it reached the gate) and every abort path. The engage clause needs the bridge to report its own measured engage time; filed as a follow-up.
 
 ## Sitting
 

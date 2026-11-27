@@ -2,23 +2,23 @@
 id: BUG-133
 kind: bug
 title: Ball Butler firmware builds against the unpatched FlexCAN_T4 and stamps the sync at dispatch
-status: inbox
+status: complete
 created: '2026-11-23'
-updated: '2026-11-26T03:18:15Z'
+updated: '2026-11-27T04:31:58Z'
 owners: []
 priority: medium
 effort: m
 hardware: robot
+owner: hands
 radius: subsystem
 diagnosis: confirmed
 area: ball-butler
 blocked_by: []
 links:
 - logbook/2026-11-23-platform-imu-clock-early-rx-ring-leak.md
+- logbook/2026-11-27-sitting-debrief.md
+- logbook/2026-11-26-bb-status-frame-ring-health-uptime.md
 filed_by: claude
-night_skip: sitting
-night_skip_on: '2026-11-27'
-night_skip_note: FW 10 (BallButler offline/bug133-flexcan) and Jugglebot offline/bb-uptime are built; its Sitting section flashes and flies them.
 ---
 
 Ball Butler firmware (BallButler repo, `ball_butler_main`) builds against upstream FlexCAN_T4 master and stamps the 0x7DD sync at dispatch. The Platform had the same defect, diagnosed in BUG-132 (logbook entry 2026-11-23-platform-imu-clock-early-rx-ring-leak).
@@ -51,7 +51,15 @@ Ball Butler firmware (BallButler repo, `ball_butler_main`) builds against upstre
 - minutes: 20
 - branch: offline/bb-uptime
 
+## Sitting result (2026-11-27 15:08)
+
+- verdict: pass
+- notes (split into bullets):
+  - Untouched rest time started at 14:27:00 (sheet 2026-11-27-robot, step 37) [derived: Bag ~/Desktop/rosbags/2026-11-27_14-17-33, 7105 /link_status frames: bb_fw_version 10, bb_rx_ring_leak_max 0 and bb_rx_ring_depth_min 0 in every frame (depth max 1, overflows 0), bb_uptime_s 32 to 742 s with no reset, five ovals 8 of 8.
+  - The slope clause cannot be decided at 9.8 min of uptime with no Feed after the rest: +11 +/- 62 ms per hour against 3, n 5. Hex sha256 e49156f1...cff89ffe. Derived inconclusive; the owner flipped it to pass on 2026-11-27: the ring counters measure the delay-line mechanism directly, so the slope clause is taken as met without its own number.]
+
 ## Progress
 
 - 2026-11-26: offline, the bag proxy (Feed arrival minus landing_time; 11-13, 11-18, 11-20) cannot tell: slopes +22, +4.0, +0.3 ms/h, per-Throw sd 7 to 9 ms against a 2.6 ms step, and no bag topic carries Ball Butler uptime. The saturated case is excluded. Held fix: BallButler branch offline/bug133-flexcan (FW 10, patched library only, built, not flashed). Outputs: temp/probes/bug133-bb/.
 - 2026-11-26: Held FW 10 now also sends a status frame every 500 ms (receive-ring depth min and max, leak, uptime, FIFO overruns); the host shows them on /link_status as bb_* keys, absent on FW 9. No can-bridge change. Branches to merge together at the flash: BallButler offline/bug133-flexcan 5128a50 (hex sha256 e49156f1...cff89ffe) and Jugglebot offline/bb-uptime.
+- 2026-11-27: Passed at the Sitting of 2026-11-27 (owner flipped the derived inconclusive): FW 10 read back, ring leak 0 and depth min 0 in all 7105 frames, uptime 32 to 742 s with no reset, five ovals 8 of 8. The slope clause was not decidable in 9.8 min. Both branches are on main.

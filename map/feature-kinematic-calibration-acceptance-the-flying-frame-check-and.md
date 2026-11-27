@@ -2,9 +2,9 @@
 id: FEAT-27
 kind: feature
 title: 'Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z'
-status: inbox
+status: in_progress
 created: '2026-10-28'
-updated: '2026-11-26T03:18:10Z'
+updated: '2026-11-27T04:11:35Z'
 owners: []
 priority: medium
 effort: l
@@ -58,8 +58,18 @@ Offline, 1,139 free flights from six Sittings (2026-09-29 to 2026-11-22). Output
 - record: the bag name, both line directions in mrad, the floor level in two axes, whether Mocap was recalibrated since 2026-11-13, the time of the param switch, Catches and re-aims per arm, and the landing error over Throws 1-10, 11-30 and 31-50 after the switch.
 - minutes: 30
 
+## Sitting result (2026-11-27 15:08)
+
+- verdict: inconclusive
+- notes (split into bullets):
+  - These catches generally seemed quite a bit smoother than in Step 18, though the first two attempts ended with a ball that landed just outside of the Cup; landing instead on the Platform. All of the BB feeds were exceptionally smooth. The final attempt was easily the smoothest columns attempt we've ever had. I expect the IMU data will confirm this.
+  - (sheet 2026-11-27-robot, step 19) [derived: Plumb lines: no data (step 12 skipped). Vector on from 14:01:33: 94 of 96 caught against 17 of 18 off; landing rms 29.0 mm on against 29.2 mm over 728 earlier vector-off Columns Throws; re-aims per Catch 1.31 on, 1.47 off today, 1.28 historical.
+  - Recorded landing error mean 6.4 mm over Throws 31 to 50 and 1.6 mm over Throws 51 to 90, against about 20 mm sd per axis: below 2 mm by Throw 40 is not shown.]
+
 ## Progress
 
 - 2026-11-26: Offline gravity fit done: the Mocap frame is tilted 0.55 deg from gravity and the Fit lands (-8, -21) mm off early, (-3, -11) mm at the end. Fix proposed as a config gravity vector, waiting on the owner (detail below).
 - 2026-11-26: Built and on main: config ball_tracking.gravity_world_xy_mmps2, default [0, 0], which is today's Fit bit for bit; switched live by a parameter on the tracker node. The Fit, its landing, the human Throw event and the Kalman fallback use it.
 - 2026-11-26: Learner check: Memory rows hold the final-Fit landing, so the learned command absorbed the (-3, -11) mm bias. At the switch the true landings do not move; the recorded error jumps about +11 mm in y and the Learner walks it back in about 30 Throws (model, not flown). Keep the Memory. Ball Butler's aim correction was fitted on measured crossings and is unaffected.
+- 2026-11-27: Sitting 2026-11-27, inconclusive: plumb lines not hung. Gravity vector on for 96 Columns Throws: 94 caught, landing rms 29.0 mm against 29.2 mm over 728 earlier Throws, re-aims per Catch 1.31 against 1.28. Landing error mean 6.4 mm at Throws 31 to 50, 1.6 mm at 51 to 90, inside the noise. No harm shown, no gain shown; the off arm was one Attempt of 17 Throws.
+- 2026-11-27: The jugglebot Memory now holds about 95 Columns rows learned with the vector on (plant b_y moved from -5.3 to +2.3 mm); the parameter is back at its default (off) at the next launch. Owner decision: make [43.0, 83.0] the default, or leave it off and let the Memory re-learn.

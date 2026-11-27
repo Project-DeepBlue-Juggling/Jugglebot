@@ -4,7 +4,7 @@ kind: feature
 title: Live warning when a marker dwells under the Hand
 status: in_progress
 created: '2026-11-13'
-updated: '2026-11-24T17:40:45Z'
+updated: '2026-11-27T04:12:37Z'
 owners:
 - night-shift
 - claude
@@ -43,3 +43,4 @@ Log only: no action on the Hand path; the Hand safety authority stays the Teensy
 
 - 2026-11-14: Night Shift 2026-11-14: held on night-shift/2026-11-14-FEAT-50: built, suite green; 5 audit findings open, config is gate-frozen; unblocked by a day Session and the Sitting
 - 2026-11-25: the five audit findings are fixed with tests and the warning is merged. Replay on recorded bags: it catches 2 of the 4 known trapped-ball events, about 0.3 s after the ball arrives (after the stall); the other two sat under the Hand for less than the 0.30 s threshold. About 0.07 false warnings per minute on Columns (rim ball, Hand raised). Cost 0.6 to 1.0 percent of a core.
+- 2026-11-27: Fired on the robot at the Sitting of 2026-11-27: two warnings (dwell 413 ms and 343 ms) for the Ball that then stalled the Hand at 14:04:14. The warning works; it came 0.16 s before the stall, too late for an operator, so it needs an automatic response to be of use (BUG-84).
