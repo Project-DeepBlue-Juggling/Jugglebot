@@ -48,6 +48,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-136 [Robot] Catching cone catch stamps could run 10 ms early per stranded receive frame: no ## Sitting section
 - BUG-142 [Robot] Hand park reports already parked on a Hand that is Idle on its bottom stop: no ## Sitting section
 - BUG-146 [Robot] Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt: no ## Sitting section
+- BUG-152 [Robot] Hop entry opening Throw carries a rate at rest, so the Legs ripple before the first Throw: no ## Sitting section
 - BUG-27 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - BUG-29 [Robot] RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball: no ## Sitting section
 - BUG-32 [Robot] Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff: no ## Sitting section
@@ -83,4 +84,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- none
+- TKT-101 BUG-152: seed the Hop entry's first-Knot rate from rest, fly JP-11 with it open, or fix the whole Platform rate class? (parent BUG-152)
+- TKT-103 BUG-75: with the re-aim directions logged, BUMP second re-aims, send none, raise the launch bound, or gate them by size? (parent BUG-75)
+- TKT-104 FEAT-31: the pinned arm's wall tail is preemption; build the SCHED_FIFO worker now, wait for BUG-149, or drop it? (parent FEAT-31)
