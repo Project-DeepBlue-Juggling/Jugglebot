@@ -213,6 +213,8 @@ def test_the_node_and_the_nomination_build_the_identical_pattern(
     if pattern == 'columns_highlow':
         node._params['apex_m_ball2'] = 0.85
         goal_kw = dict(apex_m=0.9)
+    if pattern == 'columns_rotating':
+        node._params['columns_step_deg'] = 10.0     # JP-11: the node parameter
     built, configs = [], []
     real_build, real_nom = nom.build_pattern, nom.nominate
 

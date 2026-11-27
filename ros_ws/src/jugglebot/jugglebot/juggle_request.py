@@ -6,7 +6,7 @@ Pure Python (no ROS2).  One definition, two readers: the orchestrator's relay
 (which also allows :data:`NOMINATE_EXTRA_FIELDS`).
 
 ``<pattern>[,apex_m=<f>][,separation_mm=<f>][,dwell_s=<f>][,num_cycles=<n>]``
-(``skills/nominate`` only: ``[,apex_m_ball2=<f>][,columns_angle_deg=<f>]``).
+(``skills/nominate`` only: ``[,apex_m_ball2=<f>][,columns_angle_deg=<f>][,step_deg=<f>]``).
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ NOMINATE_EXTRA_FIELDS = {
     'columns_angle_deg': float,
     'polygon_n': int,     # polygon_walk only (JP-5)
     'orbit_n': int,       # centre_orbit only (JP-14)
+    'step_deg': float,    # columns_rotating only (JP-11): the pair's turn per Beat
 }
 
 

@@ -128,6 +128,9 @@ PATTERNS: Tuple[Tuple[str, str, int], ...] = (
     # JP-14 (IDEA-14, pattern-progression P9): Ball 1 at the centre, Ball 2
     # stepping around a circle of Sites (``schedule.CENTRE_ORBIT``).
     ('centre_orbit', 'Centre and orbit', 2),
+    # JP-11 (IDEA-12): Columns whose Site pair turns step_deg per Beat
+    # (``schedule.COLUMNS_ROTATING``).
+    ('columns_rotating', 'Columns — rotating', 2),
 )
 #: Goals that are Feeds, never records.
 FEED_PATTERNS = frozenset(('reload', 'magazine'))

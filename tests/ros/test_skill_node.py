@@ -5332,6 +5332,9 @@ def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, evidence):
         # JP-9: Ball 2's Apex is the node parameter; its cells are its own.
         node._params['apex_m_ball2'] = 0.85
         goal_kw = dict(apex_m=0.9)
+    if pattern == 'columns_rotating':
+        # JP-11: the step is the node parameter (0 is refused by name).
+        node._params['columns_step_deg'] = 10.0
     with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_goal(pattern, separation_mm=separation_mm,
                                          **goal_kw))
@@ -5345,7 +5348,7 @@ def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, evidence):
     covered = {'self_toss', 'hop', 'columns', 'columns_1ball',
                'columns_1ball_fed', 'columns_turned', 'columns_highlow',
                'oval_1ball', 'oval_1ball_fed', 'polygon_walk', 'reload',
-               'human_catch', 'centre_orbit'}
+               'human_catch', 'centre_orbit', 'columns_rotating'}
     # 'magazine' has no schedule (one MAGAZINE segment from rest; its own
     # tests are tests/ros/test_skill_node_magazine.py).
     assert set(sn.SkillNode._PATTERNS) - {'magazine'} == covered
