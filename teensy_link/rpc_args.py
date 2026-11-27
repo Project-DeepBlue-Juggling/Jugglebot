@@ -1111,7 +1111,7 @@ EXPECTED_BRIDGE_FW_VERSION = 53
 # because Armed implies the Platform is posed. A Hand IDLE is untouched (the Hand is
 # exempt from both).
 _ODRIVE_STATE_IDLE = 1
-ARMED_REFUSAL_HINT = ('refused while Armed (can-bridge FW 52, BUG-99): the bridge does not '
+ARMED_REFUSAL_HINT = ('refused while Armed (can-bridge since FW 52, BUG-99): the bridge does not '
                       're-zero, re-tune, re-mode or reboot an ODrive under a live stream; disarm first')
 
 

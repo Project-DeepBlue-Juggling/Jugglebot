@@ -5650,7 +5650,7 @@ class TeensyBridgeNode(Node):
         service called while Armed, or None when disarmed (on both sides)."""
         if not self._armed_anywhere():
             return None
-        return (f'{what} REFUSED: the robot is Armed. The can-bridge (FW 52, BUG-99) refuses '
+        return (f'{what} REFUSED: the robot is Armed. The can-bridge (since FW 52, BUG-99) refuses '
                 f'gain, mode, state (other than IDLE), absolute-position and SDO writes and ODrive '
                 f'reboots under a live stream. Disarm first (/set_setpoint_output false), then retry.')
 
