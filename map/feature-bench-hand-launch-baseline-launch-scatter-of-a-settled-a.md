@@ -83,4 +83,8 @@ After the Sitting: `python tools/probes/release_settle_bag_probe.py run <bag>` f
 ## Sitting result (2026-11-27 19:12)
 
 - verdict: pass
-- notes: Every throw was caught. I turned off the IMU uploading to save time. With the new gravity offset, almost all of the catches are sounding way smoother than before. There is far less jiggling around in the hand than there used to be. In the single-toss attempts, it often appeared as though the Platform wiggled a little bit just before the ball was thrown, though it was very hard to tell when this precisely happened (and whether it was rather a reaction force caused by the throw. I can't help but note the strong z-axis angular rates measured by the IMU. Might this be the cause of our scatter? If so, I'm not sure what we could do to fix this.
+- notes (split into bullets):
+  - Every throw was caught. I turned off the IMU uploading to save time.
+  - With the new gravity offset, almost all of the catches are sounding way smoother than before. There is far less jiggling around in the hand than there used to be.
+  - In the single-Throw attempts, it often appeared as though the Platform wiggled a little bit just before the ball was thrown, though it was very hard to tell when this precisely happened (and whether it was rather a reaction force caused by the throw).
+  - I can't help but note the strong z-axis angular rates measured by the IMU. Might this be the cause of our scatter? If so, I'm not sure what we could do to fix this.
