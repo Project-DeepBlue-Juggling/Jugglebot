@@ -2,9 +2,9 @@
 id: TKT-99
 kind: ticket
 title: 'BUG-140 held on night-shift/2026-11-27-BUG-140: apply the audit''s 2 fixes before the Sitting, fly it as is, or drop it?'
-status: open
+status: complete
 created: '2026-11-27'
-updated: '2026-11-26T17:23:33Z'
+updated: '2026-11-27T00:16:15Z'
 owners: []
 priority: medium
 effort: xs
@@ -36,3 +36,7 @@ BUG-140 is built on night-shift/2026-11-27-BUG-140 as you asked in TKT-96 (optio
 1: the next night applies the fixes, then the Sitting section stands as written. 2: the Sitting may fly the branch now. 3: the branch is left for you to delete and BUG-140 goes back to open.
 
 Recommendation: 1, because finding 1 is a silent one-Knot shift on the band REST that only appears on a long-running box.
+
+## Answer
+
+Agreed. Go for Option 1
