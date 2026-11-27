@@ -94,6 +94,30 @@ steps:
     comments: ''
     saved_at: 2026-11-27 14:11
     status: done
+  27:
+    comments: ''
+    saved_at: 2026-11-27 14:11
+    status: done
+  28:
+    comments: ''
+    saved_at: 2026-11-27 14:12
+    status: done
+  29:
+    comments: ''
+    saved_at: 2026-11-27 14:12
+    status: done
+  31:
+    comments: ''
+    saved_at: 2026-11-27 14:14
+    status: done
+  32:
+    comments: ''
+    saved_at: 2026-11-27 14:15
+    status: done
+  33:
+    comments: ''
+    saved_at: 2026-11-27 14:17
+    status: done
 verdicts:
   11:
     IDEA-16:
@@ -111,3 +135,7 @@ verdicts:
         smooth. The final attempt was easily the smoothest columns attempt we've ever
         had. I expect the IMU data will confirm this.
       saved_at: 2026-11-27 14:06
+  30:
+    BUG-32:
+      notes: No issues. Not really visibly distinguishable from the Launch 3 attempt
+      saved_at: 2026-11-27 14:14
