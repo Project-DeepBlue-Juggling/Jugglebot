@@ -660,7 +660,7 @@ _HC_HOLDING_LOG_S = 5.0     # HOLDING visibility cadence (no timeout)
 _HC_PARAM_NAMES = ('first_lead_s', 'plan_lead_s', 'max_fit_age_s',
                    'assoc_radius_mm', 'reaim_authority_mm', 'resend_max',
                    'mean_n', 'wait_radius_mm', 'wait_deadband_mm', 'clear_s',
-                   'return_s', 'nominal_apex_m')
+                   'return_s', 'nominal_apex_m', 'edge_aim_mm')
 _HC_DEFAULTS = {name: p.default for name, p in
                 inspect.signature(hcp.HumanCatchPolicy).parameters.items()}
 #: The code a `human_catch` Attempt ends with when its RETURNING REST cannot
@@ -6568,15 +6568,20 @@ class SkillNode(Node):
                             + float(msg.landing_time.nanosec) * 1e-9),
             fit_age_s=float(msg.fit_age_s), final=bool(msg.final))
         now = self.get_clock().now().nanoseconds / 1e9
+        edge_line = None
         with self._reload_lock:
             if self._reload_ctx is not ctx or self._ended_code_for_swap():
                 return
             if (ctx.latest is not None and evt.key == ctx.key
                     and evt.revision > ctx.latest.revision):
-                ctx.latest = evt               # the live CATCH re-aims on it
+                # the live CATCH re-aims on it, through the SAME edge-aim
+                # rule as its first plan (the policy's `edge_aim`)
+                ctx.latest, edge_line = ctx.policy.reaim_target(evt)
             d = ctx.policy.on_event(evt, now)
             if d.kind == hcp.PLAN:
                 ctx.plan_due = d
+        if edge_line:
+            self.get_logger().info(edge_line)
         if d.log:
             self.get_logger().info(d.log)
 

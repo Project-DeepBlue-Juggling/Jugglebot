@@ -209,7 +209,7 @@ def test_parameters_default_from_the_policy_and_a_bad_one_refuses():
     for name in ('first_lead_s', 'plan_lead_s', 'max_fit_age_s',
                  'assoc_radius_mm', 'reaim_authority_mm', 'resend_max',
                  'mean_n', 'wait_radius_mm', 'wait_deadband_mm', 'clear_s',
-                 'return_s', 'nominal_apex_m'):
+                 'return_s', 'nominal_apex_m', 'edge_aim_mm'):
         assert getattr(pol, name) == getattr(ref, name), name
         assert ('human_catch_' + name) in node._params
     assert tuple(pol.home_xy_mm) == tuple(ref.home_xy_mm)
@@ -300,6 +300,50 @@ def test_a_refinement_re_aims_and_a_late_one_adds_nothing():
     assert len(_catches(client)) == 2             # frozen: no late re-aim
     assert sum('a later revision of the claimed Throw' in t
                for t in _texts(log)) <= 1
+
+
+# -- the edge aim (owner, 2026-11-27, plan P3) -------------------------------
+
+def test_a_fit_just_outside_the_box_catches_at_the_edge_and_says_so():
+    node, client, clock, _cup = _hc_node()
+    _start(node, clock)
+    log = _lines(node)
+    _plan_one(node, clock, client, lead=0.60, x=170.0, y=-20.0)
+    sk = node._executor.schedule.skills[0]
+    assert tuple(sk.site.cup_mm[:2]) == pytest.approx((150.0, -20.0), abs=1e-9)
+    assert tuple(sk.landing_prior.pos_mm[:2]) == pytest.approx((150.0, -20.0), abs=1e-9)
+    edge = [t for t in _texts(log) if t.startswith('HUMAN-CATCH-EDGE-AIM')]
+    assert len(edge) == 1
+    assert 'Fit Landing (170, -20) mm' in edge[0]
+    assert 'aims at the box edge (150, -20) mm' in edge[0]
+
+
+def test_a_fit_farther_out_is_handed_on_unchanged_for_the_gate_to_refuse():
+    node, client, clock, _cup = _hc_node()
+    _start(node, clock)
+    log = _lines(node)
+    _plan_one(node, clock, client, lead=0.60, x=190.0, y=0.0)   # 40 mm out
+    sk = node._executor.schedule.skills[0]
+    assert tuple(sk.site.cup_mm[:2]) == pytest.approx((190.0, 0.0), abs=1e-9)
+    assert not any('EDGE' in t for t in _texts(log))
+
+
+def test_a_reaim_revision_just_outside_is_clipped_like_the_first_plan():
+    node, client, clock, _cup = _hc_node()
+    _start(node, clock)
+    t_land = clock.t + 0.60
+    _plan_one(node, clock, client, lead=0.60, x=120.0, y=0.0)
+    log = _lines(node)
+    for rev, x in ((1, 175.0), (2, 178.0)):
+        clock.t += 0.01
+        _event(node, clock, lead=t_land - clock.t, x=x, y=0.0, rev=rev)
+    latest = _ctx(node).latest
+    assert latest.revision == 2
+    assert tuple(latest.landing_mm[:2]) == pytest.approx((150.0, 0.0), abs=1e-9)
+    tracked = node._human_tracker(0)
+    assert tuple(tracked.pos_mm[:2]) == pytest.approx((150.0, 0.0), abs=1e-9)
+    edge = [t for t in _texts(log) if t.startswith('HUMAN-CATCH-EDGE-REAIM')]
+    assert len(edge) == 1 and 'Fit Landing (175, 0) mm' in edge[0]
 
 
 # -- per-Throw ends ----------------------------------------------------------

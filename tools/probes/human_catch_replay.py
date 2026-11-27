@@ -17,7 +17,10 @@ Chain, per bag (no hardware, no ROS node, no Platform dynamics):
    RE-AIM subject to the executor's fences (freeze ``CATCH_FREEZE_S`` before touch-down,
    contact window, 10 mm / 10 ms, ``resend_max``, the lateral clamp about the first
    Landing at ``reaim_authority_mm``) and to the gate on the live record
-   (``install_segment`` then ``check_segment``).
+   (``install_segment`` then ``check_segment``).  The edge aim (a Fit Landing at most
+   ``edge_aim_mm`` outside the cup box is aimed at the box edge, owner 2026-11-27) is the
+   policy's own: the PLAN carries the aimed event and a re-aim goes through
+   ``HumanCatchPolicy.reaim_target``, as in the node; the report counts the edge aims.
 3. Score against the bench's truth: the planned Cup xy at touch-down vs the Ball's real
    crossing of the Catch plane, in the SAME frame.
 
@@ -477,11 +480,14 @@ def run_attempt(events, truth, xf, policy_kw, authority_mm=None, hold_s=1.0,
                                 first_lead=lead,
                                 first_dist=float(np.linalg.norm(
                                     np.asarray(evt.landing_mm[:2]) - wait)),
-                                first_rev=evt.revision)
+                                first_rev=evt.revision, outside_mm=d.outside_mm)
                     live['done_at'] = live['t_land'] + HOLD_AFTER_S
                     note(d.key, 'PLANNED', 'OK', live=live)
         elif live is not None and pol.phase == hcp.CATCHING:
-            _reaim(live, latest.get(live['key']), t, auth, resend_max)
+            ev_live = latest.get(live['key'])
+            if ev_live is not None:      # the node's re-aim target: the policy's edge aim
+                ev_live = pol.reaim_target(ev_live)[0]
+            _reaim(live, ev_live, t, auth, resend_max)
         if live is not None:
             _finalise(live, truth, xf, key_k, cap_mm, time_tol_ms)
         t += tick
@@ -489,6 +495,7 @@ def run_attempt(events, truth, xf, policy_kw, authority_mm=None, hold_s=1.0,
                 and live is None:
             break
     log['ended_attempts'] = ended
+    log['edge_aims'] = pol.edge_aims
     return _rows(verdict, evs, truth, xf, pol), _phantoms(verdict, evs), dict(log)
 
 
@@ -591,6 +598,7 @@ def _rows(verdict, evs, truth, xf, pol):
             r['first_xy_err'] = (float(np.linalg.norm(lv['first_xy'] - r['truth_xy']))
                                  if cross else float('nan'))
             r['caught'] = bool(lv.get('caught'))
+            r['edge_aim_outside_mm'] = float(lv.get('outside_mm', 0.0))
             if not cross:
                 r['outcome'], r['reason'] = 'PLANNED', 'NO_CROSSING'
         elif best['outcome'] == 'REFUSED':
@@ -683,6 +691,7 @@ VARIANTS = (
     ('authority 80', {}, 80.0),
     ('wait fixed at home (-50,0)', dict(wait_radius_mm=0.0), None),
     ('wait fixed at centre (0,0)', dict(wait_radius_mm=0.0, home_xy_mm=(0.0, 0.0)), None),
+    ('edge aim off (0 mm, refused SETTLE_SITE as before 2026-11-27)', dict(edge_aim_mm=0.0), None),
 )
 
 
@@ -747,7 +756,9 @@ def main(argv=None):
             t0 = time.time()
             rows, ph, lg = run_bag(S, mode, robot, kw, auth, a.hold_s, a.cap_mm)
             s = score_rows(rows, ph, a.cap_mm)
-            lines.append('| [%s] ' % mode + fmt_summary(name, s) + ' |')
+            lines.append('| [%s] ' % mode + fmt_summary(
+                '%s [edge aims %d]' % (name, (lg.get('edge_aims', 0)
+                                              if isinstance(lg, dict) else 0)), s) + ' |')
             print('[%s] %s: %.1f s' % (mode, name, time.time() - t0), flush=True)
             if name.startswith('baseline'):
                 pickle.dump(dict(rows=rows, phantoms=ph, log=lg),
