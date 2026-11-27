@@ -87,4 +87,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- TKT-99 BUG-140 held on night-shift/2026-11-27-BUG-140: apply the audit's 2 fixes before the Sitting, fly it as is, or drop it? (parent BUG-140)
+- none
