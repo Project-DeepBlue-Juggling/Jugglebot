@@ -4,7 +4,7 @@ kind: feature
 title: 'Launch baseline on the robot''s Hand: launch scatter of a settled ball and of running Throws at Dwell 0.27, 0.50 and 1.00 (learner-efficacy E1)'
 status: inbox
 created: '2026-11-25'
-updated: '2026-11-25T09:28:57Z'
+updated: '2026-11-27T08:12:24Z'
 owners: []
 priority: high
 effort: s
@@ -79,3 +79,8 @@ After the Sitting: `python tools/probes/release_settle_bag_probe.py run <bag>` f
 - pass: at least 25 Throws with a launch fit in block S and at least 50 in each Dwell block that was not refused, so the per-block scatter can be read against the criterion
 - record: the plant_id used, the Level reading, the local time each block started, Throws and Catches per Attempt, and anything odd about how the ball sat or left the Cup
 - minutes: 60
+
+## Sitting result (2026-11-27 19:12)
+
+- verdict: pass
+- notes: Every throw was caught. I turned off the IMU uploading to save time. With the new gravity offset, almost all of the catches are sounding way smoother than before. There is far less jiggling around in the hand than there used to be. In the single-toss attempts, it often appeared as though the Platform wiggled a little bit just before the ball was thrown, though it was very hard to tell when this precisely happened (and whether it was rather a reaction force caused by the throw. I can't help but note the strong z-axis angular rates measured by the IMU. Might this be the cause of our scatter? If so, I'm not sure what we could do to fix this.
