@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (16 Items, 565 min)
+## Robot  (17 Items, 580 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -20,6 +20,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-69 can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19) | 25 | level, bridge-cycled | - | - |
 | BUG-140 Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid | 10 | level, armed, bb-fed | `night-shift/2026-11-27-BUG-140` | - |
 | BUG-144 Juggle action feedback and status topics are in the bag record list but have never been recorded | 5 | level, armed, bridge-cycled | `night-shift/2026-11-26-BUG-144` | - |
+| BUG-146 Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt | 15 | level, armed, bb-fed | `night-shift/2026-11-28-BUG-146` | - |
 | BUG-95 A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads | 35 | level, bb-fed | - | - |
 | FEAT-27 Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | 35 | level, armed, bb-fed | - | - |
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
@@ -47,7 +48,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-135 [Robot] Platform CAN receive queue overflows during the inclinometer re-probe stall: no ## Sitting section
 - BUG-136 [Robot] Catching cone catch stamps could run 10 ms early per stranded receive frame: no ## Sitting section
 - BUG-142 [Robot] Hand park reports already parked on a Hand that is Idle on its bottom stop: no ## Sitting section
-- BUG-146 [Robot] Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt: no ## Sitting section
 - BUG-152 [Robot] Hop entry opening Throw carries a rate at rest, so the Legs ripple before the first Throw: no ## Sitting section
 - BUG-27 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - BUG-29 [Robot] RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball: no ## Sitting section
