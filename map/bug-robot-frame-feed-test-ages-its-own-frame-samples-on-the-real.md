@@ -2,10 +2,11 @@
 id: BUG-154
 kind: bug
 title: Robot-frame Feed test ages its own frame samples on the real clock and fails the suite on this box
-status: inbox
+status: in_progress
 created: '2026-11-28'
-updated: '2026-11-27T17:34:58Z'
-owners: []
+updated: '2026-11-27T17:37:59Z'
+owners:
+- night-shift
 priority: high
 effort: xs
 hardware: none
@@ -30,3 +31,7 @@ Found by the Night Shift 2026-11-28: the merge gate's `./run_tests.sh --full` fo
 
 - Freeze the frame clock in this test, as the fixture does.
 - Later: name what makes the Feed start path take over a second on this box (Memory size, uptime), in case a flown Feed start waits as long.
+
+## Progress
+
+- 2026-11-28: Night Shift 2026-11-28: held on night-shift/2026-11-28-BUG-154: one audit finding open (a second test needs the same freeze); main's full suite fails until it merges
