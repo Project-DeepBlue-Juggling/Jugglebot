@@ -5,7 +5,7 @@
  *
  * The replay engine feeds /balls to main.js only as the playhead advances, so the event store (and the ODrive charts,
  * whose data also stops at the playhead) hold the PAST only. The IMU charts show a whole capture, data on both sides of
- * the playhead, and want the markers on both sides too. This reads /balls of the span straight from the recording:
+ * the playhead, and want the markers on both sides too (the ODrive charts draw them as well). This reads /balls of the span straight from the recording:
  * source.load(i, {lite: true, topics: ['/balls']}) decodes only that topic on the worker's low-priority lane and is never
  * memoised, so a ~32 s capture costs a handful of filtered chunk decodes and leaves nothing resident. The messages go
  * through a FRESH ball-events.js mapper (replay mode, recorded times as they are), so the markers are the very ones the

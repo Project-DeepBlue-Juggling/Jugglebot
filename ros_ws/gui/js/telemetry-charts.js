@@ -2189,8 +2189,6 @@ function sameIds(a, b) {
     return a.length === b.length && a.every((id, i) => id === b[i]);
 }
 
-/** Events whose marker line lies within the hover band of the cursor on `u`,
- *  in time order.  Empty when markers are hidden. */
 /** Every chart (the ODrive charts and the externally built IMU charts alike) merges in the replay span's Throw / Catch
  *  markers (event-store.js setSpanEvents), so a marker inside the visible x range is drawn whether or not the playhead
  *  has reached it. BUG-150: the ODrive charts used to read only the playhead-driven rings, which hold the past. */
@@ -2198,6 +2196,8 @@ function eventsForChart(u, xMin, xMax) {
     return getEventsInRange(xMin, xMax, { span: true });
 }
 
+/** Events whose marker line lies within the hover band of the cursor on `u`,
+ *  in time order.  Empty when markers are hidden. */
 function hitTestMarkers(u, clientX) {
     if (eventMarkersHidden) return [];
     const xMin = u.scales.x.min;

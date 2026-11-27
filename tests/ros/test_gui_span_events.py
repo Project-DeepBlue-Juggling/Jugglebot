@@ -2,7 +2,7 @@
 
 Frontend halves, REAL modules under node (``tests/ros/js/span_events_harness.js``): ``replay/span-events.js`` reads the
 /balls of a time span straight from the recording (filtered, lite chunk loads) through a fresh ``ball-events.js`` mapper,
-and ``event-store.js`` keeps the result in a span list that only the IMU charts merge in (the Event Log never sees it).
+and ``event-store.js`` keeps the result in a span list that every chart (ODrive and IMU) merges in (the Event Log never sees it).
 Source scans pin the wiring a harness cannot see.
 """
 from __future__ import annotations
@@ -69,7 +69,7 @@ def test_span_list_survives_a_backward_seek_trim_and_dies_with_replay(out):
 
 # ---- source scans ----
 
-def test_imu_charts_load_the_span_markers_per_capture_and_only_imu_charts_draw_them():
+def test_imu_charts_load_the_span_markers_per_capture_and_every_chart_draws_them():
     imu = (JS / "imu-charts.js").read_text()
     assert "scanBallEvents(" in imu and "setSpanEvents([])" in imu
     assert imu.count("syncSpanMarkers();") >= 2       # selection change (loadSelected) and mode reset (resetSelection)
