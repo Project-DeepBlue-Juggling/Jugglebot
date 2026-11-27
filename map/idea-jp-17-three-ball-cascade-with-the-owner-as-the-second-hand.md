@@ -4,7 +4,7 @@ kind: idea
 title: JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them
 status: in_progress
 created: '2026-10-30'
-updated: '2026-11-27T04:11:10Z'
+updated: '2026-11-27T08:59:11Z'
 owners: []
 priority: medium
 effort: xl
@@ -150,3 +150,5 @@ Not checked: a replay on the candidate Tracker, a replay with a lowered floor, w
 - 2026-11-21: 2026-11-21: owner ruled the defaults: clear 0.3 s, return 1.0 s, plan window 0.62 s, first lead 0.55 s, fixed wait Site, D10 bar 35 mm. On the 2026-11-20 lobs these plan 21 and score 13 good of 23 in reach. Other D2-D11 parameters stay proposed.
 - 2026-11-26: the untraced 250 to 300 mm aimed-Throw reach is reproduced at Apex 1.5 m (250 mm, refused at 300); 400 mm at 1.8 m, 550 mm at 2.1 m, the same in all directions. The Hand C2 check binds past about 6.3 deg of release tilt, not tilt authority. P4 design note: temp/probes/pway11-p4/design.md.
 - 2026-11-27: Sitting 2026-11-27 lob row flown: 33 single lobs replayed (human_catch_replay.py). 26 crossed the Catch plane, 12 inside the Cup's reach, 9 of those had an admitted plan; planned Cup centre to real crossing median 28 mm, p90 48 mm over 14 planned lobs. The 19 rejected tracks were under 500 mm/s (hand motion), no real lob lost.
+- 2026-11-27: 2026-11-27 replay (offline): at the 0.62 s plan window the Fit overshoots along the flight by 11 mm (sd 15) and predicts touch-down 5.6 ms early over 20 lobs (likely drag, unchecked). /human_throws reaches subscribers a median 44 ms after its frame stamp (Mocap itself 8.5 ms). human_catch_replay.py now takes --transport-ms.
+- 2026-11-27: 2026-11-27 replay, Robot frame: 14 lobs in reach, 10 planned, 7 inside 35 mm at zero delay; 5 to 6 of 14 with the measured 44 ms delay. 3 in-reach lobs were refused SETTLE_SITE with the Fit 1 to 11 mm outside the 150 mm box though the Ball crossed inside it. Every re-aim was refused (0 of 12). Owner decisions listed for step P3 of the partner plan.
