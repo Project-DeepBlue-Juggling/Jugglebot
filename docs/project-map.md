@@ -132,7 +132,7 @@ _Status: closed (complete)._
 
 **Destination:** JP-14 Centre and orbit flown on the robot: 30 consecutive Catches in one Attempt at radius 100 mm with 8 Sites per lap, under pose.
 
-**Progress:** 5 of 10 stops done
+**Progress:** 6 of 10 stops done
 
 **Next:** P5 JP-9 high-low Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 
@@ -141,8 +141,7 @@ _Status: closed (complete)._
 **Remaining:**
 
 - P5 JP-9 high-low Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
-- P6 Per-Beat Sites dependency owned by PWAY-2 ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
-- P8 JP-11 rotating Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
+- P8 JP-11 rotating Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md)) — in progress
 - P9 Centre and orbit compile ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 - P10 JP-14 Centre and orbit ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 
@@ -180,7 +179,7 @@ _Status: closed (complete)._
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives); feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | GUI Improvements | — | — | — | — |
 | Learner generalisation | — | PE2 Learner correctness fixes | PE4 Hand change against the baseline; PE5 Catch-side robustness; PE7 Close-out; bug Plant model pools carried and from-rest rows, so oval rows move the Columns offset; bug Plant model slope value stays corrupted after a long single-Site Memory: one row at a second Site applies a line up to 59 mm off; bug Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z; feature Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows | PE0 Unsettled-ball test from existing bags; PE1 Launch baseline on the robot's Hand; Box sweep fidelity for same-site families (plan what the executor dispatches); P3a Command-time admissibility check; P3b Nomination-time check and the nearest viable configuration; P3c Box retirement; P1 Learner core; P2 The characterisation sitting; P4 BeatEvent stream and the columns wrapper |
-| Pattern progression: Columns to Centre and orbit | — | P5 JP-9 high-low Columns | P6 Per-Beat Sites dependency owned by PWAY-2; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm | P1 Launch current check; P2 Turned Columns on the compiled path; P3 JP-10 turned Columns; P4 Per-Site Apex; P7 JP-5 polygon walk |
+| Pattern progression: Columns to Centre and orbit | P8 JP-11 rotating Columns | P5 JP-9 high-low Columns | P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm | P1 Launch current check; P2 Turned Columns on the compiled path; P3 JP-10 turned Columns; P4 Per-Site Apex; P6 Per-Beat Sites dependency owned by PWAY-2; P7 JP-5 polygon walk |
 | Map improvements | — | — | — | closed |
 | Two-ball skill stack | — | — | — | closed |
 | Wave camera on CAN3 | — | — | — | closed |
