@@ -118,6 +118,30 @@ steps:
     comments: ''
     saved_at: 2026-11-27 14:17
     status: done
+  34:
+    comments: ''
+    saved_at: 2026-11-27 14:18
+    status: done
+  35:
+    comments: ''
+    saved_at: 2026-11-27 14:18
+    status: done
+  36:
+    comments: ''
+    saved_at: 2026-11-27 14:18
+    status: done
+  38:
+    comments: ''
+    saved_at: 2026-11-27 14:29
+    status: done
+  39:
+    comments: ''
+    saved_at: 2026-11-27 14:30
+    status: done
+  41:
+    comments: ''
+    saved_at: 2026-11-27 14:31
+    status: done
 verdicts:
   11:
     IDEA-16:
@@ -139,3 +163,13 @@ verdicts:
     BUG-32:
       notes: No issues. Not really visibly distinguishable from the Launch 3 attempt
       saved_at: 2026-11-27 14:14
+  37:
+    BUG-133:
+      notes: Untouched rest time started at 14:27:00
+      saved_at: 2026-11-27 14:29
+  40:
+    BUG-132:
+      notes: 'I got: (venv) jetson:/home/jetson/Desktop/Jugglebot/ (main) $ python
+        tools/probes/platform_rtt_probe.py [14:30:16] platform_rtt_probe: floor excess
+        1.72 ms (limit 5.0), median excess 5.72 ms; wrote /home/jetson/Desktop/Jugglebot/temp/probes/platform_rtt_20261127T033126Z.json'
+      saved_at: 2026-11-27 14:31
