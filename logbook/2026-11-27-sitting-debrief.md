@@ -170,8 +170,11 @@ cpus 4 and 5) is unchecked.
 - BUG-149: CATCH install CPU grows about 1 ms per 100 record Knots through an Attempt.
 - FEAT-71: hold the Hand when a marker dwells under it (owner decision first).
 
-Owner decisions waiting, with their numbers on the Items: the clock-check band (BUG-132), the gravity default
-(FEAT-27), the warm-start branch (BUG-32), the Hand hold (FEAT-71).
+Owner decisions, made the same day after reading the debrief: the warm-start branch is dropped (BUG-32); the gravity
+vector stays on and is now the config default, with the plumb line and a two-arm comparison on the next sheet
+(FEAT-27, `2026-11-27-gravity-vector-default-on`); the clock check's command-lag band is widened to 15 ms and BUG-132
+is closed (`2026-11-27-imu-clock-check-lag2-band-15-ms`); FEAT-71 is dropped. The Leg-following lag that the
+clock-check numbers exposed is filed as its own Item.
 
 ## Verification
 

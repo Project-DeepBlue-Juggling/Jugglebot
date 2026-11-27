@@ -4,7 +4,7 @@ kind: feature
 title: 'Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z'
 status: in_progress
 created: '2026-10-28'
-updated: '2026-11-27T04:11:35Z'
+updated: '2026-11-27T06:40:48Z'
 owners: []
 priority: medium
 effort: l
@@ -13,7 +13,8 @@ owner: hands
 radius: subsystem
 area: tracking
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-27-gravity-vector-default-on.md
 parent: learner-generalisation
 filed_by: claude
 night_skip: sitting
@@ -45,18 +46,18 @@ Offline, 1,139 free flights from six Sittings (2026-09-29 to 2026-11-22). Output
 
 ## Sitting
 
-- setup: level, armed
-- why: confirm with a plumb line that the Mocap z axis is 0.55 deg from gravity, then A/B the Fit's measured gravity vector on the robot's own Throws and Catches.
+- setup: level, armed, bb-fed
+- why: the measured gravity vector is the Tracker's default since 2026-11-27 on the owner's observation; the plumb line confirms the value itself, and two equal arms show what the vector does to Catches, which one short off arm could not.
 - do:
-  - Hang a weighted line with two Mocap markers at least 800 mm apart near the Cup; record 10 s of `/mocap_data` once the swing has damped.
+  - Before Activate: hang a weighted line with two Mocap markers at least 800 mm apart near the Cup; record 10 s of `/mocap_data` once the swing has damped.
   - Repeat about 500 mm away, near the Ball Butler.
   - Put a digital level on the floor where the Mocap L-frame was placed and read both axes.
-  - If both lines pass, fly one Attempt of the usual Pattern with the vector off (the tracker's start-up line shows `gravity_world_xy=(0.0, 0.0)`).
-  - Between Attempts run `ros2 param set /ball_tracker_node gravity_world_xy_mmps2 "[43.0, 83.0]"` and fly at least 40 Throws on the same Pattern. Keep the Memory.
-  - If the recorded landing error of the robot's own Throws is still above 5 mm after 50 Throws, set `"[0.0, 0.0]"` and stop.
-- pass: both lines lean toward +x by 4.4 mrad and toward +y by 8.5 mrad, each within 1.5 mrad. With the vector on, Catches are no worse than with it off, re-aims per Catch fall, and the robot's own recorded landing error returns below 2 mm by Throw 40.
-- record: the bag name, both line directions in mrad, the floor level in two axes, whether Mocap was recalibrated since 2026-11-13, the time of the param switch, Catches and re-aims per arm, and the landing error over Throws 1-10, 11-30 and 31-50 after the switch.
-- minutes: 30
+  - Check the Tracker's start-up line in the launch log shows `gravity_world_xy=(43.0, 83.0)`, then fly Columns at the usual working point for at least 40 Throws.
+  - Run `ros2 param set /ball_tracker_node gravity_world_xy_mmps2 "[0.0, 0.0]"` and fly at least 40 Throws on the same Pattern. Keep the Memory.
+  - Run `ros2 param set /ball_tracker_node gravity_world_xy_mmps2 "[43.0, 83.0]"` and read it back.
+- pass: both lines lean toward +x by 4.4 mrad and toward +y by 8.5 mrad, each within 1.5 mrad. With the vector on, Catches are no worse than with it off and re-aims per Catch are no higher.
+- record: the bag name, both line directions in mrad, the floor level in two axes, whether Mocap was recalibrated since 2026-11-13, the time of each param switch, and per arm the Throws, Catches, re-aims per Catch and landing rms.
+- minutes: 35
 
 ## Sitting result (2026-11-27 15:08)
 
@@ -73,3 +74,4 @@ Offline, 1,139 free flights from six Sittings (2026-09-29 to 2026-11-22). Output
 - 2026-11-26: Learner check: Memory rows hold the final-Fit landing, so the learned command absorbed the (-3, -11) mm bias. At the switch the true landings do not move; the recorded error jumps about +11 mm in y and the Learner walks it back in about 30 Throws (model, not flown). Keep the Memory. Ball Butler's aim correction was fitted on measured crossings and is unaffected.
 - 2026-11-27: Sitting 2026-11-27, inconclusive: plumb lines not hung. Gravity vector on for 96 Columns Throws: 94 caught, landing rms 29.0 mm against 29.2 mm over 728 earlier Throws, re-aims per Catch 1.31 against 1.28. Landing error mean 6.4 mm at Throws 31 to 50, 1.6 mm at 51 to 90, inside the noise. No harm shown, no gain shown; the off arm was one Attempt of 17 Throws.
 - 2026-11-27: The jugglebot Memory now holds about 95 Columns rows learned with the vector on (plant b_y moved from -5.3 to +2.3 mm); the parameter is back at its default (off) at the next launch. Owner decision: make [43.0, 83.0] the default, or leave it off and let the Memory re-learn.
+- 2026-11-27: Owner decision 2026-11-27: keep the vector. [43.0, 83.0] is now the config default (logbook 2026-11-27-gravity-vector-default-on); the owner saw clearly smoother Catches with it on, which the debrief's numbers could neither confirm nor deny. The Sitting section is rewritten: plumb lines first, then two equal arms of 40 Throws, on then off.

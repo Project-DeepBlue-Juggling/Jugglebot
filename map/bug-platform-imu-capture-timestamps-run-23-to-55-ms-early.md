@@ -2,9 +2,9 @@
 id: BUG-132
 kind: bug
 title: Platform IMU capture timestamps run 23 to 55 ms early against Mocap and the encoders
-status: in_progress
+status: complete
 created: '2026-11-23'
-updated: '2026-11-27T04:11:25Z'
+updated: '2026-11-27T06:40:53Z'
 owners: []
 priority: medium
 effort: s
@@ -17,10 +17,9 @@ blocked_by: []
 links:
 - logbook/2026-11-23-platform-ring-identification-from-the-imu.md
 - logbook/2026-11-23-platform-imu-clock-early-rx-ring-leak.md
+- logbook/2026-11-27-imu-clock-check-lag2-band-15-ms.md
+- logbook/2026-11-27-sitting-debrief.md
 filed_by: claude
-night_skip: sitting
-night_skip_on: '2026-11-24'
-night_skip_note: FW 15 flashed and checked at rest; the Armed check is the Item's Sitting section (one Attempt, then the round-trip probe).
 ---
 
 Found offline on 2026-11-23 (logbook 2026-11-23-platform-ring-identification-from-the-imu), diagnosed the same day (logbook 2026-11-23-platform-imu-clock-early-rx-ring-leak).
@@ -62,3 +61,4 @@ Against Mocap as stamped today expect the IMU about 13 ms early in any compariso
 - 2026-11-23: Cause found: Platform RX ring leak delays the 0x7DD beacon; FW 15 fix built, not flashed (detail in logbook)
 - 2026-11-23: FW 15 flashed 2026-11-23 18:37 and checked at rest (leak 0, probe floor 1.5 ms); the Armed check is the Sitting section, rewritten so the Sitting index parses it
 - 2026-11-27: Failed at the Sitting of 2026-11-27 on the clock check only: lag 12.0, 9.0 and 10.6 ms on three FW 15 captures against the 0 to 10 ms band (FW 14 read -4 to -43 ms). Probe floor 1.72 ms, header fw 15, leak 0, clock_suspect false all pass. Owner decision: widen the band to about 0 to 15 ms, or chase the last 10 ms.
+- 2026-11-27: Closed 2026-11-27 on the owner's decision to widen the clock check's command-lag band to 15 ms: that lag also holds how far the Legs trail the command. The clock measure (IMU against encoders) read -3.2, -3.8 and -2.0 ms on FW 15, as before the defect; all three captures now print PASS. Probe floor 1.72 ms, leak 0.

@@ -2,9 +2,9 @@
 id: FEAT-71
 kind: feature
 title: Hold the Hand when a marker dwells under it
-status: inbox
+status: dropped
 created: '2026-11-27'
-updated: '2026-11-27T04:13:12Z'
+updated: '2026-11-27T06:40:57Z'
 owners: []
 priority: medium
 effort: s
@@ -35,3 +35,7 @@ At the Sitting of 2026-11-27 (14:04:14) a missed Columns Ball rolled under the H
 - pass: to be written with the build.
 - record: to be written with the build.
 - minutes: 10
+
+## Progress
+
+- 2026-11-27: Dropped by the owner, 2026-11-27: a hold triggered by a marker under the Hand would be too unreliable, and the existing stall protection is robust; the Hand's behaviour stays as it is.
