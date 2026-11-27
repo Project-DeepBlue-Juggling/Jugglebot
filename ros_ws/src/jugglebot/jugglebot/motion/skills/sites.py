@@ -162,6 +162,62 @@ def polygon_sites(n: int, edge_mm: float) -> Tuple[Site, ...]:
     return tuple(out)
 
 
+#: ``centre_orbit`` (JP-14, IDEA-14): the radius (mm) and the Sites-per-lap
+#: count the compile accepts, both inclusive.  ORIGIN: the 2026-10-30 offline
+#: probe (radius 95-105 mm, 6-12 steps) re-measured in the sim skills gate
+#: and the nomination check 2026-11-25 (logbook
+#: ``2026-11-25-jp14-centre-and-orbit-compile.md``).  Outside them the compile
+#: REFUSES by name (:data:`ORBIT_RADIUS_OUT_OF_RANGE`,
+#: :data:`ORBIT_N_OUT_OF_RANGE`); nothing is clamped.
+ORBIT_RADIUS_RANGE_MM = (95.0, 105.0)
+ORBIT_N_RANGE = (6, 12)
+ORBIT_RADIUS_OUT_OF_RANGE = 'ORBIT_RADIUS_OUT_OF_RANGE'
+ORBIT_N_OUT_OF_RANGE = 'ORBIT_N_OUT_OF_RANGE'
+#: An ODD Throw count ends on Ball 1's Stop onto Ball 2 at an orbit Site, the
+#: closest ball-to-ball approach of the Pattern (71.8 mm centre distance at
+#: r 95 N 6, below the 74 mm ball diameter; owner decision 2026-11-25: refuse
+#: it, never round it up). :class:`schedule.Pattern` refuses it by this name.
+ORBIT_ODD_THROW_COUNT = 'ORBIT_ODD_THROW_COUNT'
+
+
+def centre_orbit_sites(radius_mm: float, n: int) -> Tuple[Site, ...]:
+    """The ``centre_orbit`` Sites (JP-14, IDEA-14): ``(C, O1, .., On)``.
+
+    ``C`` is the Platform centre (0, 0), Ball 1's column.  ``O1`` .. ``On``
+    are Ball 2's Sites, a regular ``n``-gon inscribed in a circle of
+    ``radius_mm`` about ``C``, in lap order (counter-clockwise), ``O1`` at
+    (-r, 0): where :func:`columns_sites` puts ``P1``, the Site nearest Ball
+    Butler, so it is the Feed Site.  Every cup transit is C <-> Ok, exactly
+    ``radius_mm`` (Columns at separation r); Ball 2's Throw Ok -> Ok+1 travels
+    the chord ``2 r sin(pi / n)`` (76.5 mm at r 100, n 8).
+
+    Raises ``ValueError`` naming :data:`ORBIT_RADIUS_OUT_OF_RANGE` or
+    :data:`ORBIT_N_OUT_OF_RANGE` outside :data:`ORBIT_RADIUS_RANGE_MM` /
+    :data:`ORBIT_N_RANGE` -- a refusal, never a clamp."""
+    r = float(radius_mm)
+    lo, hi = ORBIT_RADIUS_RANGE_MM
+    if not (math.isfinite(r) and lo <= r <= hi):
+        raise ValueError('%s: centre_orbit radius (separation_mm) %r mm is '
+                         'outside the compiled range %g..%g mm'
+                         % (ORBIT_RADIUS_OUT_OF_RANGE, radius_mm, lo, hi))
+    if isinstance(n, bool) or int(n) != n:
+        raise ValueError('%s: orbit_n must be an integer, got %r'
+                         % (ORBIT_N_OUT_OF_RANGE, n))
+    n = int(n)
+    nlo, nhi = ORBIT_N_RANGE
+    if not nlo <= n <= nhi:
+        raise ValueError('%s: orbit_n %d Sites per lap is outside the '
+                         'compiled range %d..%d'
+                         % (ORBIT_N_OUT_OF_RANGE, n, nlo, nhi))
+    z = CATCH_CUP_Z_MM
+    out = [Site('C', np.array([0.0, 0.0, z]))]
+    for k in range(n):
+        a = math.pi + 2.0 * math.pi * k / n
+        out.append(Site('O%d' % (k + 1), np.array(
+            [r * math.cos(a), r * math.sin(a), z])))
+    return tuple(out)
+
+
 def columns_sites(separation_mm: float,
                   angle_deg: float = 0.0) -> Tuple[Site, Site]:
     """The two columns-pattern sites, ``separation_mm`` apart, straddling x=0.

@@ -149,7 +149,7 @@ RUNGS = (-0.20, 0.0, 0.10)
 NOMINATED_PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
                       'columns_1ball_fed', 'columns_turned', 'columns_highlow',
                       'oval_1ball', 'oval_1ball_fed', 'polygon_walk',
-                      'human_catch')
+                      'centre_orbit', 'human_catch')
 #: PWAY-11 P2 U5b: the Pattern whose nomination is ONE nominal CATCH, not a
 #: Site cycle (:func:`build_pattern` / :func:`compile_schedule`): a Ball
 #: thrown by a person arrives VERTICALLY at the wait Site at the policy's
@@ -176,7 +176,7 @@ NOT_NOMINATED_PATTERNS = {'magazine': 'formulaic (a MAGAZINE throw from rest)',
 
 _ONE_PERIOD_PATTERNS = ('self_toss', 'oval_1ball', 'oval_1ball_fed')
 COLUMNS_FED = ('columns', 'columns_turned', 'columns_highlow',
-                'columns_1ball_fed')
+                'columns_1ball_fed', 'centre_orbit')
 
 #: BUG-80: the Patterns a commanded landing offset (skill_node params
 #: ``landing_offset_x_mm`` / ``landing_offset_y_mm``) applies to. Only the
@@ -253,6 +253,10 @@ class NominationConfig:
     #: ``polygon_walk`` only (JP-5): the Site count N (skill_node param
     #: ``polygon_n``); ``separation_mm`` is the polygon's edge.
     polygon_n: int = 4
+    #: ``centre_orbit`` only (JP-14): Ball 2's Sites per lap N (skill_node
+    #: param ``orbit_n``); ``separation_mm`` is the orbit's RADIUS (every cup
+    #: transit, centre <-> orbit Site, is that distance).
+    orbit_n: int = 8
     #: ``human_catch`` only (PWAY-11 P2 U5b): the wait Site xy, the latest
     #: planned lead (D3) and the nominal arrival's absolute Apex (D9) -- the
     #: node's ``human_catch_home_x_mm`` / ``_home_y_mm`` / ``_first_lead_s`` /
@@ -387,6 +391,22 @@ def build_pattern(config: NominationConfig, n_throws: Optional[int] = None):
         return _human_catch_pattern(
             config, int(n_throws if n_throws is not None
                         else (config.n_throws or 1)))
+    if p == sc.CENTRE_ORBIT:
+        # JP-14: Ball 1 keeps the centre C, Ball 2 is fed at O1 and walks the
+        # orbit. The SHORT pattern is one closed lap plus one Throw (2 N + 2):
+        # Ball 2 throws every chord O1 -> O2 .. On -> O1 once (the Platform is
+        # not symmetric under every orbit rotation), then the Stop is Ball
+        # 2's, O1 -> C onto Ball 1: the EVEN-count Stop a Rung flies, whose
+        # ball-to-ball clearance is Columns' own (an odd count, which the
+        # Pattern REFUSES by name (ORBIT_ODD_THROW_COUNT), ends on Ball
+        # 1's Stop onto Ball 2 at an orbit Site, 4 mm closer at r 100, N 8;
+        # tools/probes/centre_orbit_clearance.py).
+        allsites = st.centre_orbit_sites(config.separation_mm, config.orbit_n)
+        if n_throws is None and not config.n_throws:
+            n = 2 + 2 * int(config.orbit_n)
+        return sc.Pattern(sites=(allsites[0], allsites[1]),
+                          apex_m=config.apex_m, dwell_s=config.dwell_s,
+                          n_throws=n, orbit_sites=allsites[1:])
     if p in COLUMNS_FED:
         sites = st.columns_sites(config.separation_mm,
                                  config.angle_deg if p == 'columns_turned' else 0.0)
@@ -1325,6 +1345,9 @@ def workspace_ok(config: NominationConfig) -> bool:
     try:
         if config.pattern == 'polygon_walk':
             sites = st.polygon_sites(config.polygon_n, config.separation_mm)
+        elif config.pattern == sc.CENTRE_ORBIT:
+            sites = st.centre_orbit_sites(config.separation_mm,
+                                          config.orbit_n)
         else:
             sites = st.columns_sites(
                 config.separation_mm,
