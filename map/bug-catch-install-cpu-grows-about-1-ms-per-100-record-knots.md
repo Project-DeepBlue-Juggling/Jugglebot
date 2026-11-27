@@ -2,9 +2,9 @@
 id: BUG-149
 kind: bug
 title: CATCH install CPU grows about 1 ms per 100 record Knots through an Attempt
-status: inbox
+status: complete
 created: '2026-11-27'
-updated: '2026-11-27T04:12:47Z'
+updated: '2026-11-27T16:17:50Z'
 owners: []
 priority: medium
 effort: s
@@ -17,6 +17,7 @@ blocked_by: []
 links:
 - bug-oval-catch-solve-cpu-81-ms-p50-leaves-no-margin-under-the
 - bug-catch-re-aim-refused-infeasible-on-8-4-of-throws-at-the-p2
+- logbook/2026-11-28-catch-install-cpu-growth.md
 filed_by: claude
 ---
 

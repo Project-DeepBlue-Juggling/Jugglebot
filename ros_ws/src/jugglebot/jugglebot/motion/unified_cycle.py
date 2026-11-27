@@ -3168,6 +3168,36 @@ def _gate_joined(joined: CyclePlan, plan_a: CyclePlan, plan_b: CyclePlan,
     return merged, rng
 
 
+def _release_twin_needs_remeasure(old_clear_s, n_a: int, dt: float) -> bool:
+    """Can this HEAD release's ``stroke_clear_s`` change when measured on the
+    joined plan?  (BUG-149: re-measuring every mark made each install dearer
+    than the last, ~1 ms per 100 knots of record.)
+
+    :func:`plan_stroke_clear_s` scans forward from the release and stops at the
+    first stationary knot ``k`` (reading knots ``k-1`` and ``k`` only), so a
+    value that is not ``None`` was decided entirely by knots at or below ``k``.
+    The joined plan is bit-identical to the head below the seam knot ``n_a - 1``
+    (only the seam knot's velocity is re-derived), so a stop at ``k <= n_a - 2``
+    cannot move.  ``old - margin`` lies in ``[(k-1)·dt, k·dt]``, hence
+    ``old - margin <= (n_a - 3)·dt`` guarantees ``k <= n_a - 2`` (one knot of
+    float slack).  A ``None`` found no stop inside the head and may have one now.
+    """
+    if old_clear_s is None:
+        return True
+    return (float(old_clear_s) - _ARM_SUPPRESS_MARGIN_S
+            > (int(n_a) - 3) * float(dt))
+
+
+def _catch_twin_needs_remeasure(t_catch_s: float, n_a: int, dt: float) -> bool:
+    """Can this HEAD catch's ``arm_lead_s`` change on the joined plan?
+
+    :func:`plan_arm_lead_s` scans BACKWARD from the catch knot ``k_c`` and reads
+    knots ``<= k_c`` only, so it is fixed once ``k_c`` is below the seam.  One
+    knot of float slack on ``int(t/dt)``.
+    """
+    return int(float(t_catch_s) / float(dt)) + 1 > int(n_a) - 2
+
+
 def extend(plan_a: CyclePlan, meta_a: CycleMeta,
            plan_b: CyclePlan, meta_b: CycleMeta,
            limits, geom, *,
@@ -3260,10 +3290,21 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
                        for m in meta_b.catches])
     # Re-measure the twins on the JOINT clock: a release that had no
     # deceleration inside its own window has one now.
-    releases = tuple(dataclasses.replace(
-        m, stroke_clear_s=plan_stroke_clear_s(joined, m.t_s)) for m in releases)
-    catches = tuple(dataclasses.replace(
-        m, arm_lead_s=plan_arm_lead_s(joined, m.t_s)) for m in catches)
+    # BUG-149: only the marks whose measurement can READ a knot at or beyond the
+    # seam are re-measured (`_remeasure_marks`); every other head mark keeps the
+    # value it already carries, so the install's cost is flat in the chain depth.
+    n_head_rel, n_head_cat = len(meta_a.releases), len(meta_a.catches)
+    releases = tuple(
+        dataclasses.replace(
+            m, stroke_clear_s=plan_stroke_clear_s(joined, m.t_s))
+        if (i >= n_head_rel or _release_twin_needs_remeasure(
+            m.stroke_clear_s, n_a, plan_a.dt)) else m
+        for i, m in enumerate(releases))
+    catches = tuple(
+        dataclasses.replace(m, arm_lead_s=plan_arm_lead_s(joined, m.t_s))
+        if (i >= n_head_cat or _catch_twin_needs_remeasure(
+            m.t_s, n_a, plan_a.dt)) else m
+        for i, m in enumerate(catches))
 
     join_wall_s = time.perf_counter() - t_wall
 
