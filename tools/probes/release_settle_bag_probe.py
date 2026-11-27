@@ -97,7 +97,8 @@ Outputs go to `temp/probes/release_settle/` (series `<bag>.npz`, per-Throw recor
 `<bag>.csv`, residual traces `<bag>_traces.npz`). The directory is fixed and a rerun
 overwrites a bag's files: the series are a cache of the bag, and the same input
 gives the same output (there is no random element). Reads every
-`temp/learn/*/memory_v2.csv` unless `--memory` names another glob. Run one process
+`temp/runtime/learn/*/memory_v2.csv` and `temp/learn/*/memory_v2.csv` (a plant in both is
+read once) unless `--memory` names other globs, joined by `:`. Run one process
 at a time under `nice -n 15`; `extract` took 1 to 25 min per bag on the loaded box
 (2026-11-25, 21 bags, 17 GB), `features` about 20 s per 340 Throws.
 """
@@ -118,7 +119,8 @@ import _bag_time as bt  # noqa: E402
 
 G = 9806.65                      # mm/s^2
 OUT_DIR = os.path.join(REPO, 'temp', 'probes', 'release_settle')
-MEM_GLOB = os.path.join(REPO, 'temp', 'learn', '*', 'memory_v2.csv')
+# the robot writes Memory under temp/runtime/learn since 2026-11-26; older Sittings stayed in temp/learn
+MEM_GLOB = os.pathsep.join(os.path.join(REPO, 'temp', *d, '*', 'memory_v2.csv') for d in (('runtime', 'learn'), ('learn',)))
 PRE_S, POST_S = 1.6, 0.5         # series kept around each Memory row (log time)
 LOOK_S = 1.3                     # in-Cup look-back before release
 FLIGHT = (0.035, 0.2)            # launch-velocity fit window after release (the review's)
@@ -141,12 +143,14 @@ def _st(s):
 
 
 def read_memory(pattern=MEM_GLOB):
-    rows = []
-    for f in sorted(glob.glob(pattern)):
+    rows, seen = [], set()
+    for f in [f for pat in pattern.split(os.pathsep) for f in sorted(glob.glob(pat))]:
         plant = os.path.basename(os.path.dirname(f))
         with open(f) as fh:
             for r in csv.DictReader(fh):
-                if r.get('t_abs_s'):
+                key = (plant, r.get('t_abs_s'), r.get('ball_id'))
+                if r.get('t_abs_s') and key not in seen:   # a plant copied to the new directory is read once
+                    seen.add(key)
                     r['plant'] = plant
                     rows.append(r)
     rows.sort(key=lambda r: float(r['t_abs_s']))
@@ -370,6 +374,8 @@ def features(npz, out_csv, traces=None, mem_glob=MEM_GLOB):
             for j, ax in enumerate('xy'):
                 f['mn' + ax], f['mwn' + ax] = locfit(fr_t[i0:i1], Rk[i0:i1, j, 2], trel, 0.03)
                 f['mc' + ax], f['mvc' + ax] = locfit(fr_t[i0:i1], ck[i0:i1, j], trel, 0.03)
+            # yaw about the Platform's own axis and its rate (rad, rad/s): not a block regressor, kept for a check
+            f['myaw'], f['mwz'] = locfit(fr_t[i0:i1], np.arctan2(Rk[i0:i1, 1, 0], Rk[i0:i1, 0, 0]), trel, 0.03)
         ir = min(np.searchsorted(fr_t, trel), len(fr_t) - 1)
         Rrel = Rk[ir] if abs(fr_t[ir] - trel) < 0.02 else np.full((3, 3), np.nan)
         # --- launch velocity (flight)

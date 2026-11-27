@@ -3,7 +3,7 @@ title: Learner efficacy - find the launch term and fix it at the Hand; Learner c
 created: 2026-11-24
 status: active
 owner: Harrison
-last_updated: 2026-11-25
+last_updated: 2026-11-27
 pathway: learner-generalisation
 branch: main
 scope: >-
@@ -13,7 +13,7 @@ scope: >-
   term, yaw, the shrinkage estimator and the IMU study are retired from this plan and stay as Items.
 steps:
   - {id: PE0, title: Unsettled-ball test from existing bags, kind: phase, status: complete, completed: 2026-11-25, effort: m, hardware: none}
-  - {id: PE1, title: Launch baseline on the robot's Hand, kind: phase, status: not_started, effort: s, hardware: robot}
+  - {id: PE1, title: Launch baseline on the robot's Hand, kind: phase, status: complete, completed: 2026-11-27, effort: s, hardware: robot}
   - {id: PE2, title: Learner correctness fixes, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: PE3, title: The transit term and yaw, kind: phase, status: retired, date: 2026-11-25, effort: l, hardware: robot}
   - {id: PE4, title: Hand change against the baseline, kind: phase, status: not_started, effort: m, hardware: robot}
@@ -23,6 +23,7 @@ steps:
 related_logbook:
   - 2026-11-24-learner-efficacy-review-and-scatter-decomposition.md
   - 2026-11-25-learner-efficacy-e0-unsettled-ball-test.md
+  - 2026-11-27-learner-efficacy-e1-launch-baseline.md
 related_code:
   - ros_ws/src/jugglebot/jugglebot/motion/skills/{learner,plant_model,memory,executor,schedule}.py (Learner.command at learner.py:296, the most-recent-k selection at learner.py:270, the exact-match key at learner.py:261, SkillExecutor._command_u, the yaw refusal BEAT_YAW_NOT_SUPPORTED at schedule.py:822 and :1507)
   - ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md (I-LEARN-1, I-BEAT-1)
@@ -130,7 +131,7 @@ Step ids: the frontmatter ids are `PE0` to `PE7` (a constraint of the plan tooli
 | Phase | Scope | Hardware | Status | Decides |
 |---|---|---|---|---|
 | E0 | Unsettled-ball test from existing bags | none | COMPLETE 2026-11-25: BETWEEN, leaning against | what E1 asks |
-| E1 | Launch baseline on the robot's Hand (FEAT-68, report FEAT-67) | robot | NOT STARTED, next | seating or separation; E4's acceptance number |
+| E1 | Launch baseline on the robot's Hand (FEAT-68, report FEAT-67) | robot | COMPLETE 2026-11-27 | separation; baseline 15 mm/s per axis in every block |
 | E2 | Learner correctness fixes (BUG-137, BUG-138, one Memory) | none | NOT STARTED | nothing downstream; independent |
 | E3 | The transit term and yaw | robot | RETIRED 2026-11-25 | - |
 | E4 | Hand change against the baseline | robot | NOT STARTED | whether the launch term is cut |
@@ -181,7 +182,7 @@ Cup there explains 20-22 % of g; before release, 0 %). **Phase E1 cleared to sta
 2026-11-25 as a launch baseline on the robot's Hand that tests the owner's seating account against this reading. On
 the bags a perfect settle fix is bounded at about a quarter of g's variance (17 to about 14.5 mm/s).
 
-### Phase E1: Launch baseline on the robot's Hand
+### Phase E1: Launch baseline on the robot's Hand — COMPLETE 2026-11-27
 
 **Purpose.** A number for the launch scatter of the current Cup, and a test that tells the owner's account
 (poor seating during the Dwell) from E0's reading (the release contact at separation). Without it a Hand
@@ -212,6 +213,13 @@ own nominate calls are its rehearsal at the live limits. The robot Hand motor ha
 2026-11-20 overheat: this measures that Hand, and a repair before E4 means re-flying the row first.
 
 **Decides.** What E4 changes, and the numbers each Hand iteration is judged against.
+
+**Result (2026-11-27, `logbook/2026-11-27-learner-efficacy-e1-launch-baseline.md`).** Separation on the
+point estimates (the ratio intervals reach 1.52 to 1.62 against 1.5); seating is rejected outright. Launch sd
+per axis, Platform-corrected: S 14.9 mm/s (95 % 12.2..17.2), D27 15.5, D50 14.7, D100 15.0; variance against
+S 1.08, 0.98 and 1.01. Landing sd 14 to 17 mm per axis in every block. The ball is at rest in the Cup before
+release in every block. The measured Platform motion explains about a fifth of block S's variance and yaw
+none. Not measured: the Cup's own lateral motion against the Platform during the stroke.
 
 ### Phase E2: Learner correctness fixes
 
@@ -262,14 +270,19 @@ scatter enough that the bias is a visible share of the landing error.
 **Purpose.** The only step in this plan that can cut the launch scatter, which is 35-70 % of lateral landing
 variance: removing it would take about 20 mm sd to 11-16 mm.
 
-**Preconditions.** E1's result and number.
+**Preconditions.** E1's result and number: separation, 15 mm/s per axis in every block.
 
-**Work.** The owner's Hand or Cup change (design his; E1 says whether it should target seating or the
-release). Each iteration re-flies FEAT-68's row, or only the blocks that showed the scatter, and is kept or
+**Target after E1.** The release, not seating: a Cup that seats the ball faster or a more on-axis Catch is
+not expected to help. E1 could not tell two causes apart: the Cup moving sideways against the Platform during
+the stroke (play or flex in the Hand's guide), or the ball's contact with the Cup wall as it lifts off. The
+first iteration should tell them apart before a Cup is redesigned, for example with one marker on the Cup or
+its carriage for a repeat of block S alone (30 Throws).
+
+**Work.** The owner's Hand or Cup change (design his). Each iteration re-flies FEAT-68's row, or only the blocks that showed the scatter, and is kept or
 dropped on those numbers. A kept change then flies a normal Columns Attempt.
 
-**Criterion.** To be pre-registered here after E1 and before the first iteration (a proposed form: the
-launch sd of the block that showed the scatter at least halved).
+**Criterion.** To be pre-registered here before the first iteration. Proposed form (§ 7, question 2): block
+S's launch sd at least halved, from 14.9 to 7.5 mm/s or less per axis.
 
 **Hardware and safety.** Robot. A new Cup changes the
 ball's seat height and release point: re-check the Hand top stop and the Catch plane before the first robot
@@ -282,8 +295,8 @@ Throw, and start a new plant Memory (E2(c)).
 **Purpose.** Scatter that is random has to be absorbed at the Catch, or it keeps ending Attempts: outward
 Catch authority is 10 mm (35 mm inward) against about 20 mm sd, and on-target bounce-outs are 18 % of ends
 (6 of 11 diagnosed entered 3-15 mm from the Cup axis; 10 of 11 were Ball 2; two far Throws followed a
-late-seating Catch). If E1 supports the owner's seating account this step also feeds E4: an on-axis Catch
-is then a cause of a clean Throw, not only of a held ball.
+late-seating Catch). E1 did not support the seating account (2026-11-27), so this step no longer feeds E4:
+it stands on absorbing the scatter at the Catch.
 
 **Preconditions.** None beyond E1's result.
 
@@ -335,8 +348,8 @@ The old plan's stance "stays open until these have flown" (owner, 2026-11-06) wa
 
 1. The Destination of PWAY-2 still names bias for carried Throws, new configurations and yaw, which this plan
    no longer delivers (§ 3). Narrow it, or leave those as the Pathway's remaining Items?
-2. E4's criterion (proposed: the launch sd of the block that showed the scatter at least halved) is to be
-   fixed after E1.
+2. E4's criterion is to be fixed before its first iteration. E1 showed the scatter in every block, so the
+   proposed form is: block S's launch sd at least halved, from 14.9 to 7.5 mm/s or less per axis.
 3. E2's replay gate (rms no worse on every axis) comes from a prediction-quality replay, not a closed-loop
    simulation; owner to confirm.
 

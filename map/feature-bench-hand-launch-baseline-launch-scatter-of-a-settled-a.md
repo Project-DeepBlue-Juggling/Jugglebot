@@ -2,9 +2,9 @@
 id: FEAT-68
 kind: feature
 title: 'Launch baseline on the robot''s Hand: launch scatter of a settled ball and of running Throws at Dwell 0.27, 0.50 and 1.00 (learner-efficacy E1)'
-status: inbox
+status: complete
 created: '2026-11-25'
-updated: '2026-11-27T08:12:24Z'
+updated: '2026-11-27T08:33:03Z'
 owners: []
 priority: high
 effort: s
@@ -17,11 +17,9 @@ links:
 - plans/active/learner-efficacy.md
 - logbook/2026-11-25-learner-efficacy-e0-unsettled-ball-test.md
 - feature-bench-hand-launch-scatter-harness-a-throw-with-the-robot-s
+- logbook/2026-11-27-learner-efficacy-e1-launch-baseline.md
 parent: learner-generalisation
 filed_by: claude-e0
-night_skip: sitting
-night_skip_on: '2026-11-26'
-night_skip_note: A robot Hand launch-scatter baseline (learner-efficacy E1); its Sitting section is written.
 ---
 
 Step E1 of `plans/active/learner-efficacy.md`. It gives the launch scatter of the current Cup as one number per block, and it tells the owner's account (the scatter comes from the ball not seating properly during the Dwell) from E0's reading (the scatter arises at separation, settled or not). Each Hand or Cup change in E4 is then kept or dropped by re-flying this same row.
@@ -88,3 +86,15 @@ After the Sitting: `python tools/probes/release_settle_bag_probe.py run <bag>` f
   - With the new gravity offset, almost all of the catches are sounding way smoother than before. There is far less jiggling around in the hand than there used to be.
   - In the single-Throw attempts, it often appeared as though the Platform wiggled a little bit just before the ball was thrown, though it was very hard to tell when this precisely happened (and whether it was rather a reaction force caused by the throw).
   - I can't help but note the strong z-axis angular rates measured by the IMU. Might this be the cause of our scatter? If so, I'm not sure what we could do to fix this.
+
+## Analysis (2026-11-27)
+
+Bag `2026-11-27_18-55-16`, 234 counted Throws. Launch sd per axis with the Platform motion removed: S 14.9 mm/s (95 % 12.2..17.2), D27 15.5, D50 14.7, D100 15.0. Variance against S: 1.08, 0.98 and 1.01.
+
+Read against the criterion: Separation on the point estimates; Seating fails on both parts, intervals included. The report prints UNDECIDED because the ratio intervals reach 1.52 to 1.62 against its 1.5 rule. Block S is not re-flown: the ratios centre on 1.0.
+
+Landing sd from Memory is 14 to 17 mm per axis in every block. The Platform's motion at release is repeatable (sd 3 mm/s in block S) and its yaw rate adds nothing to the fit. Entry: `logbook/2026-11-27-learner-efficacy-e1-launch-baseline.md`.
+
+## Progress
+
+- 2026-11-27: E1 analysed: Separation; settled and running Throws both launch at about 15 mm/s per axis
