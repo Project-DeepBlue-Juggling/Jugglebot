@@ -87,3 +87,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - TKT-101 BUG-152: seed the Hop entry's first-Knot rate from rest, fly JP-11 with it open, or fix the whole Platform rate class? (parent BUG-152)
 - TKT-103 BUG-75: with the re-aim directions logged, BUMP second re-aims, send none, raise the launch bound, or gate them by size? (parent BUG-75)
 - TKT-104 FEAT-31: the pinned arm's wall tail is preemption; build the SCHED_FIFO worker now, wait for BUG-149, or drop it? (parent FEAT-31)
+- TKT-106 BUG-146 held on night-shift/2026-11-28-BUG-146: add the spline solver's unit test before the Sitting, fly it as is, or drop it? (parent BUG-146)
