@@ -258,8 +258,8 @@ def test_queries_do_not_change_state():
         L.predict(ctx, Y_D, Y_D)
         L.local_model(ctx, Y_D)
         L.evidence(ctx)
-        L.model.forward(Y_D, 0.0, 0)
-        L.model.inverse(Y_D, 0.0, 0)
+        L.model.forward(Y_D, 0.0, 0, 'free_cup')
+        L.model.inverse(Y_D, 0.0, 0, 'free_cup')
         L.model.summary()
     assert _state_hash(L) == before
 

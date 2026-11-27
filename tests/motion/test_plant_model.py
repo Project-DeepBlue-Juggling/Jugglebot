@@ -53,23 +53,23 @@ def test_t_u1_forward_inverse_round_trip_for_random_theta_and_sites(offsets):
         for i in range(60):
             sx, ball = (-0.15, 0.0, 0.125)[i % 3], i % 2
             u = _cmd(rng)
-            m.observe(u, _plant(th, u, sx, ball, ndx, ndy) + rng.normal(0, 0.002, 3), sx, ball)
+            m.observe(u, _plant(th, u, sx, ball, ndx, ndy) + rng.normal(0, 0.002, 3), sx, ball, 'free_cup')
         # free_cup rows only: the carried kind's lateral law (BUG-138, '@carried') stays at prior
         assert [n for n in m.at_prior() if not n.endswith('@carried')] == []
         for _ in range(10):
             y = np.array([rng.uniform(-0.1, 0.1), rng.uniform(-0.1, 0.1), rng.uniform(0.5, 1.5)])
             sx, ball = rng.uniform(-0.3, 0.3), int(rng.integers(0, 2))
-            np.testing.assert_allclose(m.forward(m.inverse(y, sx, ball), sx, ball), y, rtol=0, atol=1e-12)
+            np.testing.assert_allclose(m.forward(m.inverse(y, sx, ball, 'free_cup'), sx, ball, 'free_cup'), y, rtol=0, atol=1e-12)
             u = _cmd(rng)
-            np.testing.assert_allclose(m.inverse(m.forward(u, sx, ball), sx, ball), u, rtol=0, atol=1e-12)
+            np.testing.assert_allclose(m.inverse(m.forward(u, sx, ball, 'free_cup'), sx, ball, 'free_cup'), u, rtol=0, atol=1e-12)
         if offsets:
             # Delta of ball 0 is zero: ball 0's map carries b and s only
             th_r = m.theta()
             u = _cmd(rng)
-            y0 = m.forward(u, 0.05, 0)
+            y0 = m.forward(u, 0.05, 0, 'free_cup')
             np.testing.assert_allclose(y0, [u[0] + th_r[1] + th_r[3] * 0.05, u[1] + th_r[2], th_r[0] * u[2]],
                                        rtol=0, atol=1e-15)
-            assert m.forward(u, 0.05, 1)[0] - y0[0] == pytest.approx(th_r[4], abs=1e-15)
+            assert m.forward(u, 0.05, 1, 'free_cup')[0] - y0[0] == pytest.approx(th_r[4], abs=1e-15)
 
 
 def test_t_r2_an_empty_model_is_exactly_the_identity():
@@ -77,14 +77,14 @@ def test_t_r2_an_empty_model_is_exactly_the_identity():
         m = PlantModel(PlantModelConfig(ball_offsets=offsets))
         y = np.array([0.0123, -0.0456, 0.987654321])
         for sx, ball in ((0.0, 0), (-0.075, 1), (0.125, 0)):
-            assert np.array_equal(m.inverse(y, sx, ball), y)
-            assert np.array_equal(m.forward(y, sx, ball), y)
+            assert np.array_equal(m.inverse(y, sx, ball, 'free_cup'), y)
+            assert np.array_equal(m.forward(y, sx, ball, 'free_cup'), y)
         th = m.theta()
         assert th[0] == 1.0 and np.all(th[1:] == 0.0)
         assert set(m.at_prior()) == set(m.param_names)
         for sx in (-0.3, -0.075, 0.0, 0.125, 0.3):
             assert m.offset_x(sx) == (0.0, True)
-            assert np.array_equal(m.forward_rows(np.tile(y, (2, 1)), np.array([sx, sx]), 0), np.tile(y, (2, 1)))
+            assert np.array_equal(m.forward_rows(np.tile(y, (2, 1)), np.array([sx, sx]), 0, 'free_cup'), np.tile(y, (2, 1)))
 
 
 # --------------------------------------------------------------------------- T-U2
@@ -98,7 +98,7 @@ def test_t_u2_rls_recovers_a_synthetic_theta_from_noisy_rows():
         sx, ball = sites[i % 5], (i // 5) % 2
         u = _cmd(rng)
         y = _plant(th, u, sx, ball, ndx, ndy) + rng.normal(0, [0.020, 0.020, 0.010])
-        assert m.observe(u, y, sx, ball)
+        assert m.observe(u, y, sx, ball, 'free_cup')
     got = m.theta()
     # tolerances ~3-4 posterior sd at lambda 0.99 (an ~100-row memory for K and b)
     assert got[0] == pytest.approx(th[0], abs=0.004)
@@ -118,7 +118,7 @@ def test_t_u2_tracks_a_slow_drift_in_K():
         K = 1.06 + 0.04 * i / (n - 1)        # +4 % over 1500 throws
         u = _cmd(rng)
         sx = (-0.075, 0.075)[i % 2]
-        m.observe(u, _plant((K, 0.01, 0.0, -0.09), u, sx, 0) + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0)
+        m.observe(u, _plant((K, 0.01, 0.0, -0.09), u, sx, 0) + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0, 'free_cup')
     # lambda 0.99 lags a ramp by ~ slope x 1/(1 - lambda) = 2.7e-5 x 100 = 0.0027
     assert m.theta()[0] == pytest.approx(1.10, abs=0.006)
 
@@ -129,11 +129,11 @@ def _two_site_then_one_site(model):
     for i in range(200):                            # s is identified: two Sites
         sx = (-0.125, 0.125)[i % 2]
         u = _cmd(rng)
-        model.observe(u, _plant(th, u, sx, 0) + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0)
+        model.observe(u, _plant(th, u, sx, 0) + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0, 'free_cup')
     s_before, sd_before = model.theta()[3], model.sd()[3]
     for i in range(2000):                           # then a long single-Site stretch (the oval)
         u = _cmd(rng)
-        model.observe(u, _plant(th, u, -0.075, 0) + rng.normal(0, [0.02, 0.02, 0.01]), -0.075, 0)
+        model.observe(u, _plant(th, u, -0.075, 0) + rng.normal(0, [0.02, 0.02, 0.01]), -0.075, 0, 'free_cup')
     return s_before, sd_before
 
 
@@ -155,7 +155,7 @@ def test_t_u2_an_uncertain_parameter_reports_its_prior():
     th = (1.08, 0.010, 0.012, -0.09)
     for i in range(40):        # one Site, ball 0 only: s is not identified, Delta_1 never seen
         u = _cmd(rng)
-        m.observe(u, _plant(th, u, -0.075, 0) + rng.normal(0, [0.002, 0.002, 0.002]), -0.075, 0)
+        m.observe(u, _plant(th, u, -0.075, 0) + rng.normal(0, [0.002, 0.002, 0.002]), -0.075, 0, 'free_cup')
     names = m.param_names
     # at ONE off-centre Site b_x and s are confounded (only b_x + s x is seen), so BOTH stay at
     # their prior: b_x's marginal sd keeps |x| sd_s = 22.5 mm > 15 mm. Axis 0 is then L2's.
@@ -179,7 +179,7 @@ def _one_site(seed, n, site_x=-0.075, m=None):
     for _ in range(n):
         u = _cmd(rng)
         y = np.array([u[0] + OFFSET_X_TRUE, u[1] + 0.012, 1.08 * u[2]]) + rng.normal(0, [0.020, 0.020, 0.010])
-        m.observe(u, y, site_x, 0)
+        m.observe(u, y, site_x, 0, 'free_cup')
     return m
 
 
@@ -197,8 +197,8 @@ def test_one_off_centre_site_applies_its_offset_though_b_x_and_s_stay_at_prior()
         assert not at_prior
         errs.append(ox - OFFSET_X_TRUE)
         u = np.array([0.0, 0.0, 1.0])
-        assert m.forward(u, -0.075, 0)[0] == pytest.approx(ox, abs=1e-15)
-        assert m.inverse(np.array([0.0, 0.0, 1.0]), -0.075, 0)[0] == pytest.approx(-ox, abs=1e-15)
+        assert m.forward(u, -0.075, 0, 'free_cup')[0] == pytest.approx(ox, abs=1e-15)
+        assert m.inverse(np.array([0.0, 0.0, 1.0]), -0.075, 0, 'free_cup')[0] == pytest.approx(-ox, abs=1e-15)
         assert 'applied axis-0 offset at x -0.075 m: %+.1f mm' % (1e3 * ox) in m.summary(-0.075)
     errs = np.abs(np.array(errs))
     assert errs.max() < 0.012 and errs.mean() < 0.005, errs * 1e3
@@ -212,14 +212,14 @@ def test_a_far_site_gets_no_axis0_correction_until_a_second_site_fixes_the_line(
     m = _one_site(1, 60)
     assert m.offset_x(0.125) == (0.0, True)
     u = np.array([0.003, -0.002, 1.0])
-    assert m.forward(u, 0.125, 0)[0] == u[0]
+    assert m.forward(u, 0.125, 0, 'free_cup')[0] == u[0]
     assert m.offset_x(0.0)[1] is True                       # even at x = 0 the split matters
     # a second Site with the true line b_x 0.018, s -0.09: offset +0.075 -> 0.01125
     rng = np.random.default_rng(2)
     for _ in range(60):
         u2 = _cmd(rng)
         y = np.array([u2[0] + 0.018 - 0.09 * 0.075, u2[1] + 0.012, 1.08 * u2[2]]) + rng.normal(0, [0.020, 0.020, 0.010])
-        m.observe(u2, y, 0.075, 0)
+        m.observe(u2, y, 0.075, 0, 'free_cup')
     ox, at_prior = m.offset_x(0.125)
     assert not at_prior
     raw = m.raw()
@@ -245,8 +245,8 @@ def test_bug137_a_long_single_site_memory_never_applies_an_offset_at_a_far_site(
         th = m.theta()
         assert th[1] == 0.0 and th[3] == 0.0
         u = np.array([0.003, -0.002, 1.0])
-        assert m.forward(u, 0.125, 0)[0] == u[0]
-        assert m.inverse(u, 0.125, 0)[0] == u[0]
+        assert m.forward(u, 0.125, 0, 'free_cup')[0] == u[0]
+        assert m.inverse(u, 0.125, 0, 'free_cup')[0] == u[0]
         ox, at_prior = m.offset_x(-0.075)                   # the Site itself: still applied
         assert not at_prior
         assert ox == pytest.approx(OFFSET_X_TRUE, abs=0.012)
@@ -257,7 +257,7 @@ def _second_site(m, n, seed):
     for _ in range(n):
         u2 = _cmd(rng)
         y = np.array([u2[0] + 0.018 - 0.09 * 0.075, u2[1] + 0.012, 1.08 * u2[2]]) + rng.normal(0, [0.020, 0.020, 0.010])
-        m.observe(u2, y, 0.075, 0)
+        m.observe(u2, y, 0.075, 0, 'free_cup')
 
 
 @pytest.mark.parametrize('n', [300, 1500])
@@ -366,7 +366,7 @@ def test_bug139_b_tracks_a_step_at_the_rate_lambda_gave(axis):
         for i in range(600):
             sx = (-0.075, 0.075)[i % 2]
             u = _cmd(rng)
-            m.observe(u, _plant((1.08, 0.010, 0.012, -0.09), u, sx, 0) + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0)
+            m.observe(u, _plant((1.08, 0.010, 0.012, -0.09), u, sx, 0) + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0, 'free_cup')
         if axis == 1:
             assert m.sd()[2] ** 2 == pytest.approx(0.01 * 0.020 ** 2, rel=0.05)
         c = []
@@ -374,7 +374,7 @@ def test_bug139_b_tracks_a_step_at_the_rate_lambda_gave(axis):
             sx = (-0.075, 0.075)[i % 2]
             u = _cmd(rng)
             y = _plant((1.08, 0.010, 0.012, -0.09), u, sx, 0) + np.append(step, 0.0)
-            m.observe(u, y + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0)
+            m.observe(u, y + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0, 'free_cup')
             c.append(m.raw()[1] - 0.010 if axis == 0 else m.raw()[2] - 0.012)
         curves.append(c)
     mean = np.mean(curves, axis=0)
@@ -394,16 +394,16 @@ def test_bug137_unforgotten_covariance_is_the_lambda_one_filter_and_rejected_row
         sx = (-0.075, 0.075)[i % 2]
         u = _cmd(rng)
         y = _plant((1.08, 0.01, 0.012, -0.09), u, sx, 0) + rng.normal(0, [0.002, 0.002, 0.001])
-        assert m.observe(u, y, sx, 0) is True
-        assert m1.observe(u, y, sx, 0) is True
+        assert m.observe(u, y, sx, 0, 'free_cup') is True
+        assert m1.observe(u, y, sx, 0, 'free_cup') is True
     fc, fc1 = m._lat['free_cup'], m1._lat['free_cup']
     for f, f1 in ((m._fa, m1._fa), (fc.fx, fc1.fx), (fc.fy, fc1.fy)):
         np.testing.assert_allclose(f.P_unforgotten, f1.P, rtol=1e-9)
     every = (m._fa,) + tuple(g for lat in m._lat.values() for g in (lat.fx, lat.fy))
     before = [f.P_unforgotten.copy() for f in every]
     u = np.array([0.0, 0.0, 1.0])
-    y = m.forward(u, 0.075, 0) + np.array([0.0, 0.300, 0.0])
-    assert m.observe(u, y, 0.075, 0) is False
+    y = m.forward(u, 0.075, 0, 'free_cup') + np.array([0.0, 0.300, 0.0])
+    assert m.observe(u, y, 0.075, 0, 'free_cup') is False
     for f, b in zip(every, before):
         assert np.array_equal(f.P_unforgotten, b)
 
@@ -414,7 +414,7 @@ def _converged(rng, K=1.08):
     for i in range(100):
         sx = (-0.075, 0.075)[i % 2]
         u = _cmd(rng)
-        m.observe(u, _plant((K, 0.01, 0.012, -0.09), u, sx, 0) + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0)
+        m.observe(u, _plant((K, 0.01, 0.012, -0.09), u, sx, 0) + rng.normal(0, [0.02, 0.02, 0.01]), sx, 0, 'free_cup')
     return m
 
 
@@ -423,8 +423,8 @@ def test_a_300_mm_lateral_outlier_is_rejected_and_counted():
     m = _converged(rng)
     th, n_acc, n_rej = m.theta().copy(), m.n_accepted, m.n_rejected
     u = np.array([0.0, 0.0, 1.0])
-    y = m.forward(u, 0.075, 0) + np.array([0.0, 0.300, 0.0])
-    assert m.observe(u, y, 0.075, 0) is False
+    y = m.forward(u, 0.075, 0, 'free_cup') + np.array([0.0, 0.300, 0.0])
+    assert m.observe(u, y, 0.075, 0, 'free_cup') is False
     assert m.n_rejected == n_rej + 1 and m.n_accepted == n_acc
     assert 'axis 1' in m.last_rejection
     assert np.array_equal(m.theta(), th)
@@ -437,7 +437,7 @@ def test_the_sims_gain_1_23_is_learned_from_cold():
     m = PlantModel()
     for i in range(20):
         u = _cmd(rng)
-        m.observe(u, _plant((1.23, 0.0, 0.0, 0.0), u, 0.0, 0) + rng.normal(0, [0.005, 0.005, 0.005]), 0.0, 0)
+        m.observe(u, _plant((1.23, 0.0, 0.0, 0.0), u, 0.0, 0) + rng.normal(0, [0.005, 0.005, 0.005]), 0.0, 0, 'free_cup')
     assert m.n_rejected == 0
     assert m.theta()[0] == pytest.approx(1.23, abs=0.005)
 
@@ -447,9 +447,9 @@ def test_a_single_wild_apex_row_after_convergence_is_rejected():
     m = _converged(rng)
     th = m.theta().copy()
     u = np.array([0.0, 0.0, 1.0])
-    y = m.forward(u, 0.075, 0)
+    y = m.forward(u, 0.075, 0, 'free_cup')
     y[2] = 1.25 * u[2]                    # 16 % above K = 1.08 (converged band 9 %)
-    assert m.observe(u, y, 0.075, 0) is False
+    assert m.observe(u, y, 0.075, 0, 'free_cup') is False
     assert 'apex' in m.last_rejection
     assert np.array_equal(m.theta(), th)
 
@@ -462,19 +462,19 @@ def test_t_u5_every_non_finite_input_raises_value_error_by_name(bad):
     for k in range(3):
         ub = u.copy(); ub[k] = bad
         with pytest.raises(ValueError, match=r'\bu\b'):
-            m.observe(ub, y, 0.0, 0)
+            m.observe(ub, y, 0.0, 0, 'free_cup')
         with pytest.raises(ValueError, match=r'\bu\b'):
-            m.forward(ub, 0.0, 0)
+            m.forward(ub, 0.0, 0, 'free_cup')
         yb = y.copy(); yb[k] = bad
         with pytest.raises(ValueError, match=r'\by\b'):
-            m.observe(u, yb, 0.0, 0)
+            m.observe(u, yb, 0.0, 0, 'free_cup')
         with pytest.raises(ValueError, match='y_d'):
-            m.inverse(yb, 0.0, 0)
-    for call in (lambda: m.observe(u, y, bad, 0), lambda: m.forward(u, bad, 0), lambda: m.inverse(y, bad, 0)):
+            m.inverse(yb, 0.0, 0, 'free_cup')
+    for call in (lambda: m.observe(u, y, bad, 0, 'free_cup'), lambda: m.forward(u, bad, 0, 'free_cup'), lambda: m.inverse(y, bad, 0, 'free_cup')):
         with pytest.raises(ValueError, match='site_x'):
             call()
     with pytest.raises(ValueError, match='ball_id'):
-        m.observe(u, y, 0.0, 1.5)
+        m.observe(u, y, 0.0, 1.5, 'free_cup')
     assert m.n_accepted == 100                    # nothing above changed the state
 
 
@@ -488,18 +488,18 @@ def test_t_u5_a_degenerate_update_raises_only_value_error_and_keeps_the_state():
             ('abc', [0.0, 0.0, 1.0], 0.0), ([0.0, 0.0, 1.0], [0.0, 0.0, 1.0], 1e308 * 10)]
     for u, y, sx in rows:
         try:
-            assert m.observe(u, y, sx, 0) in (True, False)
+            assert m.observe(u, y, sx, 0, 'free_cup') in (True, False)
         except ValueError:
             pass
         assert np.all(np.isfinite(m.raw())) and np.all(np.isfinite(m.sd()))
-        assert np.all(np.isfinite(m.forward([0.0, 0.0, 1.0], 0.0, 0)))
+        assert np.all(np.isfinite(m.forward([0.0, 0.0, 1.0], 0.0, 0, 'free_cup')))
     # the finiteness guard itself: a prior variance that overflows (sd0^2 = inf) makes the gain
     # inf/inf = nan; the update is discarded and a ValueError raised, never a numpy error
     with np.errstate(over='ignore'):
         g = PlantModel(PlantModelConfig(prior_sd_K=1e200))
     before = (g.raw().copy(), g.n_accepted)
     with pytest.raises(ValueError, match='not finite'):
-        g.observe([0.0, 0.0, 1.0], [0.0, 0.0, 1.08], 0.0, 0)
+        g.observe([0.0, 0.0, 1.0], [0.0, 0.0, 1.08], 0.0, 0, 'free_cup')
     assert np.array_equal(g.raw(), before[0]) and g.n_accepted == before[1]
 
 
@@ -550,7 +550,7 @@ def test_pin_production_equals_the_probe_prototype_on_400_corpus_rows(monkeypatc
     models = (PlantModel(PlantModelConfig(ball_offsets=True)), PlantModel())
     accs = []
     for m in models:
-        accs.append(np.array([m.observe(U[i], Y[i], float(d.x0.values[i]), int(d.ball_id.values[i]))
+        accs.append(np.array([m.observe(U[i], Y[i], float(d.x0.values[i]), int(d.ball_id.values[i]), 'free_cup')
                               for i in range(len(d))]))
     assert np.array_equal(accs[0], acc)
     assert np.flatnonzero(~acc).tolist() == PIN_REJECTED
@@ -626,7 +626,7 @@ def test_bug138_carried_rows_never_move_the_columns_lateral_offset_and_k_is_shar
     assert after == before
     for sx, c0 in zip(sites, cmd_before):
         assert np.array_equal(m.inverse(y_d, sx, 0, 'free_cup')[:2], c0[:2])
-        assert m.inverse(y_d, sx, 0)[:2].tolist() == c0[:2].tolist()   # the default kind
+        assert m.inverse(y_d, sx, 0, 'free_cup')[:2].tolist() == c0[:2].tolist()   # the default kind
     names = m.param_names
     th = m.theta()
     for n in ('b_x', 'b_y', 's'):
@@ -715,3 +715,69 @@ def test_bug138_release_kind_is_validated():
             with pytest.raises(ValueError, match='release_kind'):
                 call()
     assert m.n_accepted == 0 and m.n_rejected == 0
+
+
+def test_bug138_release_kind_is_required_on_every_map_and_update():
+    """BUG-138 audit finding (2026-11-27): ``release_kind`` defaulted to 'free_cup', so a caller
+    that forgot the kind silently read and wrote the Columns law. It is now REQUIRED on the write
+    path (``observe``) and the command path (``inverse``, ``forward``, ``forward_rows``); omitting
+    it is a TypeError and changes nothing. Only the read-out ``offset_x`` keeps a default."""
+    m = _converged(np.random.default_rng(3))
+    before = (m.raw().copy(), m.n_accepted, m.n_rejected)
+    u = [0.0, 0.0, 1.0]
+    for call in (lambda: m.observe(u, [0.0, 0.0, 1.08], 0.0, 0),
+                 lambda: m.forward(u, 0.0, 0),
+                 lambda: m.inverse(u, 0.0, 0),
+                 lambda: m.forward_rows(np.zeros((1, 3)), np.zeros(1), 0)):
+        with pytest.raises(TypeError, match='release_kind'):
+            call()
+    assert np.array_equal(m.raw(), before[0]) and (m.n_accepted, m.n_rejected) == before[1:]
+    assert m.offset_x(0.0625) == m.offset_x(0.0625, 'free_cup')
+
+
+def _cold_carried(offset_m, seed, n=300, site_x=-0.075):
+    """A warm free_cup kind (300 Columns rows), then ``n`` carried rows at ONE Site whose axis-0
+    landing is the command plus a CONSISTENT ``offset_m`` (20 mm shot noise)."""
+    rng = np.random.default_rng(seed)
+    m = PlantModel()
+    for i in range(300):
+        u = _cmd(rng)
+        m.observe(u, np.array([u[0] + 0.005, u[1] - 0.005, 1.08 * u[2]])
+                  + rng.normal(0, [0.020, 0.020, 0.010]), (-0.0625, 0.0625)[i % 2], 0, 'free_cup')
+    acc = []
+    for _ in range(n):
+        u = _cmd(rng)
+        acc.append(m.observe(u, np.array([u[0] + offset_m, u[1] + 0.004, 1.08 * u[2]])
+                             + rng.normal(0, [0.020, 0.020, 0.010]), site_x, 0, 'carried'))
+    return m, np.array(acc)
+
+
+def test_bug138_a_cold_carried_kind_learns_an_offset_up_to_120_mm():
+    """The lateral inlier gate (|innovation| < ``inlier_lateral_m`` = 100 mm against the kind's own
+    law) is measured against the PRIOR (offset 0) while a kind has no rows. Measured 2026-11-27
+    (5 seeds): a consistent offset of up to ~120 mm is still learned, because the first row whose
+    noise brings it under 100 mm is accepted at a gain of ~0.6 on b and pulls the law within the
+    gate; at 120 mm 294-300 of 300 rows are accepted and the applied offset ends within 2 mm."""
+    for seed in range(5):
+        m, acc = _cold_carried(0.120, seed)
+        assert acc.sum() >= 290
+        off, at_prior = m.offset_x(-0.075, 'carried')
+        assert not at_prior and off == pytest.approx(0.120, abs=0.006)
+        assert m.offset_x(0.0625, 'free_cup')[0] == pytest.approx(0.005, abs=0.012)
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    'BUG-138 audit finding 2, open (2026-11-27): a cold release kind rejects every row whose '
+    'consistent lateral offset is past ~130-150 mm, because the 100 mm lateral gate is relative '
+    'to the prior; the fix (a consistent-run re-seed, or a wider carried prior) needs an owner '
+    'decision. See logbook/2026-11-26-plant-model-lateral-law-per-release-kind.md.'))
+def test_bug138_a_cold_carried_kind_learns_the_ovals_measured_179_mm_offset():
+    """The oval's own measured lateral law (2026-11-24 review: b_x +179 mm) as a consistent offset
+    at a cold carried kind. Measured 2026-11-27 (5 seeds): 0 of 300 rows accepted, the kind stays
+    at its prior (identity laterally), and since only ACCEPTED rows enter the Learner's residual
+    memory, nothing corrects the Throw. At 150 mm 0-128 of 300 rows are accepted, depending on
+    whether a 2.5-sigma row arrives."""
+    for seed in range(5):
+        m, acc = _cold_carried(0.179, seed)
+        off, at_prior = m.offset_x(-0.075, 'carried')
+        assert not at_prior and off == pytest.approx(0.179, abs=0.010)

@@ -19,10 +19,13 @@ kinds: a row updates K and its own kind's lateral pair only, and a query reads K
 lateral pair only. Why: one K has held across Sittings and Sites, while the oval's lateral fit
 (b_x +179 mm, s +1.23 per m on its own rows) differs from Columns in offset AND slope, and pooled
 it moved the Columns offset at the +62.5 mm Site from -3.3 to +4.8 mm. A kind with no rows is at
-its prior: the identity laterally, whatever the other kind has learned. Every map and update takes
-``release_kind`` (default ``'free_cup'``, the Columns kind; the Learner always passes its context's
-kind). The read-outs keep the free_cup kind's names (``K, b_x, b_y, s, deltaN_x/y``) and append the
-other kinds' lateral parameters suffixed ``@<kind>`` (``b_x@carried`` ...).
+its prior: the identity laterally, whatever the other kind has learned. Every map and update
+(``forward``, ``forward_rows``, ``inverse``, ``observe``) REQUIRES ``release_kind`` and raises on
+an unknown one: a default would let a caller that forgets the kind silently read and write the
+Columns law (BUG-138 audit, 2026-11-27). Only the read-out ``offset_x`` keeps the default
+``'free_cup'``; it never feeds a command or an update. The read-outs keep the free_cup kind's
+names (``K, b_x, b_y, s, deltaN_x/y``) and append the other kinds' lateral parameters suffixed
+``@<kind>`` (``b_x@carried`` ...).
 
 Why this shape (the P1 replay probe, ``tools/probes/learner_replay.py``, 2026-11-06, 3276-row
 corpus over 39 Sittings): ONE global apex gain holds (K = 1.081; per Sitting 1.070-1.095, per Site
@@ -407,7 +410,7 @@ class PlantModel(object):
         return np.array([ox, ry[0]])
 
     # ------------------------------------------------------------------ the model
-    def forward(self, u, site_x, ball_id, release_kind: str = 'free_cup') -> np.ndarray:
+    def forward(self, u, site_x, ball_id, release_kind: str) -> np.ndarray:
         """Predicted landing y (3,) [m] of command ``u`` (3,) under the APPLIED model (reported K;
         ``release_kind``'s reported b_y and per-query axis-0 offset)."""
         u = _finite_vec(u, 3, 'u')
@@ -420,7 +423,7 @@ class PlantModel(object):
         return y
 
     def forward_rows(self, U: np.ndarray, site_x: np.ndarray, ball_id,
-                     release_kind: str = 'free_cup') -> np.ndarray:
+                     release_kind: str) -> np.ndarray:
         """:meth:`forward` of many rows of ONE ball and ONE release kind: ``U`` (n, 3), ``site_x``
         (n,) -> (n, 3). The caller guarantees finite arrays (the Learner's own validated rows)."""
         b = self._ball(ball_id)
@@ -440,7 +443,7 @@ class PlantModel(object):
         out[:, 2] = self._reported_K() * U[:, 2]
         return out
 
-    def inverse(self, y_d, site_x, ball_id, release_kind: str = 'free_cup') -> np.ndarray:
+    def inverse(self, y_d, site_x, ball_id, release_kind: str) -> np.ndarray:
         """The command u (3,) [m] whose predicted landing is ``y_d`` (3,) under the APPLIED model
         of ``release_kind``."""
         y_d = _finite_vec(y_d, 3, 'y_d')
@@ -452,7 +455,7 @@ class PlantModel(object):
             raise ValueError('the plant model inverse map is not finite (%r)' % (u.tolist(),))
         return u
 
-    def observe(self, u, y, site_x, ball_id, release_kind: str = 'free_cup') -> bool:
+    def observe(self, u, y, site_x, ball_id, release_kind: str) -> bool:
         """One row: update theta if the row is an inlier. Returns whether it was accepted. An
         accepted row updates the shared K and ``release_kind``'s lateral law only; the lateral
         innovations of the inlier rule are against that kind's own lateral law."""
