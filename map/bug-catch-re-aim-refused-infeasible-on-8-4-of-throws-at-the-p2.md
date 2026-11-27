@@ -197,6 +197,15 @@ From TKT-59. You chose option 1 and will run it yourself: a day Session runs the
 - So BUG-75 is rated `hardware: robot` for step 5. Until then the Runbook lists it under "Needs a Sitting section" as your reminder.
 - The Night Shift writes the `## Sitting` section when it builds step 4.
 
+## Options (2026-11-28)
+
+The 2026-11-27 Sitting logged the direction: second re-aims mostly take back noise in the first. TKT-103 asks which policy.
+
+1. BUMP for second re-aims (replay 41 to 57 % diagonal, 79 to 83 % axis, short of the bar).
+2. No second re-aim (recommended: removes most refusals, loosens no bound).
+3. Raise the BUMP-LAUNCH bound (a safety bound: your Session).
+4. A second re-aim only above about 20 mm and not reversing the first.
+
 ## Progress
 
 - 2026-11-08: Night Shift 2026-11-08: the turned pair's first ask is not later; it asks twice more often, at no measurable cost (detail below)
