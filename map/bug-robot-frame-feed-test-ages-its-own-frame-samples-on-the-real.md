@@ -2,9 +2,9 @@
 id: BUG-154
 kind: bug
 title: Robot-frame Feed test ages its own frame samples on the real clock and fails the suite on this box
-status: inbox
+status: complete
 created: '2026-11-28'
-updated: '2026-11-27T17:34:58Z'
+updated: '2026-11-27T17:36:08Z'
 owners: []
 priority: high
 effort: xs
@@ -14,7 +14,8 @@ radius: local
 diagnosis: confirmed
 area: skill-stack
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-28-robot-frame-feed-test-frozen-frame-clock.md
 filed_by: claude
 ---
 

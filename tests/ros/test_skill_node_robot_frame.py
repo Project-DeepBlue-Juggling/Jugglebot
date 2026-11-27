@@ -35,7 +35,8 @@ from jugglebot.motion.skills import magazine_target as mt
 from jugglebot.motion.skills.sites import Site
 from jugglebot.robot_frame import RobotFrame
 from tests.ros.conftest import _MockParameter
-from tests.ros.test_skill_node import (_ball, _bb_announcement, _finish_bridge,
+from tests.ros.test_skill_node import (_FRAME_CLOCK_FROZEN_S,
+                                       _ball, _bb_announcement, _finish_bridge,
                                        _frame_ready, _node_with_client,
                                        _response, _robot_frame_msg,
                                        _self_toss_goal, _start_reload)
@@ -164,6 +165,10 @@ def test_moved_frame_announcement_landing_is_the_robot_frame_prior(tmp_path):
     frame = _moved_frame()
     node, _c = _node_with_client(response=_response(), frame=False,
                                  robot_frame=False)
+    # Freeze the frame check's clock, as the fixture does for frame=True
+    # (BUG-14): on the real clock the Feed start's own work can age these
+    # samples past the 1.0 s window before the check reads them (BUG-154).
+    node._frame_clock = lambda: _FRAME_CLOCK_FROZEN_S
     _publish(node, frame)
     p_world = frame.to_world((0.0, 0.0, float(hw.GEOM_INITIAL_HEIGHT_MM)))
     _frame_ready(node, plat_x=float(p_world[0]), plat_y=float(p_world[1]),
