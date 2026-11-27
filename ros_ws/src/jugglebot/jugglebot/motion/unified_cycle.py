@@ -2074,6 +2074,25 @@ def _receive_pin_for(goals: CycleGoals, rcfg) -> np.ndarray:
         max_tilt_deg=rcfg.max_tilt_deg), dtype=float)
 
 
+def _seed_is_at_rest(state: CycleState) -> bool:
+    """True when ``state`` is a REST seed: not post-release, and EXACTLY zero
+    rate in the pose, the Hand and the cup (``CycleState.at_rest`` builds
+    exactly that; a splice onto a rest-terminal knot reads exactly zero too,
+    since the one-sided stencil over three equal knots is zero).  Exact, not a
+    tolerance: the dispatch it gates (``cup_realize.decompose(seed_at_rest=)``,
+    I-PLAN-17) writes the seed's rate onto knot 0, which is only the seed's
+    rate when that rate IS zero; a moving seed keeps the stencil (see I-PLAN-17
+    on why that is not emitted)."""
+    if state.post_release:
+        return False
+    if np.any(np.asarray(state.pose_vel, dtype=float) != 0.0):
+        return False
+    if float(state.hand_vel_rps) != 0.0:
+        return False
+    cup_vel = state.cup_vel_mm_s
+    return cup_vel is None or not np.any(np.asarray(cup_vel, dtype=float) != 0.0)
+
+
 def _seed_tilt_pins(state: CycleState, correction):
     """``(start_tilt, start_tilt_rate)`` in the GRAVITY frame, or ``(None, None)``.
 
@@ -2556,7 +2575,12 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
         if stages is not None:
             stages['tilt'] = time.perf_counter() - t_stage
     t_stage = time.perf_counter()
-    realized = cr.decompose(cup, tilts, rcfg)
+    # I-PLAN-17: a plan seeded from REST opens at the seed's own (zero) rate in
+    # every finite-differenced channel, not at a one-sided stencil over its
+    # first knots (BUG-152: the hop entry's opening THROW streamed
+    # x -1.13 mm/s / ry -0.018 rad/s beside a held position before t0).
+    realized = cr.decompose(cup, tilts, rcfg,
+                            seed_at_rest=_seed_is_at_rest(state))
     if stages is not None:
         stages['dec'] = time.perf_counter() - t_stage
     # C-CUP-2: the contact window is a fact the QP established about the ball;

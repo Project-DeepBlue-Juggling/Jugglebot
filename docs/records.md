@@ -99,6 +99,11 @@ _No record yet._
 
 ## 2 balls
 
+<!-- pattern: centre_orbit balls: 2 -->
+### Centre and orbit
+
+_No record yet._
+
 <!-- pattern: columns balls: 2 -->
 ### Columns
 
@@ -131,6 +136,11 @@ _No record yet._
 | 2026-11-03 12:52 | 17 | 16 | drop (MISSED_CATCH) |  | apex_m=1; separation_mm=100; dwell_s=0.27; apex_m_ball2=0.9; planner=pose |
 | 2026-11-03 12:53 | 18 | 18 | drop (MISSED_CATCH) |  | apex_m=1; separation_mm=100; dwell_s=0.27; apex_m_ball2=0.9; planner=pose |
 | 2026-11-13 12:03 | 20 | 20 | completed (COMPLETED) |  | apex_m=1; separation_mm=100; dwell_s=0.27; apex_m_ball2=0.9; planner=pose |
+
+<!-- pattern: columns_rotating balls: 2 -->
+### Columns — rotating
+
+_No record yet._
 
 <!-- pattern: columns_turned balls: 2 -->
 ### Columns — turned
