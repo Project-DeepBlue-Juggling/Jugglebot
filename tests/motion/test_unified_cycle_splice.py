@@ -384,8 +384,15 @@ def test_the_seam_knots_velocity_is_the_joined_series_derivative(
     whole = cr.decompose(new_meta.cup_plan, new_meta.tilts,
                          uc.build_realize_config(limits))
     assert np.allclose(spliced.pose_vel[k_s], whole.pose_vel[k_s], atol=1e-9)
+    # The Hand is the one channel whose interior rate is NOT a local stencil
+    # since BUG-146 (2026-11-28): the drop term's interior rates are the
+    # clamped spline over the whole series, which the 3-knot window only
+    # approximates (measured 7.3e-7 rev/s here; as a C2 step, 320 x that =
+    # 2.3e-4 rev/s^2 against the 4.5 tolerance).  1e-5 rev/s is 400x under
+    # I-PLAN-11's 0.0041 rev/s Hand seam baseline, so a stale-head rate still
+    # fails here.
     assert spliced.hand_vel_rps[k_s] == pytest.approx(
-        float(whole.slider_vel_rev_s[k_s]), abs=1e-9)
+        float(whole.slider_vel_rev_s[k_s]), abs=1e-5)
 
     central = (spliced.pose[k_s + 1, 3:5] - spliced.pose[k_s - 1, 3:5]) / (2.0 * dt)
     assert np.allclose(spliced.pose_vel[k_s, 3:5], central, atol=1e-9)

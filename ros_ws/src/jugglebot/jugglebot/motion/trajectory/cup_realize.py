@@ -1650,6 +1650,49 @@ def _knot_derivative(values: np.ndarray, dt: float) -> np.ndarray:
     return d
 
 
+def _clamped_spline_rates(values: np.ndarray, dt: float, v_start: float,
+                          v_end: float) -> np.ndarray:
+    """Knot rates of the clamped cubic spline through a uniformly-spaced 1-D
+    series: the end rates are ``v_start`` / ``v_end`` EXACTLY, and every
+    interior knot k satisfies ``v[k-1] + 4 v[k] + v[k+1] = 3 (p[k+1] - p[k-1]) / dt``.
+
+    That relation is exactly the condition that the two Hermite cubics meeting
+    at knot k (``validate_cycle`` Pass 5's reconstruction from (position, rate))
+    have the same acceleration there, so a series whose rates come from here
+    carries no knot-acceleration step at any interior knot.  One Thomas sweep
+    over the strictly diagonally dominant (1, 4, 1) system; no dependency.
+    ``n < 3`` has no interior knot and returns just the pinned ends.
+    """
+    p = np.asarray(values, dtype=float)
+    n = p.shape[0]
+    out = np.empty(n, dtype=float)
+    if n == 0:
+        return out
+    out[0] = v_start
+    out[-1] = v_end
+    if n < 3:
+        return out
+    rhs = (3.0 / dt) * (p[2:] - p[:-2])
+    rhs[0] -= v_start
+    rhs[-1] -= v_end
+    m = n - 2
+    rhs_l = rhs.tolist()
+    c = [0.0] * m
+    d = [0.0] * m
+    c[0] = 0.25
+    d[0] = rhs_l[0] * 0.25
+    for i in range(1, m):
+        inv = 1.0 / (4.0 - c[i - 1])
+        c[i] = inv
+        d[i] = (rhs_l[i] - d[i - 1]) * inv
+    x = d[-1]
+    out[m] = x
+    for i in range(m - 2, -1, -1):
+        x = d[i] - c[i] * x
+        out[i + 1] = x
+    return out
+
+
 def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
     """Cup track + tilt schedule → per-knot platform pose and slider.
 
@@ -1680,8 +1723,12 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
     everything that carries the throw: the lever arm's rate is exactly the cup's
     vertical speed (``arm = cup_z − const``), so ``d(shift)/dt`` and ``d(drop)/dt``
     keep the cup's own ``vel`` term exactly and finite-difference only the
-    *tilt-rate* term (identically zero for a constant tilt).  The pose z rate and
-    the tilt rates are finite differences of series this function itself produced.
+    *tilt-rate* term (identically zero for a constant tilt).  The exception is
+    the slider's drop term at INTERIOR knots of a tilted plan: its rates are the
+    clamped cubic spline through its own exact positions, ends pinned to the
+    analytic-plus-difference value above (BUG-146: that is what keeps the Hand
+    C2 at the knots).  The pose z rate and the tilt rates are finite
+    differences of series this function itself produced.
     The slider rate is forced to zero at a saturated knot — the stroke clamp is a
     real wall, and pretending the hand still moves there would hand the wire a
     velocity the machine cannot follow.
@@ -1726,6 +1773,7 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
     pose = np.zeros((n, 6), dtype=float)
     axis = np.zeros((n, 3), dtype=float)
     arm = np.zeros(n, dtype=float)
+    drop = np.zeros(n, dtype=float)
     slider_mm = np.zeros(n, dtype=float)
     dz = np.zeros(n, dtype=float)
     saturated = np.zeros(n, dtype=bool)
@@ -1765,6 +1813,7 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
 
         axis[k] = a
         arm[k] = arm_k
+        drop[k] = drop_k
         dz[k] = dz_k
         slider_mm[k] = s_clamped
         saturated[k] = (s_clamped != s)
@@ -1779,6 +1828,25 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
     # d(arm)/dt == d(cup_z_mm)/dt == vz_mm exactly (arm is cup_z minus a constant).
     shift_dot = vz_mm[:, None] * axis[:, :2] + arm[:, None] * axis_dot[:, :2]
     drop_dot = vz_mm * (1.0 - axis[:, 2]) - arm * axis_dot[:, 2]
+    # BUG-146: the Hand's tilt-drop term gets CLAMPED CUBIC-SPLINE knot rates
+    # over its own exact knot positions, the end rates pinned to the line
+    # above's values.  ``validate_cycle`` Pass 5 (and the firmware's torque
+    # feedforward) rebuild each span as a Hermite cubic from (position, rate),
+    # so the finite-differenced ``axis_dot`` term put a knot-acceleration step
+    # of ~320 x its rate error into the Hand at every tilted knot (~0.116 deg^-2
+    # x theta^2 rev/s^2 in the SETTLE tail; HAND_LIMIT_C2 past ~6.2 deg).  The
+    # WHOLE term arm*(1 - axis_z) is splined, not axis_z alone: the Hand series
+    # is cup_z (whose plan already satisfies the spline relation) plus this
+    # term, so only a drop rate that itself satisfies it leaves the slider C2
+    # (splining axis_z alone leaves 0.08-0.57 rev/s^2 from the arm x axis
+    # product, measured 2026-11-28).  Pinning both ends keeps every seam's
+    # Hand rate bit-identical (knot 0 is a splice/extend seed, I-PLAN-11; the
+    # last knot is a rest or release seam).  A level plan has drop == 0
+    # everywhere and keeps the line above bit for bit.  The Platform channels
+    # (shift_dot, tilt_dot, dz_dot) keep the finite difference.
+    if n >= 3 and np.any(drop != 0.0):
+        drop_dot = _clamped_spline_rates(drop, dt, float(drop_dot[0]),
+                                         float(drop_dot[-1]))
 
     pose_vel = np.zeros((n, 6), dtype=float)
     pose_vel[:, :2] = vxy_mm - shift_dot

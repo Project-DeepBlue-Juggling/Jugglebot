@@ -25,7 +25,7 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 **Attached inbox items:**
 
-- bug: BUG-146 [Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-aimed-throw-from-a-level-rest-is-refused-hand-limit-c2-past.md) (inbox)
+- —
 
 ## Two-ball oval
 
@@ -172,7 +172,7 @@ _Status: closed (complete)._
 
 | Pathway | Now | Next | Later | Done |
 | --- | --- | --- | --- | --- |
-| Human-partner juggling | P1 Human Throw event; P2 Reactive Catch | — | P3 Catch one pass; P4 Throw back to a fixed hand point; P5 Catch and throw back; P6 Held tilt; P7 Exchange at a held tilt; P8 Three-ball cascade; bug Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt | — |
+| Human-partner juggling | P1 Human Throw event; P2 Reactive Catch | — | P3 Catch one pass; P4 Throw back to a fixed hand point; P5 Catch and throw back; P6 Held tilt; P7 Exchange at a held tilt; P8 Three-ball cascade | — |
 | Two-ball oval | P4 Working point and the dwell ladder; P3 A/B Sitting on the oval | — | P5 Two-ball oval; bug A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve; bug 10 % jitter-margin class of LIMIT_* refusals; bug Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff; bug RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball; feature P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30; feature Pre-release hold rung: release from a moving Platform (hold 0.100 → 0); feature Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load); feature Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28) | P1 The oval pattern dispatchable; P3 Pose-level carry planner; P0 Identify the Platform mode from existing bags; P1 The ZVD contract and rows behind a flag; P2 Box re-sweep with the rows on; P1 Firmware - age-aware lead clamp and engagement counter; P2 Bench validation; P3 Robot validation; P1 Off-board foundations; P2 Platform Teensy firmware FW 11; P3 can-bridge firmware and the Jetson side; P4 Sitting 1, flash and bench the capture path; P5 Sitting 2, mount calibration and first Attempt captures |
 | Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | — | — | — | closed |
 | Project map and shared dictionary | — | — | — | closed |
@@ -263,7 +263,6 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | BUG-140 | bug | [Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-fresh-rest-rebases-outside-the-band-are-uncapped-up-to-1-0-s.md) | in_progress | medium | s | robot | decision | subsystem | skill-stack | — | filed 2026-11-25 |
 | BUG-142 | bug | [Hand park reports already parked on a Hand that is Idle on its bottom stop](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-park-reports-already-parked-on-a-hand-that-is-idle-on.md) | inbox | medium | xs | robot | hands | local | hand | — | filed 2026-11-25 |
 | BUG-144 | bug | [Juggle action feedback and status topics are in the bag record list but have never been recorded](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-juggle-action-feedback-and-status-topics-are-in-the-bag.md) | in_progress | medium | xs | robot | none | local | tests-tooling | — | filed 2026-11-25 |
-| BUG-146 | bug | [Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-aimed-throw-from-a-level-rest-is-refused-hand-limit-c2-past.md) | inbox | medium | s | robot | decision | subsystem | skill-stack | Human-partner juggling | filed 2026-11-26 |
 | FEAT-69 | feature | [can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-can-bridge-fw-53-a-leg-leaves-closed-loop-only-at-stow-i-fw.md) | in_progress | high | l | robot | hands | normative | can-bridge | — | filed 2026-11-26 |
 | FEAT-70 | feature | [can-bridge reports each Leg's measured Closed-loop engage time](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-can-bridge-reports-each-leg-s-measured-closed-loop-engage.md) | inbox | medium | s | none | none | subsystem | can-bridge | — | filed 2026-11-27 |
 | BUG-149 | bug | [CATCH install CPU grows about 1 ms per 100 record Knots through an Attempt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-catch-install-cpu-grows-about-1-ms-per-100-record-knots.md) | inbox | medium | s | none | none | subsystem | skill-stack | — | filed 2026-11-27 |

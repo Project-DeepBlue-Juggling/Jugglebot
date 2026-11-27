@@ -47,7 +47,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-135 [Robot] Platform CAN receive queue overflows during the inclinometer re-probe stall: no ## Sitting section
 - BUG-136 [Robot] Catching cone catch stamps could run 10 ms early per stranded receive frame: no ## Sitting section
 - BUG-142 [Robot] Hand park reports already parked on a Hand that is Idle on its bottom stop: no ## Sitting section
-- BUG-146 [Robot] Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt: no ## Sitting section
 - BUG-27 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - BUG-29 [Robot] RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball: no ## Sitting section
 - BUG-32 [Robot] Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff: no ## Sitting section
