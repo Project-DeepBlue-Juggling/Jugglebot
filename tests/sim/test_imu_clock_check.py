@@ -43,7 +43,8 @@ def test_verdict_rule():
     assert v(-4.2, 6.8, 5.0, 0.1)[:2] == ("PASS", 0)
     assert v(-48.8, -38.4, 5.0, 0.1)[:2] == ("FAIL", 1)
     assert v(-2.0, -3.0, 5.0, 0.1)[:2] == ("FAIL", 1)      # IMU leads the command: impossible
-    assert v(-2.0, 12.0, 5.0, 0.1)[:2] == ("FAIL", 1)      # lag2 too large
+    assert v(-3.2, 12.0, 5.0, 0.1)[:2] == ("PASS", 0)      # FW 15, Sitting 2026-11-27 (33D0)
+    assert v(-2.0, 16.0, 5.0, 0.1)[:2] == ("FAIL", 1)      # lag2 too large
     assert v(-6.0, 5.0, 5.0, 0.1)[:2] == ("FAIL", 1)       # lag1 beyond the threshold
     assert v(-6.0, 5.0, 8.0, 0.1)[:2] == ("PASS", 0)       # --max-abs-ms respected
     assert v(0.0, 5.0, 5.0, 0.001)[:2] == ("INSUFFICIENT_MOTION", 2)
