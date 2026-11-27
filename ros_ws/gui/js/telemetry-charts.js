@@ -2191,12 +2191,11 @@ function sameIds(a, b) {
 
 /** Events whose marker line lies within the hover band of the cursor on `u`,
  *  in time order.  Empty when markers are hidden. */
-/** Externally built charts (the IMU time charts) that also show the replay span's Throw / Catch markers beyond the
- *  playhead (event-store.js setSpanEvents). The ODrive charts are never in it. */
-const spanMarkerCharts = new WeakSet();
-
+/** Every chart (the ODrive charts and the externally built IMU charts alike) merges in the replay span's Throw / Catch
+ *  markers (event-store.js setSpanEvents), so a marker inside the visible x range is drawn whether or not the playhead
+ *  has reached it. BUG-150: the ODrive charts used to read only the playhead-driven rings, which hold the past. */
 function eventsForChart(u, xMin, xMax) {
-    return getEventsInRange(xMin, xMax, spanMarkerCharts.has(u) ? { span: true } : undefined);
+    return getEventsInRange(xMin, xMax, { span: true });
 }
 
 function hitTestMarkers(u, clientX) {
@@ -2288,7 +2287,6 @@ function clearMarkerHover() {
 /** Draw hook for charts that live outside this module (the IMU time charts): the same event markers as
  *  the ODrive charts, clipped to the plot area. */
 export function drawEventMarkers(u) {
-    spanMarkerCharts.add(u);
     const ctx = u.ctx;
     if (!ctx || !u.bbox || u.scales.x.min == null || u.scales.x.max == null) return;
     const { left, top, width, height } = u.bbox;
@@ -2302,7 +2300,6 @@ export function drawEventMarkers(u) {
 
 /** Marker tooltip hover (same bubble, same Event Log tint) for an externally built chart. */
 export function attachEventMarkerHover(u) {
-    spanMarkerCharts.add(u);
     const over = u.over;
     over.addEventListener('mousemove', (ev) => {
         const prevIds = markerHover && markerHover.u === u ? markerHover.ids : [];

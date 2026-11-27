@@ -2,14 +2,20 @@
 id: BUG-150
 kind: bug
 title: ODrive Charts' Throw/Catch markers disappear for future events
-status: inbox
+status: complete
 created: '2026-11-27'
-updated: '2026-11-27T06:39:52Z'
+updated: '2026-11-27T16:17:56Z'
 owners: []
 priority: medium
 effort: s
+hardware: none
+owner: none
+radius: local
+diagnosis: unknown
+area: gui
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-28-chart-markers-for-future-events.md
 filed_by: harrison
 ---
 

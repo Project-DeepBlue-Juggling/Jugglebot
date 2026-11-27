@@ -65,8 +65,8 @@ const events = [];
 const chartEvents = [];
 
 /** Throw / Catch markers of one replayed capture span, INCLUDING those after the playhead (span-events.js). Kept apart
- *  from the rings above so the Event Log, the replay trim and the ODrive charts never see them; only charts that ask
- *  for them (the IMU time charts) merge them in via getEventsInRange(..., {span: true}). */
+ *  from the rings above so the Event Log and the replay trim never see them; the charts (ODrive and IMU) merge them in
+ *  via getEventsInRange(..., {span: true}). */
 let spanEvents = [];
 
 /** @type {Set<(event) => void>} Subscribers notified on each new event. */

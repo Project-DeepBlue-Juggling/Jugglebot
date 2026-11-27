@@ -74,9 +74,10 @@ def test_imu_charts_load_the_span_markers_per_capture_and_only_imu_charts_draw_t
     assert "scanBallEvents(" in imu and "setSpanEvents([])" in imu
     assert imu.count("syncSpanMarkers();") >= 2       # selection change (loadSelected) and mode reset (resetSelection)
     tc = (JS / "telemetry-charts.js").read_text()
-    assert "spanMarkerCharts" in tc
-    # The ODrive charts' marker pass must not opt in: only the externally built IMU charts register through these two exports
-    assert tc.count("spanMarkerCharts.add(u)") == 2
+    # BUG-150: every chart (ODrive and IMU) merges the span markers, so a future Throw / Catch inside the visible x range draws
+    assert "spanMarkerCharts" not in tc
+    assert "return getEventsInRange(xMin, xMax, { span: true });" in tc
+    assert tc.count("getEventsInRange(") == 1          # one query path for hit-testing and painting, no per-chart opt-in
 
 
 def test_top_handle_drag_does_not_unhide_the_odrive_grid_while_the_imu_group_is_shown():
