@@ -33,4 +33,61 @@ steps:
     comments: ''
     saved_at: 2026-11-27 13:49
     status: done
-verdicts: {}
+  9:
+    comments: ''
+    saved_at: 2026-11-27 13:49
+    status: done
+  10:
+    comments: ''
+    saved_at: 2026-11-27 13:50
+    status: done
+  12:
+    comments: I need to prepare the plumb line first.
+    saved_at: 2026-11-27 13:54
+    status: skipped
+  13:
+    comments: ''
+    saved_at: 2026-11-27 13:54
+    status: done
+  14:
+    comments: ''
+    saved_at: 2026-11-27 13:55
+    status: done
+  15:
+    comments: ''
+    saved_at: 2026-11-27 13:57
+    status: done
+  17:
+    comments: ''
+    saved_at: 2026-11-27 13:59
+    status: done
+  18:
+    comments: There was a messy catch that circled out of the Cup, but other than
+      that, the attempt was as smooth as previous Sittings
+    saved_at: 2026-11-27 14:01
+    status: done
+  20:
+    comments: ''
+    saved_at: 2026-11-27 14:07
+    status: done
+  21:
+    comments: ''
+    saved_at: 2026-11-27 14:08
+    status: done
+verdicts:
+  11:
+    IDEA-16:
+      notes: Threw approximately 35 lobs
+      saved_at: 2026-11-27 13:54
+  16:
+    IDEA-27:
+      notes: First attempt ended with a missed throw. Second worked perfectly.
+      saved_at: 2026-11-27 13:58
+  19:
+    FEAT-27:
+      notes: These catches generally seemed quite a bit smoother than in Step 18,
+        though the first two attempts ended with a ball that landed just outside of
+        the Cup; landing instead on the Platform. All of the BB feeds were exceptionally
+        smooth. The final attempt was easily the smoothest columns attempt we've ever
+        had. I expect the IMU data will confirm this.
+      saved_at: 2026-11-27 14:06
