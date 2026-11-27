@@ -102,16 +102,20 @@ Not checked: a replay on the candidate Tracker, a replay with a lowered floor, w
 
 ## Sitting
 
-- setup: level
-- why: the three recorded bags are cascades and passes with several Balls in the air, so they cannot score a one-Ball Catch; this records single lobs at the Cup for the offline replay (plan step P3, data row).
+- setup: level, armed
+- why: plan step P3, the first robot Catch of a human Throw: one Ball at a time lobbed at the Cup, the Platform Level and Active, the robot Catches and holds. Flown as a first data Attempt (owner, 2026-11-27): the lob replay predicts about 5 to 9 Catches of 14 lobs in reach, so the gate is scored but not expected to pass.
 - do:
-  - Launch, home and Level the Platform; do NOT arm. Leave the Cup empty.
-  - `ros2 param set /ball_tracker_node detect_human_throws true`.
-  - Lob one Ball at the Cup about 30 times, one Ball in the air at a time, from where you would stand to juggle with the robot, at a height of about 1.8 m or more; let each Ball land in or beside the Cup and pick it up by hand before the next.
-  - Afterwards `ros2 param set /ball_tracker_node detect_human_throws false`.
-- pass: the bag replays through `tools/probes/human_catch_replay.py` and reports, for the lobs that crossed inside the Cup's reach, how many had an admitted plan and how far the planned Cup centre was from the real crossing.
-- record: the bag path, where you stood, the lob count, and the replay report path.
-- minutes: 10
+  - Launch, home and Level the Platform. Cup empty; check the GUI shows the Hand ball sensor answering before any lob.
+  - Rehearse, nothing moves: `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'human_catch'}"`; the reply must read success: True.
+  - `ros2 param set /ball_tracker_node detect_human_throws true`
+  - Activate.
+  - `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: human_catch, num_cycles: 15}" --feedback`
+  - From where you stood on 2026-11-27, lob one Ball at the Cup, Apex about 1.8 m or more, one Ball in the air at a time. After a Catch take the Ball out of the Cup by hand; after a miss pick it up. Wait until the Platform is back at rest before the next lob. Count every lob.
+  - The goal ends by itself after 15 planned Throws; Ctrl-C on the goal stops it early. If the Platform moves in a way you do not expect, press the E-stop button.
+  - `ros2 param set /ball_tracker_node detect_human_throws false`
+- pass: the goal's result line reads "human_catch result: C of 15 human Throws caught" with C at least 10, and the debrief's replay of the bag finds no Catch planned on a phantom.
+- record: the result line word for word, the number of lobs you threw, where you stood, the start and end clock times, and the bag directory.
+- minutes: 20
 
 ## Sitting result (2026-11-13 13:12)
 

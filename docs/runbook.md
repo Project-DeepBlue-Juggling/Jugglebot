@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (16 Items, 555 min)
+## Robot  (16 Items, 565 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -24,7 +24,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-27 Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | 35 | level, armed, bb-fed | - | - |
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | - | - |
-| IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 10 | level | - | - |
+| IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 20 | level, armed | - | - |
 | IDEA-27 Measure the Platform ring at Dwell 0.40 with the IMU | 15 | level, armed, bb-fed | - | - |
 
 ## Bench leg  (1 Item, 30 min)
