@@ -1,6 +1,6 @@
 """FEAT-27: `ball_tracker_node`'s `gravity_world_xy_mmps2` parameter.
 
-Config default (`hw.TRACKING_GRAVITY_WORLD_XY_MMPS2`, [0, 0]) reaches the
+Config default (`hw.TRACKING_GRAVITY_WORLD_XY_MMPS2`, [43.0, 83.0] since 2026-11-27) reaches the
 tracker; `ros2 param set` switches it live (the Sitting A/B of the measured
 (43, 83) mm/s^2) and refuses anything but two finite numbers. The fit
 arithmetic itself is `tests/tracking/test_flight_fit_gravity_tilt.py`.
@@ -18,7 +18,7 @@ def test_parameter_defaults_to_the_config_value_and_reaches_the_tracker():
     node = BallTrackerNode()
     want = tuple(float(v) for v in hw.TRACKING_GRAVITY_WORLD_XY_MMPS2)
     assert tuple(node.get_parameter('gravity_world_xy_mmps2').value) == want
-    assert node._tracker.gravity_world_xy_mmps2 == want == (0.0, 0.0)
+    assert node._tracker.gravity_world_xy_mmps2 == want == (43.0, 83.0)
 
 
 def test_param_set_switches_the_tracker_live_and_back():

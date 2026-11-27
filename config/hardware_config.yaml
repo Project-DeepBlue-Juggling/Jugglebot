@@ -1796,11 +1796,13 @@ ball_tracking:
   # Sittings 2026-09-29..2026-11-22 (offline analysis 2026-11-26,
   # temp/probes/feat27-gravity/). Assuming (0, 0) puts the landing (-8, -21) mm
   # off in the Robot frame for an early Fit and (-3, -11) mm for the final Fit;
-  # with the measured value both are within 1.5 mm. DEFAULT [0.0, 0.0] = the
-  # pre-FEAT-27 Fit bit for bit, until the owner switches it on at a Sitting
-  # (node parameter gravity_world_xy_mmps2 overrides it live). The value goes
+  # with the measured value both are within 1.5 mm. DEFAULT = the measured
+  # value since 2026-11-27 (owner, after the Sitting of that day flew 96
+  # Columns Throws with it on: 94 caught, scatter unchanged); [0.0, 0.0] is the
+  # pre-FEAT-27 Fit bit for bit (node parameter gravity_world_xy_mmps2
+  # overrides it live). The plumb-line check of the value is still owed. It goes
   # STALE at any Mocap (QTM) recalibration or L-frame move: re-measure then.
-  gravity_world_xy_mmps2: [0.0, 0.0]
+  gravity_world_xy_mmps2: [43.0, 83.0]
   # Live WARN for a marker dwelling under the Hand (FEAT-50; BUG-84's three Hand
   # stalls of 2026-11-13 were each a Ball the Tracker had dropped, trapped under
   # the Cup). Log-only; see tracking/trapped_ball.py. Values are those of
