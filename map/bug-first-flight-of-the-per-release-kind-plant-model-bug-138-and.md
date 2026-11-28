@@ -4,7 +4,7 @@ kind: bug
 title: First flight of the per-release-kind plant model (BUG-138) and process noise on b (BUG-139)
 status: inbox
 created: '2026-11-28'
-updated: '2026-11-28T00:14:57Z'
+updated: '2026-11-28T01:28:17Z'
 owners: []
 priority: high
 hardware: robot
@@ -28,3 +28,8 @@ Fly it before the 15 mm outward Catch authority trial in BUG-78, so the two chan
 - pass: the launch log's `learner:` line reports the Memory loaded with 0 unusable rows, and both Attempts run with no refusal attributable to the Learner.
 - record: that `learner:` line, and caught of thrown per Attempt.
 - minutes: 10
+
+## Sitting result (2026-11-28 12:28)
+
+- verdict: pending
+- notes: First, third, fourth, fifth, sixth attempts ended with Ball2 colliding with the Platform frame during its feed throw. Second attempt worked perfectly. Seventh ended with MAX_DEVIATION. The next few all ended with Ball2's feed hitting the Platform. Final attempt ended with a mid-air collision.
