@@ -1,0 +1,175 @@
+schema: 1
+date: "2026-11-28"
+rig: robot
+omitted:
+  - {item: BUG-111, reason: "150 minutes; this Sitting is the Feed bias trim and the 25 mm Catch authority trial only"}
+  - {item: BUG-122, reason: "needs its own launch with an E-stop button press; no time this Sitting"}
+  - {item: BUG-58, reason: "40 minutes of oval flights in two launches; no time this Sitting"}
+  - {item: BUG-89, reason: "needs oval Attempts and its own arm; the bridge stall has its own investigation Session"}
+  - {item: FEAT-32, reason: "45 minutes; no time this Sitting"}
+  - {item: FEAT-39, reason: "50 minutes; no time this Sitting"}
+  - {item: FEAT-69, reason: "abort paths need their own launch; no time this Sitting"}
+  - {item: BUG-140, reason: "no time this Sitting"}
+  - {item: BUG-144, reason: "its fix is on a held branch that this Sitting does not check out"}
+  - {item: BUG-146, reason: "no time this Sitting"}
+  - {item: BUG-95, reason: "35 minutes; no time this Sitting"}
+  - {item: FEAT-27, reason: "35 minutes; no time this Sitting"}
+  - {item: FEAT-49, reason: "60 minutes; no time this Sitting"}
+  - {item: FEAT-50, reason: "no time this Sitting"}
+  - {item: IDEA-12, reason: "60 minutes; no time this Sitting"}
+  - {item: IDEA-16, reason: "no time this Sitting"}
+  - {item: IDEA-27, reason: "low priority; no time this Sitting"}
+steps:
+  - n: 1
+    kind: setup
+    title: Check the checkout is on main and build it
+    from: []
+    to: []
+    actions:
+      - {where: Terminal 2, command: "cd ~/Desktop/Jugglebot && git fetch && git status -sb && git log --oneline -1"}
+      - where: Terminal 2
+        command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.zsh && cd ~/Desktop/Jugglebot
+        text: "Terminal 2 is sourced by this line for every later command."
+    see: "'## main...origin/main' with nothing ahead or behind (temp/ entries showing as untracked are expected). The build ends 'Summary: 2 packages finished'."
+    stop_if: "The branch is not main, or it is ahead of or behind origin/main. Do not go on; tell a Session."
+    serves: []
+  - n: 2
+    kind: setup
+    title: "Launch 1 (main, can-bridge v53) and home"
+    new_launch: true
+    from: []
+    to: [launched]
+    actions:
+      - {where: Hands, text: "Platform down on its stops, Cup empty, Ball Butler off. Drive power ON (48 V), E-stop button released."}
+      - where: Terminal 1
+        command: cd ~/Desktop/Jugglebot/ros_ws && source /opt/ros/foxy/setup.zsh && source install/setup.zsh && ros2 launch jugglebot jugglebot_launch.py 2>&1 | tee -i ~/Desktop/Jugglebot/temp/logs/launch_2026-11-28_1.log
+      - {where: Hands, text: "Wait for Homing to finish before the next step."}
+      - {where: Terminal 2, command: "grep -n \"BRIDGE_FW_CHECK\\|PLATFORM_FW_CHECK\" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-28_1.log"}
+    see: "Homing finishes with no Fault. Both firmware check lines read OK (can-bridge v53)."
+    stop_if: "A firmware check line that is not OK, or Homing does not finish: Ctrl-C the launch and tell a Session."
+    serves: []
+  - n: 3
+    kind: setup
+    title: Level the Platform
+    from: [launched]
+    to: [launched, level]
+    actions:
+      - {where: Hands, text: "Stand clear of the Platform."}
+      - {where: GUI, text: "State minimap: hold LEVELLING to confirm."}
+      - {where: Terminal 2, command: "grep -n \"levelled:\" ~/Desktop/Jugglebot/temp/logs/launch_2026-11-28_1.log"}
+    see: "LEVELLING finishes with no Fault and the grep prints one 'levelled: ...' line."
+    stop_if: "A refused or failed rise: note the text word for word, hold IDLE if the Platform is up, then go to step 11."
+    serves: []
+  - n: 4
+    kind: run
+    title: "Set the Feed bias trim and rehearse Columns at both Catch authorities (nothing moves)"
+    from: [launched, level]
+    to: [launched, level]
+    actions:
+      - {where: Terminal 2, command: "ros2 param set /skill_node columns_feed_bb_bias_mm \"[-25.0, 5.0]\""}
+      - {where: Terminal 2, command: "ros2 param get /skill_node columns_feed_bb_bias_mm"}
+      - where: Terminal 2
+        command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'columns,apex_m=0.95,separation_mm=125,dwell_s=0.27'}\""
+        text: "Rehearsal at the default 10 mm Catch authority. The reply can take a minute or more; wait for it."
+      - {where: Terminal 2, command: "ros2 param set /skill_node catch_outward_authority_mm 25.0"}
+      - where: Terminal 2
+        command: "ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString \"{data: 'columns,apex_m=0.95,separation_mm=125,dwell_s=0.27'}\""
+        text: "The same rehearsal at 25 mm. Read the line with the Catch re-aim at its limit."
+      - where: Terminal 2
+        command: ros2 param set /skill_node catch_outward_authority_mm 10.0
+        text: "Back to 10 mm for the first six Attempts."
+      - {where: Terminal 2, command: "ros2 param get /skill_node catch_outward_authority_mm"}
+    see: "The bias reads [-25.0, 5.0]. Both nominate replies report the Pattern accepted, every margin positive. The authority reads 10.0 at the end."
+    stop_if: "A param set or get fails, or the authority does not read 10.0 at the end: send it again; if it still fails, go to step 11 and tell a Session. The 10 mm rehearsal refuses: go to step 11 and tell a Session. Only the 25 mm rehearsal refuses, or shows a negative margin: note it, fly steps 5 to 7, then skip steps 8 and 9."
+    record: "Both nomination replies: the smallest margin and the Catch re-aim line of each."
+    serves:
+      - {item: BUG-160, do: [0, 1]}
+      - {item: BUG-78, do: [2], reorder: "rehearsed at 25 mm before arming, ahead of BUG-160's flights, so the Platform need not stand down between the two trials; the value is set back to 10 until step 8"}
+  - n: 5
+    kind: setup
+    title: Activate (this arms)
+    from: [launched, level]
+    to: [launched, level, armed]
+    actions:
+      - {where: GUI, text: "State minimap: hold ACTIVE:TRAJECTORY to confirm. The launch's auto_arm arms on entry. Cup empty."}
+    see: "Mode ACTIVE:TRAJECTORY, Armed, no Fault."
+    stop_if: "Any refusal or Fault on activation: note the text word for word, hold IDLE if the Platform is up, then go to step 11."
+    serves: []
+  - n: 6
+    kind: setup
+    title: Bring up Ball Butler
+    from: [launched, level, armed]
+    to: [launched, level, armed, bb-fed]
+    actions:
+      - {where: Hands, text: "Power Ball Butler, calibrate it as you usually do, and load it for Columns. Cup empty. Reach into the Cup only when the Platform holds still in the Active pose."}
+    see: "Ball Butler powered and loaded. Mode still ACTIVE:TRAJECTORY, Armed, no Fault."
+    stop_if: "Any refusal or Fault: clear it as you usually do; if it will not clear, go to step 11."
+    serves: []
+  - n: 7
+    kind: run
+    title: "Feed bias trim: six Columns Attempts at the default 10 mm Catch authority"
+    from: [launched, level, armed, bb-fed]
+    to: [launched, level, armed, bb-fed]
+    actions:
+      - {where: GUI, text: "Juggle panel: Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21. Send it. Six Attempts, reloading Ball Butler and emptying the Cup between them while the Platform holds still."}
+      - {where: Hands, text: "Watch where Ball 2's Feed lands in the Cup on each Attempt: centred, or toward Ball Butler's side, or the far side."}
+    see: "Ball 2's Feed lands nearer the middle of the Cup than on recent Sittings. This is only what to expect by eye; the verdict is measured from the bag at the debrief."
+    stop_if: "Ball 2's Feed now lands clearly on the FAR side of the Cup on two Attempts running (the trim has the wrong sign or is too large): stop this step, send the bias reset command of step 10 (its last command) in Terminal 2, write down that the trim was zeroed, and go on to step 8. A Hand MAX_DEVIATION end is the known bridge stall: clear it as you usually do and carry on; the Attempt counts. A jerky Platform or a Leg base joint moving: cancel the goal and go to step 11. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): go to step 11."
+    record: "Per Attempt: caught of thrown, the end code, and where Ball 2's Feed landed in the Cup. Type 'pending' if asked: the Feed's offset is measured from the bag at the debrief."
+    serves:
+      - {item: BUG-160, do: [2], pass: true}
+  - n: 8
+    kind: run
+    title: "Set the Catch outward authority to 25 mm (Platform holding still, no Attempt running)"
+    from: [launched, level, armed, bb-fed]
+    to: [launched, level, armed, bb-fed]
+    actions:
+      - {where: Hands, text: "Wait until the last Attempt has ended and the Platform holds still in the Active pose. Leave the Feed bias as it is: the trim stays on, unless step 7 told you to zero it (then it stays zeroed, and say so in this step's note)."}
+      - {where: Terminal 2, command: "ros2 param set /skill_node catch_outward_authority_mm 25.0"}
+      - {where: Terminal 2, command: "ros2 param get /skill_node catch_outward_authority_mm"}
+    see: "The authority reads 25.0. Nothing moves."
+    stop_if: "It does not read 25.0: send the set again; if it still does not, go to step 10."
+    serves:
+      - {item: BUG-78, do: [0, 1], reorder: "set between Attempts instead of before arming: the parameter is read when a Catch is aimed, and its rehearsal at 25 mm was done in step 4"}
+  - n: 9
+    kind: run
+    title: "Catch authority trial: eight Columns Attempts at 25 mm"
+    from: [launched, level, armed, bb-fed]
+    to: [launched, level, armed, bb-fed]
+    actions:
+      - {where: GUI, text: "Juggle panel: Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 21. Send it. Eight Attempts, reloading Ball Butler and emptying the Cup between them while the Platform holds still."}
+      - {where: Hands, text: "Watch and listen at the Leg base joints during the Catches: the Platform may now move up to 25 mm outward late in a Catch."}
+    see: "The Attempts run as Columns has on recent Sittings, with the Platform reaching a little further outward on some Catches."
+    stop_if: "A Leg base joint moves, the Platform is jerky, or a Leg guard latches: cancel the goal, do not fly another Attempt at 25 mm, and go to step 11 (the launch's end puts the parameters back). A Hand MAX_DEVIATION end is the known bridge stall: clear it as you usually do and carry on; the Attempt counts. After any Hand MISSING_ESTIMATE or E-stop button press the Hand must be re-homed before it moves again (BUG-122): go to step 11."
+    record: "Per Attempt: caught of thrown and the end code. Anything heard or seen at the Leg base joints. Type 'pending' if asked: the re-aim counts are read from the log at the debrief."
+    serves:
+      - {item: BUG-78, do: [3], pass: true}
+  - n: 10
+    kind: restore
+    title: Put the Catch authority and the Feed bias back
+    from: [launched, level, armed, bb-fed]
+    to: [launched, level, armed, bb-fed]
+    actions:
+      - {where: Terminal 2, command: "ros2 param set /skill_node catch_outward_authority_mm 10.0"}
+      - {where: Terminal 2, command: "ros2 param get /skill_node catch_outward_authority_mm"}
+      - where: Terminal 2
+        command: "ros2 param set /skill_node columns_feed_bb_bias_mm \"[0.0, 0.0]\""
+        text: "The trim is put back too; if it passes at the debrief it becomes the default in code, not a parameter left set."
+    see: "The authority reads 10.0 and the bias set reports success."
+    stop_if: "It does not read 10.0: go on to step 11 anyway; the next launch starts at 10."
+    serves:
+      - {item: BUG-78, do: [4]}
+      - {item: BUG-160, do: [3]}
+  - n: 11
+    kind: restore
+    title: Stand down and close out
+    from: [launched, level, armed, bb-fed]
+    to: []
+    actions:
+      - {where: GUI, text: "State minimap: hold IDLE to confirm. Wait until the Platform is down and the Mode reads IDLE."}
+      - {where: Terminal 1, text: "Ctrl-C the launch."}
+      - {where: Hands, text: "Drive power off. Cup empty, Ball Butler off."}
+      - {where: Claude Session, text: "In a Session in the live checkout, run /sitting-debrief 2026-11-28 and say which steps were skipped."}
+    see: "The Platform descends to Stow and the launch exits."
+    stop_if: "The Platform stays up after IDLE: hold IDLE once more; if it still stays up, support it and press the E-stop button, then Ctrl-C the launch."
+    serves: []
