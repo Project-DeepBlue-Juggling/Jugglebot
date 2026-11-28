@@ -8,9 +8,9 @@ The most Catches in one continuous Attempt on the robot (never the sim), per Pat
 
 ## Drops to date
 
-<!-- drops: live=168 since=2026-11-11 caught=3589 history=819 history_caught=6485 history_from=2026-07-23 history_through=2026-11-10 -->
+<!-- drops: live=183 since=2026-11-11 caught=3712 history=819 history_caught=6485 history_from=2026-07-23 history_through=2026-11-10 -->
 
-Drops to date: 987 (168 counted live since 2026-11-11; 819 from history, 2026-07-23 to 2026-11-10). 11,061 Throws and Feeds to catch, 91.1 % caught, 8.9 % dropped. A drop is a ball thrown to be caught by Jugglebot that was not caught.
+Drops to date: 1002 (183 counted live since 2026-11-11; 819 from history, 2026-07-23 to 2026-11-10). 11,199 Throws and Feeds to catch, 91.1 % caught, 8.9 % dropped. A drop is a ball thrown to be caught by Jugglebot that was not caught.
 
 ## 1 ball
 
@@ -449,6 +449,22 @@ A landing score is the distance in mm from the Fit's landing to the target Site,
 | 2026-11-28 12:37 | 20 | 21 | 0 | 15 31 21 44 16 27 19 3 25 12 22 35 26 21 16 21 34 16 19 40 |
 | 2026-11-28 12:38 | 15 | 21 | 2 | 20 12 33 16 43 28 44 35 33 18 43 21 8 14 12 |
 | 2026-11-28 12:39 | 20 | 25 | 0 | 17 31 28 37 29 11 23 22 19 22 37 13 44 8 29 41 27 36 10 16 |
+| 2026-11-28 19:41 | 20 | 19 | 0 | 13 28 17 16 38 29 13 24 10 45 20 23 9 40 13 18 12 44 33 13 |
+| 2026-11-28 19:42 | 2 | 13 | 0 | 16 9 |
+| 2026-11-28 19:43 | 20 | 26 | 0 | 15 26 15 41 17 28 21 26 29 28 18 16 19 25 31 50 31 6 21 34 |
+| 2026-11-28 19:44 | 2 | 25 | 0 | 18 32 |
+| 2026-11-28 19:44 | 0 | - | 2 | - |
+| 2026-11-28 19:45 | 2 | 18 | 0 | 21 15 |
+| 2026-11-28 19:47 | 2 | 21 | 0 | 10 32 |
+| 2026-11-28 19:47 | 3 | 21 | 1 | 12 21 37 |
+| 2026-11-28 19:48 | 2 | 27 | 0 | 12 42 |
+| 2026-11-28 19:48 | 0 | - | 2 | - |
+| 2026-11-28 19:49 | 2 | 18 | 0 | 13 23 |
+| 2026-11-28 19:49 | 2 | 25 | 0 | 11 39 |
+| 2026-11-28 19:50 | 3 | 14 | 1 | 19 14 10 |
+| 2026-11-28 19:51 | 20 | 24 | 0 | 7 27 6 63 48 11 32 23 22 25 11 18 39 54 18 34 12 14 35 27 |
+| 2026-11-28 19:52 | 20 | 20 | 0 | 38 18 10 10 23 9 19 25 39 14 14 46 16 8 21 20 26 30 4 28 |
+| 2026-11-28 19:53 | 15 | 31 | 2 | 8 17 45 11 64 50 44 43 31 17 19 48 31 9 78 |
 
 <!-- scores: pattern=columns_highlow -->
 ### Columns — high-low
@@ -641,3 +657,12 @@ A landing score is the distance in mm from the Fit's landing to the target Site,
 | 2026-11-28 12:37 | columns | 33 |
 | 2026-11-28 12:38 | columns | 5 |
 | 2026-11-28 12:39 | columns | 17 |
+| 2026-11-28 19:41 | columns | 28 |
+| 2026-11-28 19:43 | columns | 9 |
+| 2026-11-28 19:44 | columns | 7 |
+| 2026-11-28 19:47 | columns | 13 |
+| 2026-11-28 19:48 | columns | 20 |
+| 2026-11-28 19:50 | columns | 29 |
+| 2026-11-28 19:51 | columns | 41 |
+| 2026-11-28 19:52 | columns | 42 |
+| 2026-11-28 19:53 | columns | 48 |
