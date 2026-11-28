@@ -2,9 +2,9 @@
 id: BUG-154
 kind: bug
 title: Robot-frame Feed test ages its own frame samples on the real clock and fails the suite on this box
-status: in_progress
+status: complete
 created: '2026-11-28'
-updated: '2026-11-27T17:37:59Z'
+updated: '2026-11-28T01:11:56Z'
 owners:
 - night-shift
 priority: high
@@ -31,7 +31,9 @@ Found by the Night Shift 2026-11-28: the merge gate's `./run_tests.sh --full` fo
 
 - Freeze the frame clock in this test, as the fixture does.
 - Later: name what makes the Feed start path take over a second on this box (Memory size, uptime), in case a flown Feed start waits as long.
+- Answered 2026-11-28: nothing on the box changed. The night ran bare `pytest`, which leaves OpenBLAS multithreaded; on a loaded box it thrashes (a 60x60 inverse took 420 ms, against 0.2 ms pinned). `run_tests.sh` and the live launch both pin it, and pinned the cold Feed start is about 0.5 s: a load flake with 2x headroom, not a red main.
 
 ## Progress
 
 - 2026-11-28: Night Shift 2026-11-28: held on night-shift/2026-11-28-BUG-154: one audit finding open (a second test needs the same freeze); main's full suite fails until it merges
+- 2026-11-28: day Session: fixture freezes the frame clock for frame=False tests too (two more exposed tests found by an unpinned isolation probe); night branch merged, as the owner chose in TKT-107 (option 3)

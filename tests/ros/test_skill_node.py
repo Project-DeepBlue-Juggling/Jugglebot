@@ -186,8 +186,9 @@ def _hand_at(node, rev=sn.REST_HAND_REV, ball_held=True):
 
 
 _HAND_CLOCK_FROZEN_S = 1.0e6
-#: `_node_with_client(frame=True)` freezes the node's frame clock here, the
-#: frame-check twin of `_HAND_CLOCK_FROZEN_S` (BUG-14, 2026-10-28).
+#: `_node_with_client` freezes the node's frame clock here, the frame-check
+#: twin of `_HAND_CLOCK_FROZEN_S` (BUG-14, 2026-10-28; for ``frame=False``
+#: too since BUG-154, 2026-11-28).
 _FRAME_CLOCK_FROZEN_S = 1.0e6
 #: `_node_with_client` freezes the node's commanded-position clock here, the
 #: `_prelevel` twin of `_HAND_CLOCK_FROZEN_S` (BUG-53, 2026-11-03).
@@ -254,11 +255,15 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True,
     node._on_traj_status(_status())
     if hand:
         _hand_at(node)
+    # frozen frame clock: a loaded run cannot age the frame samples past
+    # `_FRAME_CHECK_WINDOW_S` before a start path's frame check reads them
+    # (BUG-14, 2026-10-28). Frozen for ``frame=False`` too (BUG-154,
+    # 2026-11-28): such a test stamps its own samples (`_frame_ready`,
+    # `_on_mocap`, or `node._frame_clock()` directly) and then runs a start
+    # path whose nomination can take seconds on a loaded box. A test that
+    # needs time to pass sets its own `_frame_clock`.
+    node._frame_clock = lambda: _FRAME_CLOCK_FROZEN_S
     if frame:
-        # frozen frame clock: a loaded run cannot age the fixture's frame
-        # samples past `_FRAME_CHECK_WINDOW_S` (BUG-14, 2026-10-28). A
-        # ``frame=False`` test keeps the real clock and stamps its own.
-        node._frame_clock = lambda: _FRAME_CLOCK_FROZEN_S
         _frame_ready(node)
     if robot_frame:
         node._on_robot_frame(_robot_frame_msg())
@@ -2744,7 +2749,7 @@ def test_frame_check_refuses_when_the_commanded_position_is_moving(tmp_path):
     node, _client = _node_with_client(frame=False)
     node.set_parameters(
         [_MockParameter(40.0, name='learner_lateral_authority_mm')])
-    now = time.perf_counter()
+    now = node._frame_clock()   # the check's own clock (frozen by the fixture)
     for _ in range(sn._FRAME_CHECK_MIN_SAMPLES + 5):
         node._platform_mocap_xyz.append((now, 0.0, 0.0,
                                          float(hw.GEOM_INITIAL_HEIGHT_MM)))
