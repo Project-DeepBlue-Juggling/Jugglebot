@@ -1865,7 +1865,10 @@ def test_rung1_through_the_production_segment_path_passes_the_45_deg_cone(
     assert rep.code == 'OK', (rep.code, rep.reasons)
     assert windows[0].catch_k == 35
     assert rep.cup_stroke_end_k == (42,)
-    assert rep.max_cup_seating_deg == pytest.approx(34.71, abs=0.1)
+    # RE-PINNED 2026-11-28 (BUG-159, I-PLAN-18; owner approved): 34.71 -> 35.37
+    # deg. The Banking schedule now scores the curve the gate reads and spends
+    # tilt budget the old score held back; the bound is the 45 deg cone.
+    assert rep.max_cup_seating_deg == pytest.approx(35.37, abs=0.1)
     assert 30.0 < rep.max_cup_seating_deg < feas.CUP_SEATING_CONE_DEG
     assert rep.min_cup_seating_az_g == pytest.approx(0.742, abs=0.01)
     assert rep.max_cup_braking_deg == pytest.approx(21.13, abs=0.1)

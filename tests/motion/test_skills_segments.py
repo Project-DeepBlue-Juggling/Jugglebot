@@ -885,10 +885,16 @@ def test_a_hop_throw_holds_the_platform_still_for_the_last_100_ms(apex_m, geom,
 @pytest.mark.parametrize('apex_m', [0.85, 0.9, 0.95])
 def test_a_held_hop_throw_is_inside_the_r4_limits(apex_m, geom,
                                                   release_step_off):
-    """Peaks at R4's limits, and they FALL with the hold (the −97/+106 mm/s
-    reversal becomes a −45 mm/s backswing): 0.9 m leg jerk 129k → 107k,
-    acc 1735 → 1489 mm/s² (2026-09-29). plan_segment raises on any breach;
-    the asserts pin the margin."""
+    """Peaks at R4's limits with the hold on. plan_segment raises on any
+    breach; the asserts pin the margin.
+
+    Until 2026-11-28 this also asserted that the peaks FALL with the hold
+    (0.9 m leg jerk 129k -> 107k, 2026-09-29). Since BUG-159 / I-PLAN-18 the
+    Banking schedule scores the curve the gate reads, and the hold-off Throw
+    plans LOWER jerk than the held one at 0.9 and 0.95 m (95,461 and 83,848
+    against 107,361 and 101,644 mm/s^3; the held Throw is unchanged from
+    before). The owner dropped the ordering on 2026-11-28: the hold is for
+    Throw accuracy, not jerk, and hold-off is the long-term direction."""
     held = _hop_throw(apex_m, sg.SegmentConfig(pre_release_hold_s=0.1), geom).meta.report
     off = _hop_throw(apex_m, sg.SegmentConfig(pre_release_hold_s=0.0),
                      geom).meta.report
@@ -896,8 +902,9 @@ def test_a_held_hop_throw_is_inside_the_r4_limits(apex_m, geom,
     assert held.peak_leg_acc_mmps2 <= 5000.0
     assert held.peak_leg_jerk_mmps3 <= 150000.0
     assert held.peak_hand_acc_rps2 <= 3500.0
-    assert held.peak_leg_jerk_mmps3 <= off.peak_leg_jerk_mmps3
-    assert held.peak_leg_acc_mmps2 <= off.peak_leg_acc_mmps2
+    # the hold-off Throw stays inside the same Leg limits
+    assert off.peak_leg_acc_mmps2 <= 5000.0
+    assert off.peak_leg_jerk_mmps3 <= 150000.0
 
 
 def test_a_held_self_toss_and_its_catch_and_throw_are_inside_the_r4_limits(
