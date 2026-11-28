@@ -27,6 +27,31 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 - bug: BUG-146 [Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-aimed-throw-from-a-level-rest-is-refused-hand-limit-c2-past.md) (in_progress)
 
+## Stream delivery: no Attempt lost to a host delay
+
+**Destination:** 150 consecutive two-ball Attempts on the robot with none lost to a firmware STOP, a refused lane or a Hand MAX_DEVIATION latch caused by late delivery of the Knot stream, and a late frame can no longer latch the Guard.
+
+**Progress:** 0 of 8 stops done
+
+**Next:** PS0 Evidence and offline reproduction ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md))
+
+**Owners:** Harrison
+
+**Remaining:**
+
+- PS0 Evidence and offline reproduction ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md)) — in progress
+- PS1 Forwarder process and stall instruments ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md)) — in progress
+- PS2 Sitting S1 on FW 53 ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md))
+- PS3 Committed horizon in the planner ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md))
+- PS4 FW 54 deep frames ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md)) — in progress
+- PS5 FW 54 STOP event and the forwarder hold ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md))
+- PS6 Bench B1 ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md))
+- PS7 Sitting S2 and close-out ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md))
+
+**Attached inbox items:**
+
+- —
+
 ## Two-ball oval
 
 **Destination:** Two balls in one Hand on an oval, every Throw caught and carried back in the Cup, closed by 30 consecutive Ball Butler-fed Catches in one Attempt (P5 Rung gate).
@@ -172,6 +197,7 @@ _Status: closed (complete)._
 | Pathway | Now | Next | Later | Done |
 | --- | --- | --- | --- | --- |
 | Human-partner juggling | P1 Human Throw event; P2 Reactive Catch | — | P3 Catch one pass; P4 Throw back to a fixed hand point; P5 Catch and throw back; P6 Held tilt; P7 Exchange at a held tilt; P8 Three-ball cascade; bug Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt | — |
+| Stream delivery: no Attempt lost to a host delay | PS0 Evidence and offline reproduction; PS1 Forwarder process and stall instruments; PS4 FW 54 deep frames | — | PS2 Sitting S1 on FW 53; PS3 Committed horizon in the planner; PS5 FW 54 STOP event and the forwarder hold; PS6 Bench B1; PS7 Sitting S2 and close-out | — |
 | Two-ball oval | P4 Working point and the dwell ladder; P3 A/B Sitting on the oval | — | P5 Two-ball oval; bug A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve; bug 10 % jitter-margin class of LIMIT_* refusals; bug Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff; bug RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball; feature P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30; feature Pre-release hold rung: release from a moving Platform (hold 0.100 → 0); feature Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load); feature Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28) | P1 The oval pattern dispatchable; P3 Pose-level carry planner; P0 Identify the Platform mode from existing bags; P1 The ZVD contract and rows behind a flag; P2 Box re-sweep with the rows on; P1 Firmware - age-aware lead clamp and engagement counter; P2 Bench validation; P3 Robot validation; P1 Off-board foundations; P2 Platform Teensy firmware FW 11; P3 can-bridge firmware and the Jetson side; P4 Sitting 1, flash and bench the capture path; P5 Sitting 2, mount calibration and first Attempt captures |
 | Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | — | — | — | closed |
 | Project map and shared dictionary | — | — | — | closed |
