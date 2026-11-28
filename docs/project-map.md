@@ -27,6 +27,31 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 - bug: BUG-146 [Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-aimed-throw-from-a-level-rest-is-refused-hand-limit-c2-past.md) (in_progress)
 
+## Stream delivery: no Attempt lost to a host delay
+
+**Destination:** 150 consecutive two-ball Attempts on the robot with none lost to a firmware STOP, a refused lane or a Hand MAX_DEVIATION latch caused by late delivery of the Knot stream, and a late frame can no longer latch the Guard.
+
+**Progress:** 0 of 8 stops done
+
+**Next:** PS0 Evidence and offline reproduction ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md))
+
+**Owners:** Harrison
+
+**Remaining:**
+
+- PS0 Evidence and offline reproduction ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md)) — in progress
+- PS1 Forwarder process and stall instruments ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md)) — in progress
+- PS2 Sitting S1 on FW 53 ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md))
+- PS3 Committed horizon in the planner ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md))
+- PS4 FW 54 deep frames ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md)) — in progress
+- PS5 FW 54 STOP event and the forwarder hold ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md))
+- PS6 Bench B1 ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md))
+- PS7 Sitting S2 and close-out ([stream-delivery-contract.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/stream-delivery-contract.md))
+
+**Attached inbox items:**
+
+- —
+
 ## Two-ball oval
 
 **Destination:** Two balls in one Hand on an oval, every Throw caught and carried back in the Cup, closed by 30 consecutive Ball Butler-fed Catches in one Attempt (P5 Rung gate).
@@ -51,7 +76,7 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 - bug: BUG-29 [RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-restterminal-holds-ball-never-reaches-the-node-every-rest-is.md) (in_progress)
 - feature: FEAT-39 [P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-p4-ramp-sitting-columns-canary-at-600-8000-and-20-a-then-the.md) (in_progress)
 - feature: FEAT-32 [Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-pre-release-hold-rung-release-from-a-moving-platform-hold-0.md) (in_progress)
-- feature: FEAT-31 [Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-solver-worker-on-sched-fifo-take-the-catch-solve-out-of-the.md) (backlog)
+- feature: FEAT-31 [Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-solver-worker-on-sched-fifo-take-the-catch-solve-out-of-the.md) (in_progress)
 - feature: FEAT-30 [Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-trim-the-nice-0-chain-cpu-the-flame-graphs-point-at-skill.md) (inbox)
 
 ## Night Shift: unattended overnight work on the board, and the Next Sitting Runbook
@@ -171,6 +196,7 @@ _Status: closed (complete)._
 | Pathway | Now | Next | Later | Done |
 | --- | --- | --- | --- | --- |
 | Human-partner juggling | P1 Human Throw event; P2 Reactive Catch | — | P3 Catch one pass; P4 Throw back to a fixed hand point; P5 Catch and throw back; P6 Held tilt; P7 Exchange at a held tilt; P8 Three-ball cascade; bug Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt | — |
+| Stream delivery: no Attempt lost to a host delay | PS0 Evidence and offline reproduction; PS1 Forwarder process and stall instruments; PS4 FW 54 deep frames | — | PS2 Sitting S1 on FW 53; PS3 Committed horizon in the planner; PS5 FW 54 STOP event and the forwarder hold; PS6 Bench B1; PS7 Sitting S2 and close-out | — |
 | Two-ball oval | P4 Working point and the dwell ladder; P3 A/B Sitting on the oval | — | P5 Two-ball oval; bug A BUMP of catch N leaves a release seed catch N+1 cannot plan from: HAND_LIMIT_ACC 3910-4097 vs 3900 at the next first solve; bug 10 % jitter-margin class of LIMIT_* refusals; bug Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff; bug RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball; feature P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30; feature Pre-release hold rung: release from a moving Platform (hold 0.100 → 0); feature Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load); feature Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28) | P1 The oval pattern dispatchable; P3 Pose-level carry planner; P0 Identify the Platform mode from existing bags; P1 The ZVD contract and rows behind a flag; P2 Box re-sweep with the rows on; P1 Firmware - age-aware lead clamp and engagement counter; P2 Bench validation; P3 Robot validation; P1 Off-board foundations; P2 Platform Teensy firmware FW 11; P3 can-bridge firmware and the Jetson side; P4 Sitting 1, flash and bench the capture path; P5 Sitting 2, mount calibration and first Attempt captures |
 | Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | — | — | — | closed |
 | Project map and shared dictionary | — | — | — | closed |
@@ -203,7 +229,7 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | BUG-32 | bug | [Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-oval-catch-solve-cpu-81-ms-p50-leaves-no-margin-under-the.md) | in_progress | medium | l | robot | hands | subsystem | skill-stack | Two-ball oval | filed 2026-10-28 |
 | BUG-29 | bug | [RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-restterminal-holds-ball-never-reaches-the-node-every-rest-is.md) | in_progress | low | s | robot | none | subsystem | skill-stack | Two-ball oval | filed 2026-10-28 |
 | FEAT-28 | feature | [Retire dead wire fields and literal flag masks; put teensy-udp-protocol.md in the docs nav](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-retire-dead-wire-fields-and-literal-flag-masks-put-teensy.md) | in_progress | low | s | none | none | cross-cutting | can-bridge | — | filed 2026-10-28 |
-| FEAT-31 | feature | [Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-solver-worker-on-sched-fifo-take-the-catch-solve-out-of-the.md) | backlog | high | m | robot | hands | cross-cutting | skill-stack | Two-ball oval | filed 2026-10-28 |
+| FEAT-31 | feature | [Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-solver-worker-on-sched-fifo-take-the-catch-solve-out-of-the.md) | in_progress | high | m | robot | hands | cross-cutting | skill-stack | Two-ball oval | filed 2026-10-28 |
 | FEAT-30 | feature | [Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-trim-the-nice-0-chain-cpu-the-flame-graphs-point-at-skill.md) | inbox | medium | m | robot | none | subsystem | skill-stack | Two-ball oval | filed 2026-10-28 |
 | BUG-41 | bug | [Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-brake-and-hold-currents-sit-far-below-the-throw.md) | backlog | medium | s | bench-hand | hands | subsystem | hand | — | filed 2026-10-30 |
 | IDEA-17 | idea | [Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-hand-end-of-stroke-bumper-and-first-the-planner-s-own-brake.md) | inbox | medium | l | robot | decision | cross-cutting | hand | — | filed 2026-10-30 |
@@ -265,11 +291,11 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | FEAT-69 | feature | [can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-can-bridge-fw-53-a-leg-leaves-closed-loop-only-at-stow-i-fw.md) | in_progress | high | l | robot | hands | normative | can-bridge | — | filed 2026-11-26 |
 | FEAT-70 | feature | [can-bridge reports each Leg's measured Closed-loop engage time](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-can-bridge-reports-each-leg-s-measured-closed-loop-engage.md) | inbox | medium | s | none | none | subsystem | can-bridge | — | filed 2026-11-27 |
 | BUG-149 | bug | [CATCH install CPU grows about 1 ms per 100 record Knots through an Attempt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-catch-install-cpu-grows-about-1-ms-per-100-record-knots.md) | in_progress | medium | s | none | none | subsystem | skill-stack | — | filed 2026-11-27 |
-| BUG-156 | bug | [IMU Charts appear out-of-sync in live viewer](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-imu-charts-appear-out-of-sync-in-live-viewer.md) | inbox | medium | s | — | — | — | — | — | filed 2026-11-27 |
+| BUG-156 | bug | [IMU Charts appear out-of-sync in live viewer](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-imu-charts-appear-out-of-sync-in-live-viewer.md) | inbox | medium | s | robot | none | local | gui | — | filed 2026-11-27 |
 | BUG-150 | bug | [ODrive Charts' Throw/Catch markers disappear for future events](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-odrive-charts-throw-catch-markers-disappear-for-future-event.md) | in_progress | medium | s | none | none | local | gui | — | filed 2026-11-27 |
 | IDEA-30 | idea | [The 13 ms Mocap alignment constant may be almost all Leg lag, leaving little for Mocap latency](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-the-13-ms-mocap-alignment-constant-may-be-almost-all-leg-lag.md) | inbox | low | s | none | none | subsystem | tracking | — | filed 2026-11-27 |
 | BUG-155 | bug | [A full-turn rotating Columns goal can block the goal accept for minutes while it nominates](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-a-full-turn-rotating-columns-goal-can-block-the-goal-accept.md) | inbox | low | s | none | none | local | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-11-28 |
 | BUG-160 | bug | [Ball Butler's Feed of Ball 2 lands 25-29 mm short of its announced landing in Columns](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-ball-butler-s-feed-of-ball-2-lands-25-29-mm-short-of-its.md) | in_progress | high | s | robot | none | subsystem | ball-butler | Learner generalisation | filed 2026-11-28 |
 | BUG-162 | bug | [Solver worker round-trip tests fail when the BLAS thread count is not pinned](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-solver-worker-round-trip-tests-fail-when-the-blas-thread.md) | inbox | low | xs | none | none | local | tests-tooling | — | filed 2026-11-28 |
-| IDEA-31 | idea | [The oval on the shared Memory: compile the oval on compile_beats, then fly it on plant jugglebot](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-the-oval-on-the-shared-memory-compile-the-oval-on-compile.md) | inbox | low | — | robot | — | — | — | Learner generalisation | filed 2026-11-28 |
+| IDEA-31 | idea | [The oval on the shared Memory: compile the oval on compile_beats, then fly it on plant jugglebot](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-the-oval-on-the-shared-memory-compile-the-oval-on-compile.md) | inbox | low | l | robot | none | subsystem | learner | Learner generalisation | filed 2026-11-28 |
 | BUG-163 | bug | [A Catch re-aim that passes every Leg limit can lift a Leg off the Base: the gate checks along-Leg motion, not the load at the Base joint](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-a-catch-re-aim-that-passes-every-leg-limit-can-lift-a-leg.md) | inbox | high | m | robot | none | subsystem | skill-stack | Learner generalisation | filed 2026-11-29 |

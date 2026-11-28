@@ -4,7 +4,7 @@ kind: bug
 title: Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt
 status: in_progress
 created: '2026-11-26'
-updated: '2026-11-27T17:24:09Z'
+updated: '2026-11-28T16:25:36Z'
 owners:
 - night-shift
 priority: medium
@@ -68,3 +68,4 @@ Recommendation: 1, with knot 0 clamped to the seed's Hand rate so splice seams a
 ## Progress
 
 - 2026-11-28: Night Shift 2026-11-28: held on night-shift/2026-11-28-BUG-146: clamped spline drop rates built per TKT-98; 1 audit finding open (no direct solver unit test); unblocked by a Sitting
+- 2026-11-29: Night Shift 2026-11-29: held on night-shift/2026-11-28-BUG-146: solver test added; merged main fails BUG-152's knot-0 test by 1e-5 rev/s; unblocked by TKT-109 then a Sitting
