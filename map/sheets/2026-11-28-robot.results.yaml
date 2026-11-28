@@ -1,7 +1,54 @@
 schema: 2
 steps:
   1:
-    comments: ''
-    saved_at: 2026-11-28 19:36
+    comments: BTW, just before this Sitting, I adjusted one of the mocap cameras (for
+      the first time in at least a year) and re-calibrated QTM. This shouldn't affect
+      anything, but I thought you should know.
+    saved_at: 2026-11-28 19:55
     status: done
-verdicts: {}
+  2:
+    comments: ''
+    saved_at: 2026-11-28 19:38
+    status: done
+  3:
+    comments: ''
+    saved_at: 2026-11-28 19:39
+    status: done
+  4:
+    comments: ''
+    saved_at: 2026-11-28 19:40
+    status: done
+  5:
+    comments: ''
+    saved_at: 2026-11-28 19:40
+    status: done
+  6:
+    comments: ''
+    saved_at: 2026-11-28 19:40
+    status: done
+  8:
+    comments: ''
+    saved_at: 2026-11-28 19:46
+    status: done
+verdicts:
+  7:
+    BUG-160:
+      notes: 'Attempts: 1 - Finished without issue. Some catches were pretty aggressive
+        on the leg joints and the base seemed to move around a bit, with Leg 2 looking
+        close to separating, but it held for the whole Attempt! 2 - Ball2 feed collided
+        with the Platform. 3 - Finished, though Leg 1 was extremely close to being
+        pulled from the Base on the last catch. Ball2 feed was very smooth. 4 - Ball2
+        feed collided with the Platform 5 - Mid-air collision right at the start 6
+        - Ball2 feed collided with the Platform'
+      saved_at: 2026-11-28 19:46
+  9:
+    BUG-78:
+      notes: 'I ran 10 attempts because so many ended prematurely. Attempts: 1 - Ball2
+        feed collided with the Platform 2 - Mid-air collision right at the start 3
+        - Collision 4 - Mid-air collision right at the start 5 - Ball2 feed wasn''t
+        caught properly 6 - Ball2 feed wasn''t caught properly. Ball2 jammed under
+        hand (briefly) 7 - Messy Ball2 catch (post-start). BB Ball2 feed was clean
+        8 - Mid-air collision right at the end. Looked relatively clean, and the Ball2
+        feed was great. 9 - Completed. Was a little messy and Platform seemed a little
+        wobbly at times. 10 - Leg 1 separated from the Base towards the end.'
+      saved_at: 2026-11-28 19:54
