@@ -114,8 +114,9 @@ RELEASE_KINDS = ('free_cup', 'carried')
 #: past ~130 mm never gets the first row that would move its law within reach: probe 2026-11-27,
 #: 5 seeds x 300 rows, 150 mm 0-128 accepted, the oval's measured 179 mm 0 of 300. A plant that
 #: lands five rows in a row at one consistent offset outside the gate is telling the model its
-#: law is wrong, not throwing outliers; a warm kind (2 rejections in the 1085 rows of the live
-#: Memory, 2026-11-27) never sees five agreeing ones in a row, so its commands are unchanged.
+#: law is wrong, not throwing outliers; a warm kind (live Memory, 2026-11-27: carried 2 of 1085
+#: rows rejected, free_cup 42 of 4976, no run past one row) never sees five agreeing ones in a
+#: row, so its commands are unchanged.
 #:
 #: The rule, per release kind (a row of another kind neither extends nor resets the run):
 #:
@@ -144,7 +145,7 @@ LATERAL_RECOVERY_RUN = 5
 #: with the run when it would pass the lateral gate of a law centred on the run's mean. Why that
 #: width: rows at one consistent offset scatter about their mean with the 20 mm shot noise per axis
 #: (a candidate's distance to the mean of k earlier rows has sd 20 sqrt(1 + 1/k) <= 28 mm, so a
-#: genuine run breaks with probability < 1e-3 per row), while a lone outlier (a tracker glitch,
+#: genuine run breaks with probability < 1e-3 per row, a Gaussian estimate, not measured), while a lone outlier (a tracker glitch,
 #: the 300 mm lateral row of ``test_a_300_mm_lateral_outlier_is_rejected_and_counted``) has no
 #: four neighbours within 100 mm of it in a row. Kept a module constant (not config) beside the
 #: gate it qualifies; it does not follow a changed ``inlier_lateral_m`` on its own.
