@@ -4,10 +4,15 @@ kind: bug
 title: IMU Charts appear out-of-sync in live viewer
 status: inbox
 created: '2026-11-27'
-updated: '2026-11-27T08:14:32Z'
+updated: '2026-11-28T16:27:09Z'
 owners: []
 priority: medium
 effort: s
+hardware: robot
+owner: none
+radius: local
+diagnosis: unknown
+area: gui
 blocked_by: []
 links: []
 filed_by: harrison
