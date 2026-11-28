@@ -83,4 +83,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- TKT-101 BUG-152: seed the Hop entry's first-Knot rate from rest, fly JP-11 with it open, or fix the whole Platform rate class? (parent BUG-152)
+- none
