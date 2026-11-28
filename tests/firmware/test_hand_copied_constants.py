@@ -96,6 +96,20 @@ def test_sim_skills_gate_gravity_follows_the_config():
           "sim skills gate gravity")
 
 
+def test_sim_skills_gate_leg_limits_follow_the_config():
+    """Owner decision 2026-11-28: the sim gate's Sitting Leg limits are the generated launch working
+    point (``hw.JB_TRAJ_LEG_*_LIMIT_*``), not typed numbers (it carried 350 / 5000 after the launch
+    moved to 600 / 8000 on 2026-11-03, so sim trials judged a stricter plant than the robot flies).
+    Source says so, and the evaluated values equal the config."""
+    rel = os.path.join("sim", "skills_gate.py")
+    hw = _hw()
+    for name, cfg in (("_SESSION_LEG_VEL_MMPS", "JB_TRAJ_LEG_VEL_LIMIT_MMPS"),
+                      ("_SESSION_LEG_ACC_MMPS2", "JB_TRAJ_LEG_ACC_LIMIT_MMPS2"),
+                      ("_SESSION_LEG_JERK_MMPS3", "JB_TRAJ_LEG_JERK_LIMIT_MMPS3")):
+        assert "hw." + cfg in _text(rel), "%s: %s no longer reads the config" % (rel, name)
+        _same(rel + " " + name, _const(rel, name), cfg, getattr(hw, cfg), "sim skills gate leg limit")
+
+
 def test_probe_gravity_literals_are_pinned_as_they_are_today():
     """Probes hand-type gravity three ways (9810.0, 9806.65 = standard gravity, config 9806).
     Pinned as found; not a claim that any is right (owner has not decided). Probe-only: no

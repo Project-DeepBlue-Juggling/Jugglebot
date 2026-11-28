@@ -155,17 +155,19 @@ from sim import stream_chain                                       # noqa: E402
 from sim.gate_common import ViewerClosed, attach_viewer             # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Sitting limits -- read out of THIS SOURCE by regex
-# (tests/ros/test_unified_cycle_bench.py::
-#  test_the_sitting_limits_match_the_gates_that_planned_them), so this triple
-# is the ONE place the R2 operating point's leg limits live for that bench.
+# Sitting limits -- the sim gate plans and judges against the SAME working point
+# the robot launches with: the generated config constants (owner decision
+# 2026-11-28). History in one line: 250 -> 300 -> 350 mm/s over R2-R5
+# (2026-10-04, sitting 3), typed here with 5000 mm/s^2; the launch value became
+# 600 / 8000 / 200000 on 2026-11-03 (db435e54) and this triple lagged, so plain
+# Columns at 74 Throws ended LIMIT_VEL on 4 of 5 seeds at 350 and passed at the
+# live limits. Never type these again
+# (tests/firmware/test_hand_copied_constants.py::
+#  test_sim_skills_gate_leg_limits_follow_the_config).
 # ---------------------------------------------------------------------------
-# 300 -> 350 on 2026-10-04 (R5 sitting 3): the roomier columns geometry (apex
-# 0.95, dwell 0.25, separation 125) is swept and flown at 350 mm/s; at 300 the
-# one-ball trial's steady catch refused LIMIT_VEL at 300.2 mm/s.
-_SESSION_LEG_VEL_MMPS = 350.0
-_SESSION_LEG_ACC_MMPS2 = 5000.0
-_SESSION_LEG_JERK_MMPS3 = 200000.0
+_SESSION_LEG_VEL_MMPS = float(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS)
+_SESSION_LEG_ACC_MMPS2 = float(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2)
+_SESSION_LEG_JERK_MMPS3 = float(hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3)
 # Owner, 2026-10-02: 3900 (was 3500). The fed columns rehearsal's same-site
 # catch-and-throw fold peaked at 101 % of 3500 in BOTH feed layouts (the
 # 2026-09-30 pass was the same knife edge landing on the right side), so the

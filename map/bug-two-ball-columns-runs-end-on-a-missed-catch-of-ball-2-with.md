@@ -62,7 +62,16 @@ Two-ball Columns runs of 2026-11-06 mostly end on a smooth missed Catch of Ball 
 ## Sitting result (2026-11-28 12:39)
 
 - verdict: pending
-- notes: Attempts: 1 - Completed without issue 2 - Completed without issue 3 - Ended with MAX_DEVIATION for the Hand 4 - Ball2's feed hit the Platform frame, becoming uncatchable. 5 - Ball2 seemed to my eye to hit the hand more or less spot-on, but it bounced out of the hand, making it unthrowable 6 - Completed without issue 7 - Ended with MAX_DEVIATION for the Hand. This Attempt had an extremely clean Ball2 feed from BB. If all Ball2 feeds were this smooth, that would be incredible. 8 - Completed without issue
+- notes (split into bullets):
+  - Attempts:
+  - 1 - Completed without issue
+  - 2 - Completed without issue
+  - 3 - Ended with MAX_DEVIATION for the Hand
+  - 4 - Ball2's feed hit the Platform frame, becoming uncatchable.
+  - 5 - Ball2 seemed to my eye to hit the hand more or less spot-on, but it bounced out of the hand, making it unthrowable
+  - 6 - Completed without issue
+  - 7 - Ended with MAX_DEVIATION for the Hand. This Attempt had an extremely clean Ball2 feed from BB. If all Ball2 feeds were this smooth, that would be incredible.
+  - 8 - Completed without issue
 
 ## Progress
 

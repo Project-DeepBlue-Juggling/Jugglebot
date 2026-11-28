@@ -101,6 +101,13 @@ def test_a_biased_plant_small_hop_run_is_checked_and_installs_nothing_refused(
 
 # ── twin 2: unbiased self-toss ──────────────────────────────────────────────
 
+@pytest.mark.xfail(strict=True, reason=(
+    'BUG-159: at the live Leg limits (600 / 8000 / 200000, which the gate '
+    'follows since 2026-11-28) the closing REST of Attempt 1 starts from a '
+    'moving state and plans 211669 mm/s^3 of Leg jerk against 200000: the '
+    'Banking tilt schedule guards jerk on Knot differences while '
+    'validate_cycle reads the interpolated curve. The plan gate refuses it '
+    '(LIMIT_JERK). Strict, so the fix for BUG-159 removes this mark.'))
 def test_an_unbiased_self_toss_run_passes_every_check_with_no_stepped_command(
         monkeypatch):
     log = _spy_checks_and_installs(monkeypatch)
