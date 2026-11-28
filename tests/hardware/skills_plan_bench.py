@@ -90,11 +90,19 @@ import os
 # iterations); capped worst 31.8 ms (windows to 6.4 ms). The mechanism is
 # jugglebot.motion.blas_threads' (the UH-3 E-STOP class). setdefault, so an
 # explicit environment still wins.
-os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
-os.environ.setdefault('OMP_NUM_THREADS', '1')
+#
+# Only when numpy is not loaded yet (BUG-162): once numpy is imported its pool
+# is already sized, so the cap no longer reaches this process and only leaks to
+# the processes it spawns. Imported by a test (tests/ros/test_skills_plan_bench.py)
+# after numpy, it used to leave the test process at numpy's six threads while a
+# solver worker spawned later inherited one, and the two solves' Hand channel
+# then differed by about 1e-13 (tests/motion/test_solver_worker.py round trips).
+import sys
+if 'numpy' not in sys.modules:
+    os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+    os.environ.setdefault('OMP_NUM_THREADS', '1')
 import math
 import subprocess
-import sys
 import tempfile
 import time
 from datetime import datetime

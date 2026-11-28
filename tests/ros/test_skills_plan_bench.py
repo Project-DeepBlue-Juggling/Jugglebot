@@ -78,6 +78,36 @@ def test_the_pure_core_imports_no_ros_at_module_scope():
                 '%s is imported at module scope' % (n,))
 
 
+_BLAS_PROBE = (
+    "import os, sys, importlib.util\n"
+    "if sys.argv[1] == 'numpy-first':\n"
+    "    import numpy\n"
+    "spec = importlib.util.spec_from_file_location('spb', sys.argv[2])\n"
+    "spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+    "print(os.environ.get('OPENBLAS_NUM_THREADS'), os.environ.get('OMP_NUM_THREADS'))\n")
+
+
+@pytest.mark.parametrize('order, expect', [
+    ('numpy-first', 'None None'),   # a test importing the bench: no leak to children
+    ('bench-first', '1 1'),         # the bench as a script: numpy's pool capped
+])
+def test_the_blas_cap_is_set_only_before_numpy_loads(order, expect):
+    """BUG-162: the bench capped the BLAS pool on import even when numpy was already
+    loaded, so a test importing it kept numpy's six threads while the solver worker
+    it spawned later inherited one, and ``tests/motion/test_solver_worker.py``'s round
+    trips differed by about 1e-13 on a bare pytest run. Each order runs in a fresh
+    interpreter with both variables unset."""
+    import subprocess
+    env = {k: v for k, v in os.environ.items()
+           if k not in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS')}
+    out = subprocess.run(
+        [sys.executable, '-c', _BLAS_PROBE, order,
+         os.path.join(_HW_DIR, 'skills_plan_bench.py')],
+        env=env, capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.strip().splitlines()[-1] == expect
+
+
 def test_the_kind_enum_matches_the_srv():
     """The mirrored ``KIND_*`` ints ARE ``InstallSegment.srv``'s.
 

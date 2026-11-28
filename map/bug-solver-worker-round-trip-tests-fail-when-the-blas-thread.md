@@ -2,9 +2,9 @@
 id: BUG-162
 kind: bug
 title: Solver worker round-trip tests fail when the BLAS thread count is not pinned
-status: inbox
+status: complete
 created: '2026-11-28'
-updated: '2026-11-28T05:18:28Z'
+updated: '2026-11-28T16:03:48Z'
 owners: []
 priority: low
 effort: xs
@@ -14,7 +14,8 @@ radius: local
 diagnosis: confirmed
 area: tests-tooling
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-29-bench-blas-cap-only-before-numpy.md
 filed_by: claude
 ---
 
