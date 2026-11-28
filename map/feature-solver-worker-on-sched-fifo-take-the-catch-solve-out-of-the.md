@@ -2,10 +2,11 @@
 id: FEAT-31
 kind: feature
 title: 'Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load)'
-status: backlog
+status: in_progress
 created: '2026-10-28'
-updated: '2026-11-27T04:11:50Z'
-owners: []
+updated: '2026-11-28T16:23:35Z'
+owners:
+- night-shift
 priority: high
 effort: m
 hardware: robot
@@ -64,9 +65,23 @@ The trigger fired at the 2026-11-27 Sitting: the wall tail still bites and is pr
 2. Wait for BUG-149's install fix and re-measure first.
 3. Drop it.
 
+## Sitting
+
+- setup: level, armed, bb-fed
+- why: the SCHED_FIFO worker stalled the setpoint stream on 2026-10-28 when it shared cpus with the stream processes; with cpu_partition it runs only on cpus 4-5, and this A/B shows whether the CATCH wall tail drops without the stall.
+- do:
+  - Launch with `cpu_partition:=true solver_rt_priority:=10` and check the launch log shows `cpu_partition ON` for both trajectory_node and teensy_bridge_node and the worker reporting SCHED_FIFO; if either pin is not applied, stop: the worker would fall back to cpus 1-5 (the 2026-10-28 stall).
+  - Arm B (FIFO): fly 4 Columns Attempts (Sep. 125, Apex 0.95, Dwell 0.27, Throws 21) with the Soft E-stop in hand; stop the arm at the first emitter-gap WARN or lane STOP.
+  - Relaunch with `cpu_partition:=true solver_rt_priority:=0` and fly arm A (CFS): the same 4 Attempts.
+- pass: arm B has no emitter-gap WARN, no lane STOP and no Hand MAX_DEVIATION, and its CATCH solve wall p95 is below arm A's.
+- record: CATCH solve wall p50 and p95 and CPU p50 per arm, emitter-gap max, sched_stops count, caught of thrown per Attempt, any Fault and the bag names.
+- minutes: 30
+- branch: night-shift/2026-11-29-FEAT-31
+
 ## Progress
 
 - 2026-10-28: Design done (Opus, 2026-10-28 evening): kernel has CONFIG_RT_GROUP_SCHED and user.slice cpu.rt_runtime_us=0, so rtprio alone cannot give FIFO (detail in the section above)
 - 2026-10-28: Flown once (22:26 Sitting 2026-10-28): wall/CPU 1.01 as predicted, but the FIFO worker stalled the Jetson setpoint stream 60-96 ms per CATCH solve (detail in the section above)
 - 2026-11-26: 2026-11-26 check: FIFO was flown once (2026-10-28 22:26) and stalled the stream; off by default by owner decision, to re-open only with cpu_partition. The launch file has no solver_rt_priority argument. tools/systemd/README.md said default 10; corrected to 0.
 - 2026-11-27: Sitting 2026-11-27, BUG-32's cpu_partition arm: the wall tail still bites and was worse pinned. Wall p95 202.9 ms pinned against 143.9 unpinned; 14 % of pinned solves waited 80 ms or more with only 73 to 89 ms of CPU, not queued, no IMU upload running, many involuntary switches. One 30-solve sample per arm. The partition keeps nothing else off cpus 4 and 5 (unchecked).
+- 2026-11-29: Night Shift 2026-11-29: held on night-shift/2026-11-29-FEAT-31: launch argument for the FIFO worker, default 0, plus a Sitting A/B with cpu_partition; unblocked by a Sitting
