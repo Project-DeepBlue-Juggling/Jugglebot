@@ -4,7 +4,7 @@ kind: bug
 title: 'Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws'
 status: in_progress
 created: '2026-11-06'
-updated: '2026-11-28T00:15:15Z'
+updated: '2026-11-28T01:39:29Z'
 owners: []
 priority: high
 effort: m
@@ -58,6 +58,11 @@ Two-ball Columns runs of 2026-11-06 mostly end on a smooth missed Catch of Ball 
 - pass: no Attempt ends on a Leg guard latch or a LIMIT refusal of a Catch re-aim, and no Leg base joint moves; the debrief counts the Catches whose aim went more than 10 mm outward and how many were caught.
 - record: the nomination margins, caught of thrown and the end code per Attempt, anything heard or seen at the Leg base joints.
 - minutes: 20
+
+## Sitting result (2026-11-28 12:39)
+
+- verdict: pending
+- notes: Attempts: 1 - Completed without issue 2 - Completed without issue 3 - Ended with MAX_DEVIATION for the Hand 4 - Ball2's feed hit the Platform frame, becoming uncatchable. 5 - Ball2 seemed to my eye to hit the hand more or less spot-on, but it bounced out of the hand, making it unthrowable 6 - Completed without issue 7 - Ended with MAX_DEVIATION for the Hand. This Attempt had an extremely clean Ball2 feed from BB. If all Ball2 feeds were this smooth, that would be incredible. 8 - Completed without issue
 
 ## Progress
 
