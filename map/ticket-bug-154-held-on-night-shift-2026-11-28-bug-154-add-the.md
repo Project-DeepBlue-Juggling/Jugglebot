@@ -2,9 +2,9 @@
 id: TKT-107
 kind: ticket
 title: 'BUG-154 held on night-shift/2026-11-28-BUG-154: add the second test''s clock freeze and merge, merge as is, or fix both in your Session?'
-status: open
+status: complete
 created: '2026-11-28'
-updated: '2026-11-27T17:38:18Z'
+updated: '2026-11-28T00:54:59Z'
 owners: []
 priority: high
 effort: xs
@@ -33,3 +33,7 @@ BUG-154 is built on night-shift/2026-11-28-BUG-154: the test freezes the frame c
 1: a merge the next night, then BUG-150 can be re-gated. 2 or 3: main's suite green before the next nightly.
 
 Recommendation: 3, because main's suite is red until this lands and the night cannot merge before the next nightly runs.
+
+## Answer
+
+OK, I'm going ahead with Option 3.
