@@ -87,8 +87,8 @@ def _plan(monkeypatch, apex_abs_m, d_mm, dir_deg=0.0, window_s=0.6):
     windows = []
     real = cr.decompose
 
-    def spy(cup, tilts, cfg=None):
-        r = real(cup, tilts, cfg)
+    def spy(cup, tilts, cfg=None, **kw):
+        r = real(cup, tilts, cfg, **kw)
         windows.append(r)
         return r
     monkeypatch.setattr(cr, 'decompose', spy)
