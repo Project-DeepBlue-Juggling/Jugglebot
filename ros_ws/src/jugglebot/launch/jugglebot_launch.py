@@ -442,6 +442,13 @@ def generate_launch_description():
         'cpu_partition', default_value='false',
         description='BUG-58: true -> trajectory_node and teensy_bridge_node '
                     'pin to cpus 0-3, the CATCH-solve worker to cpus 4-5.')
+    solver_rt_priority = LaunchConfiguration('solver_rt_priority')
+    solver_rt_priority_arg = DeclareLaunchArgument(
+        'solver_rt_priority', default_value='0',
+        description='FEAT-31: SCHED_FIFO priority (1-99) of the CATCH-solve '
+                    'worker; 0 = off (CFS). Flown 2026-10-28 without '
+                    'cpu_partition it stalled the setpoint stream 60-96 ms '
+                    'per CATCH solve: fly only with cpu_partition:=true.')
 
     # ── Core ROS2 nodes ──────────────────────────────────────────
     orchestrator_node = Node(
@@ -619,7 +626,9 @@ def generate_launch_description():
                      'gc_probe': PythonExpression(["'", gc_probe, "' == 'true'"]),
                      'gc_freeze': PythonExpression(["'", gc_freeze, "' == 'true'"]),
                      'cpu_partition': PythonExpression(
-                         ["'", cpu_partition, "' == 'true'"])}],
+                         ["'", cpu_partition, "' == 'true'"]),
+                     'solver_rt_priority': PythonExpression(
+                         ["int('", solver_rt_priority, "')"])}],
         # THE node the cap exists for: it owns BOTH the planner (plan_cycle) and
         # the 40 Hz emitter thread the can-bridge's 250 ms SETPOINT_STALE watchdog
         # watches, so an uncapped BLAS pool here starves the wire from inside the
@@ -1021,6 +1030,7 @@ def generate_launch_description():
         stall_watchdog_arg,  # BUG-129 diagnostic
         gc_freeze_arg,      # BUG-58 opt-in cures (default off)
         cpu_partition_arg,
+        solver_rt_priority_arg,  # FEAT-31 (default off)
         hand_capture_arg,  # TEMPORARY (BUG-57 diagnostic capture)
         shm_clean_arg,     # BUG-129 experiment
         bridge_shm_arg,

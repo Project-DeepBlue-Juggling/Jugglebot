@@ -68,7 +68,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - FEAT-12 [Robot] Wave camera: optical frame calibration maps the START tick to a recorded frame: no ## Sitting section
 - FEAT-3 [Robot] Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware: no ## Sitting section
 - FEAT-30 [Robot] Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28): no ## Sitting section
-- FEAT-31 [Robot] Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load): no ## Sitting section
 - FEAT-37 [Robot] One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give: no ## Sitting section
 - FEAT-4 [Robot] Magazine feed-tuning loop (`magazine` + `reload` patterns, hand-only throw): no ## Sitting section
 - FEAT-40 [Robot] Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED: no ## Sitting section

@@ -2,9 +2,9 @@
 id: FEAT-31
 kind: feature
 title: 'Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load)'
-status: backlog
+status: complete
 created: '2026-10-28'
-updated: '2026-11-27T04:11:50Z'
+updated: '2026-11-28T16:18:47Z'
 owners: []
 priority: high
 effort: m
@@ -15,12 +15,9 @@ area: skill-stack
 blocked_by: []
 links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
+- logbook/2026-11-29-solver-rt-priority-launch-argument.md
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
-night_skip: input-decision
-night_skip_on: '2026-11-28'
-night_skip_note: Builds the SCHED_FIFO worker with an offline lateness test and a Sitting A/B section, then holds it for a Sitting.
-night_skip_input: 'Pick 1-3 in TKT-104: build the SCHED_FIFO worker now, wait for BUG-149''s fix and re-measure, or drop it.'
 ---
 
 Owner pick 2026-10-28 evening as the lever after BUG-21.
@@ -63,6 +60,19 @@ The trigger fired at the 2026-11-27 Sitting: the wall tail still bites and is pr
 1. Build the SCHED_FIFO worker now, held for a Sitting A/B (recommended).
 2. Wait for BUG-149's install fix and re-measure first.
 3. Drop it.
+
+## Sitting
+
+- setup: level, armed, bb-fed
+- why: the SCHED_FIFO worker stalled the setpoint stream on 2026-10-28 when it shared cpus with the stream processes; with cpu_partition it runs only on cpus 4-5, and this A/B shows whether the CATCH wall tail drops without the stall.
+- do:
+  - Launch with `cpu_partition:=true solver_rt_priority:=10` and check the launch log shows `cpu_partition ON` for both trajectory_node and teensy_bridge_node and the worker reporting SCHED_FIFO; if either pin is not applied, stop: the worker would fall back to cpus 1-5 (the 2026-10-28 stall).
+  - Arm B (FIFO): fly 4 Columns Attempts (Sep. 125, Apex 0.95, Dwell 0.27, Throws 21) with the Soft E-stop in hand; stop the arm at the first emitter-gap WARN or lane STOP.
+  - Relaunch with `cpu_partition:=true solver_rt_priority:=0` and fly arm A (CFS): the same 4 Attempts.
+- pass: arm B has no emitter-gap WARN, no lane STOP and no Hand MAX_DEVIATION, and its CATCH solve wall p95 is below arm A's.
+- record: CATCH solve wall p50 and p95 and CPU p50 per arm, emitter-gap max, sched_stops count, caught of thrown per Attempt, any Fault and the bag names.
+- minutes: 30
+- branch: night-shift/2026-11-29-FEAT-31
 
 ## Progress
 

@@ -197,3 +197,30 @@ def test_launch_exposes_both_args_default_false_and_passes_through():
         assert src.count('\'%s\': PythonExpression' % flag) == 2, \
             'both trajectory_node and teensy_bridge_node get %s' % flag
         assert '%s_arg,' % flag in src
+
+
+def test_launch_exposes_solver_rt_priority_default_zero_to_trajectory_node():
+    """FEAT-31: default-off plumbing so a Sitting can A/B the FIFO worker."""
+    src = LAUNCH.read_text(encoding='utf-8')
+    tree = ast.parse(src)
+    defaults = {}
+    for c in ast.walk(tree):
+        if (isinstance(c, ast.Call) and getattr(c.func, 'id', '')
+                == 'DeclareLaunchArgument' and c.args):
+            for k in c.keywords:
+                if k.arg == 'default_value' and isinstance(k.value, ast.Constant):
+                    defaults[c.args[0].value] = k.value.value
+    assert defaults['solver_rt_priority'] == '0'
+    assert 'solver_rt_priority_arg,' in src
+    # reaches trajectory_node (and only it) as an int, not a string
+    holders = []
+    for c in ast.walk(tree):
+        if (isinstance(c, ast.Call) and getattr(c.func, 'id', '') == 'Node'
+                and any(k.arg == 'executable'
+                        and getattr(k.value, 'value', '') == 'trajectory_node'
+                        for k in c.keywords)):
+            holders.append(ast.get_source_segment(src, c))
+    assert len(holders) == 1
+    assert "'solver_rt_priority': PythonExpression" in holders[0]
+    assert 'int(' in holders[0].split("'solver_rt_priority'")[1][:120]
+    assert src.count("'solver_rt_priority': PythonExpression") == 1
