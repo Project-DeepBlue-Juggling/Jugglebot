@@ -4,7 +4,7 @@ kind: bug
 title: 'Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws'
 status: in_progress
 created: '2026-11-06'
-updated: '2026-11-28T01:39:29Z'
+updated: '2026-11-28T02:07:41Z'
 owners: []
 priority: high
 effort: m
@@ -49,10 +49,11 @@ Two-ball Columns runs of 2026-11-06 mostly end on a smooth missed Catch of Ball 
 ## Sitting
 
 - setup: level, armed, bb-fed
-- why: the owner allows a trial of a 15 mm outward Catch authority (10 mm now); late lateral re-plans are hard on the Leg base joints, so the trial watches the Legs as much as the Catches. E1 (2026-11-27) found landing scatter of 14 to 17 mm per axis is a floor of this Hand and outward authority is 10 mm, so the Catch must absorb it. Fly BUG-158's check first, so the two changes are not confounded.
+- why: the 15 mm outward Catch authority trial read leaning positive (0 of 50 Ball 2 Landing Catches missed) and the owner chose a larger value next; late lateral re-plans are hard on the Leg base joints, so the trial watches the Legs as much as the Catches.
 - do:
-  - Before arming: `ros2 param set /skill_node catch_outward_authority_mm 15.0`.
-  - Before arming: `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns,apex_m=0.95,separation_mm=125,dwell_s=0.27'}"` and read the margins.
+  - Fly after BUG-160's Feed bias trim (6 Attempts), with that trim left in force, so the two are not confounded.
+  - Before arming: `ros2 param set /skill_node catch_outward_authority_mm 25.0`.
+  - Before arming: `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns,apex_m=0.95,separation_mm=125,dwell_s=0.27'}"` and read the margins, including the line with the Catch re-aim at its limit.
   - Fly 8 Columns Attempts (Sep. 125, Apex 0.95, Dwell 0.27, Throws 21).
   - Afterwards `ros2 param set /skill_node catch_outward_authority_mm 10.0`.
 - pass: no Attempt ends on a Leg guard latch or a LIMIT refusal of a Catch re-aim, and no Leg base joint moves; the debrief counts the Catches whose aim went more than 10 mm outward and how many were caught.
@@ -73,6 +74,18 @@ Two-ball Columns runs of 2026-11-06 mostly end on a smooth missed Catch of Ball 
   - 7 - Ended with MAX_DEVIATION for the Hand. This Attempt had an extremely clean Ball2 feed from BB. If all Ball2 feeds were this smooth, that would be incredible.
   - 8 - Completed without issue
 
+## Trial at 15 mm (2026-11-28, bag 2026-11-28_12-31-28)
+
+Reading: leaning positive, not proven. Owner decision: try a larger value next (25 mm, Sitting section above). The verdict stays pending.
+
+- The parameter was in force: all 38 outward-clamp lines read "authority 15 mm (inward 35 mm)".
+- Attempts 1, 2, 6, 8 completed 20 of 20; 3 and 7 ended on a Hand MAX_DEVIATION after a lane refusal (the known bridge-stall race); 4 on a Ball 2 Feed that never seated; 5 on a Ball 2 Feed that bounced out.
+- Throw-Landing Catches: 0 of 105 missed, Ball 2 0 of 50. The 2026-11-27 19:13 bag (10 mm) lost about 5 of 10 Attempts to a missed Ball 2 Landing Catch.
+- 28 Catches clamped at 15.0 mm outward; requested outward aim 16 to 36 mm, median 20; median shortfall past the limit 4.9 mm (11.3 mm at 10 mm). 27 of the 28 were caught. The clamp is still binding, which is why 25 mm is next.
+- Landing scatter and Platform lateral motion around Catches are unchanged (Ball 2 sd 19 / 19 mm against 20 / 20; Mocap speed median 1016 against 1000 mm/s).
+- Confounds: the trial also ran the merged Learner (BUG-158) and the sample is 8 Attempts.
+- Offline check of 25 mm: the live node does not bound the parameter, and the nomination for Columns Sep. 125, Apex 0.95, Dwell 0.27 with the Catch re-aim at its limit is accepted at 10, 15, 20 and 25 mm with worst margins 0.137, 0.111, 0.095 and 0.113 (2026-11-28, `nominate.nominate` with `AimAuthority(30, out, 35)` at the launch limits, all margins above 0).
+
 ## Progress
 
 - 2026-11-06: 2026-11-06 20:20 Sitting: goals 2 and 4 are smooth Ball 2 misses with the ball deflected at Cup height: sideways speed jumps to 1.8 and 0.3 m/s within 30 ms, cup raw 0 throughout, so a false EMPTY and a late fit are out for these two. Ball 45 and 37 mm off the Platform origin at z 1000 (caught median 19, p90 36), Platform at 406 and 784 mm/s. Rim, Cone or edge: mocap cannot say.
@@ -85,3 +98,4 @@ Two-ball Columns runs of 2026-11-06 mostly end on a smooth missed Catch of Ball 
 - 2026-11-20: Owner, 2026-11-20: trial a 15 mm outward Catch authority at a Sitting (the parameter, not the default), no further: late lateral re-plans are aggressive on the Legs, the base joints most. The Sitting section holds the trial. Earlier offline replay passed at 10 mm with 2 % margin and failed at 20 mm.
 - 2026-11-25: 300 Hz replay of 32 final missed Catches against 338 caught entries: no feature (lateral offset, relative vertical speed, Cup descent, late re-aim) separates them; the marker's 30 mm offset from the ball centre hides 3 to 15 mm entries. The 15 mm outward trial's gain cannot be predicted from Mocap; its own pass criterion stays the measurement.
 - 2026-11-28: Sitting step E5 of the learner-efficacy plan: the 15 mm outward authority trial flies at the next Sitting, after BUG-158's check; E1 (2026-11-27) shows landing scatter 14-17 mm per axis is a Hand floor, so the Catch must absorb it.
+- 2026-11-28: Trial at 15 mm flown 2026-11-28: 0 of 105 Landing Catches missed (leaning positive, 8 Attempts, Learner confound); clamp still binding; next trial 25 mm after BUG-160's Feed trim (detail below)

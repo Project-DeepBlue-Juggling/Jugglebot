@@ -14,7 +14,7 @@ scope: >-
 steps:
   - {id: PE0, title: Unsettled-ball test from existing bags, kind: phase, status: complete, completed: 2026-11-25, effort: m, hardware: none}
   - {id: PE1, title: Launch baseline on the robot's Hand, kind: phase, status: complete, completed: 2026-11-27, effort: s, hardware: robot}
-  - {id: PE2, title: Learner correctness fixes, kind: phase, status: in_progress, effort: m, hardware: none}
+  - {id: PE2, title: Learner correctness fixes, kind: phase, status: complete, completed: 2026-11-28, effort: m, hardware: none}
   - {id: PE3, title: The transit term and yaw, kind: phase, status: retired, date: 2026-11-25, effort: l, hardware: robot}
   - {id: PE4, title: Hand change against the baseline, kind: phase, status: retired, date: 2026-11-28, effort: m, hardware: robot}
   - {id: PE5, title: Catch-side robustness, kind: phase, status: not_started, effort: m, hardware: robot}
@@ -134,14 +134,14 @@ Step ids: the frontmatter ids are `PE0` to `PE7` (a constraint of the plan tooli
 |---|---|---|---|---|
 | E0 | Unsettled-ball test from existing bags | none | COMPLETE 2026-11-25: BETWEEN, leaning against | what E1 asks |
 | E1 | Launch baseline on the robot's Hand (FEAT-68, report FEAT-67) | robot | COMPLETE 2026-11-27 | separation; baseline 15 mm/s per axis in every block |
-| E2 | Learner correctness fixes (BUG-137, BUG-138, one Memory) | none | IN PROGRESS: fixes merged 2026-11-28 and the one-Memory rule written (I-LEARN-1); the first flight is BUG-158 | nothing downstream; independent |
+| E2 | Learner correctness fixes (BUG-137, BUG-138, one Memory) | none | COMPLETE 2026-11-28: fixes merged, one-Memory rule written (I-LEARN-1), first flight passed (BUG-158: 10 Attempts, Memory loaded with 0 unusable rows, no Learner refusal, landing error unchanged) | nothing downstream; independent |
 | E3 | The transit term and yaw | robot | RETIRED 2026-11-25 | - |
 | E4 | Hand change against the baseline | robot | RETIRED 2026-11-28 | - |
-| E5 | Catch-side robustness | robot | NOT STARTED: the trial is BUG-78's Sitting row | whether the 15 mm authority and the bounce-out causes need Items |
+| E5 | Catch-side robustness | robot | IN PROGRESS: the 15 mm trial flew 2026-11-28 (0 of 105 Landing Catches missed, leaning positive, 8 Attempts); next is 25 mm (BUG-78) after the Feed bias trim (BUG-160); BUG-161 fixes the re-send filter | whether the 15 mm authority and the bounce-out causes need Items |
 | E6 | The Platform IMU's part | robot | RETIRED 2026-11-25 | - |
 | E7 | Close-out | none | COMPLETE 2026-11-28 | archive of this plan, once E2's first flight and E5's trial have flown |
 
-Order: BUG-158's first flight, then E5's trial (BUG-78), so the two changes are not confounded.
+Order: BUG-158 flew first (passed 2026-11-28), then the 15 mm trial; the 25 mm trial (BUG-78) flies after BUG-160's Feed bias trim so the two are not confounded.
 
 ## 5. Phases in detail
 
@@ -297,10 +297,9 @@ Catch authority is 10 mm (35 mm inward) against about 20 mm sd, and on-target bo
 late-seating Catch). E1 did not support the seating account (2026-11-27) and E4 is retired, so the scatter is a floor and
 this step stands on absorbing it at the Catch.
 
-**Preconditions.** None beyond E1's result. BUG-158 flies first.
+**Preconditions.** None beyond E1's result. BUG-158 flew first (passed 2026-11-28).
 
-**Work.** The 15 mm outward-authority trial (owner-decided, not flown) is BUG-78's Sitting row, to fly at the next
-Sitting after BUG-158's check, and the bounce-out causes.
+**Work.** The 15 mm outward-authority trial flew 2026-11-28 (leaning positive; the clamp still bound the median demand of 20 mm). Owner, 2026-11-28: try 25 mm next; it is BUG-78's Sitting row and flies after BUG-160's Feed bias trim so the two are not confounded. Then the bounce-out causes.
 
 **Hardware and safety.** Robot; the Catch clamp is a safety-adjacent bound, so a change is analysed against
 `validate_cycle` and the Teensy `MAX_DEVIATION` guard first.
