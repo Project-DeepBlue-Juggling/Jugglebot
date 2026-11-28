@@ -20,5 +20,5 @@ files_changed:
 
 ## Verification
 
-- 2026-11-29, `env -u OPENBLAS_NUM_THREADS -u OMP_NUM_THREADS tools/night_shift_nonet.sh pytest -q -p no:cacheprovider tests/ros/test_skills_plan_bench.py tests/motion/test_solver_worker.py` (one process, so the bench import precedes the worker spawn, the case the Item describes): **96 passed in 438.76 s**.
-- 2026-11-29, the same new test with the guard planted to `if True:`: **1 failed, 1 passed** (the numpy-first case).
+- 2026-11-29, `env -u OPENBLAS_NUM_THREADS -u OMP_NUM_THREADS tools/night_shift_nonet.sh pytest -q -p no:cacheprovider tests/ros/test_skills_plan_bench.py tests/motion/test_solver_worker.py` (one process, so the bench import precedes the worker spawn, the case the Item describes): **96 passed in 438.76 s** (the two new parametrised cases included). No `./run_tests.sh` run is cited here: the Night Shift gate runs `./run_tests.sh --full` on the branch tip.
+- 2026-11-29, `tools/night_shift_nonet.sh pytest -q tests/ros/test_skills_plan_bench.py -k blas_cap` with the guard planted to `if True:`: **1 failed, 1 passed** (the numpy-first case); restored: **2 passed**.

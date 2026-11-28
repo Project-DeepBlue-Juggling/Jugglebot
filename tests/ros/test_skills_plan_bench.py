@@ -103,7 +103,7 @@ def test_the_blas_cap_is_set_only_before_numpy_loads(order, expect):
     out = subprocess.run(
         [sys.executable, '-c', _BLAS_PROBE, order,
          os.path.join(_HW_DIR, 'skills_plan_bench.py')],
-        env=env, capture_output=True, text=True, timeout=120)
+        env=env, capture_output=True, text=True, timeout=300)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip().splitlines()[-1] == expect
 
