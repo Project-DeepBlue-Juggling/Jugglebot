@@ -2,9 +2,9 @@
 id: TKT-104
 kind: ticket
 title: 'FEAT-31: the pinned arm''s wall tail is preemption; build the SCHED_FIFO worker now, wait for BUG-149, or drop it?'
-status: open
+status: complete
 created: '2026-11-28'
-updated: '2026-11-27T15:52:42Z'
+updated: '2026-11-28T00:37:52Z'
 owners: []
 priority: high
 effort: xs
@@ -31,3 +31,7 @@ FEAT-31 was off by your decision until BUG-32's cpu_partition arm showed whether
 1: the next night builds and holds it for a Sitting; whether the box grants real-time priority to the launch user is checked offline first, and if it needs a system change that is yours. 2: the Item waits on BUG-149's Sitting. 3: the Item closes.
 
 Recommendation: 1, because the measured tail is involuntary preemption, a different lever from BUG-149's install cost, and a held branch costs nothing until you fly it.
+
+## Answer
+
+Agreed. Go with Option 1
