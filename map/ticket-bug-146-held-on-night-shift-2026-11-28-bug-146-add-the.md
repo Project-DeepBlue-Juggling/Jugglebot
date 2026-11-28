@@ -2,9 +2,9 @@
 id: TKT-106
 kind: ticket
 title: 'BUG-146 held on night-shift/2026-11-28-BUG-146: add the spline solver''s unit test before the Sitting, fly it as is, or drop it?'
-status: open
+status: complete
 created: '2026-11-28'
-updated: '2026-11-27T17:24:50Z'
+updated: '2026-11-28T00:40:19Z'
 owners: []
 priority: medium
 effort: xs
@@ -37,3 +37,7 @@ The new solver `_clamped_spline_rates` has no direct unit test. It is checked on
 1: the Sitting section stands as written after the next night. 2: the Sitting may fly it now. 3: BUG-146 goes back to open.
 
 Recommendation: 1, because the 3-Knot case is on the live seam path and a reference test is cheap.
+
+## Answer
+
+Agreed. Go with Option 1
