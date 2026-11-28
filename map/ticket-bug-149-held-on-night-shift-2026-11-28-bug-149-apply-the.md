@@ -2,9 +2,9 @@
 id: TKT-105
 kind: ticket
 title: 'BUG-149 held on night-shift/2026-11-28-BUG-149: apply the audit''s 2 test fixes and merge, merge as is, or drop?'
-status: open
+status: complete
 created: '2026-11-28'
-updated: '2026-11-27T16:27:44Z'
+updated: '2026-11-28T00:39:43Z'
 owners: []
 priority: medium
 effort: xs
@@ -38,3 +38,7 @@ The audit traced the skip rule and found the planner change sound, but left two 
 1: a merge the next night if the gate says MERGE, then a Sitting reads the install CPU through a 32-Throw oval. 2: a day Session merges. 3: the Item reopens without a branch.
 
 Recommendation: 1, because the fix sits on the live splice path and the tests are what will catch a future edit that breaks the skip rule.
+
+## Answer
+
+Agreed. Go with Option 1
