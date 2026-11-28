@@ -4,7 +4,7 @@ kind: bug
 title: Hand stalls at the 70 A clamp mid-dive, probably on a Ball under the Cup, and the next launch comes up slow
 status: inbox
 created: '2026-11-07'
-updated: '2026-11-27T06:41:02Z'
+updated: '2026-11-28T08:03:37Z'
 owners: []
 priority: medium
 effort: m
@@ -55,3 +55,4 @@ Sources: `~/.ros/log/2026-11-07-16-15-21-645789-jetson-2503132/launch.log`, `tem
 - 2026-11-20: Sitting of 2026-11-20: one new instance, launch 2 13:52:36.69, Hand at 2.08 rev, 72.3 A for 0.09 s with a trapped marker coinciding (temp/logs/trapped_2026-11-20_13-48-32.txt). Launch 1's scan sees no trapped marker at any stall (cannot see).
 - 2026-11-27: Confirmed for one event, Sitting 2026-11-27 14:04:14: a missed Columns Ball rolled under the Hand and the Hand stalled on it at 72.6 A peak (pos 1.27 against cmd 0.07 rev); trapped_ball_finder matches the marker to that Ball. The live warning (FEAT-50) fired at 14:04:13.971, 0.16 s before the stall, and nothing acts on it.
 - 2026-11-27: Owner decision 2026-11-27: no automatic response to the under-Hand warning (FEAT-71 dropped); the stall protection is relied on as it is. The warning stays as an operator and debrief aid.
+- 2026-11-28: Sitting 2026-11-28 12:31, Attempt 4: Hand held up on a Carry descent at 1.66 rev, 67.2 A for about 90 ms; the finder reports TRAPPED MARKER COINCIDES at (21, 3, -41) mm, Ball 58 (the lost Ball 2 of that Feed), which dwelt under the Hand 0.6 s earlier. Too short for the stall guard; motor temperature unchanged.

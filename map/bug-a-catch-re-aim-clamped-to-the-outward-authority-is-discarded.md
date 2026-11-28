@@ -2,9 +2,9 @@
 id: BUG-161
 kind: bug
 title: A Catch re-aim clamped to the outward authority is discarded by the re-send tolerance at 10 mm
-status: inbox
+status: complete
 created: '2026-11-28'
-updated: '2026-11-28T02:06:58Z'
+updated: '2026-11-28T07:58:23Z'
 owners: []
 priority: medium
 effort: s
@@ -16,6 +16,7 @@ area: skill-stack
 blocked_by: []
 links:
 - logbook/2026-11-28-first-flight-of-the-learner-merge-and-the-15-mm-catch-authority-trial.md
+- logbook/2026-11-28-clamped-catch-re-aim-judged-on-the-fit-demand.md
 parent: learner-generalisation
 filed_by: claude
 ---
@@ -32,3 +33,7 @@ A Catch re-aim that the outward authority clamps to a length at or below `resend
 ## Status
 
 A fix is in progress this Session (2026-11-28). Left open until it lands and its logbook entry is written.
+
+## Progress
+
+- 2026-11-28: Fixed 2026-11-28: both re-aim paths judge a clamp-shortened move on the Fit's demand (C-CATCH-2 amended). Not yet flown; first flight is BUG-160's Sitting.
