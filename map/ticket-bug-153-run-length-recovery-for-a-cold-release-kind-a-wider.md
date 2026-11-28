@@ -2,9 +2,9 @@
 id: TKT-102
 kind: ticket
 title: 'BUG-153: run-length recovery for a cold release kind, a wider prior in config, a widening gate, or leave it pinned?'
-status: open
+status: complete
 created: '2026-11-28'
-updated: '2026-11-27T15:52:11Z'
+updated: '2026-11-28T00:45:06Z'
 owners: []
 priority: low
 effort: xs
@@ -32,3 +32,7 @@ BUG-153: a release kind with no rows measures the plant model's 100 mm lateral g
 1: the next night builds it, flips the 179 mm xfail to a pass, and replays the live Memory copy to show every command unchanged; it merges if the gate says MERGE. 2: a day Session edits the config. 3: built as 1, but it does not fix the 179 mm case. 4: the Item stays open as accepted.
 
 Recommendation: 1, because it fixes any cold kind without widening the gate for warm ones, and the replay can show it is invisible on today's Memory.
+
+## Answer
+
+Agreed. Go with Option 1
