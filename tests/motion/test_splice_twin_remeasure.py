@@ -47,8 +47,9 @@ def _rest_state(cup_mm) -> uc.CycleState:
 def chain():
     """THROW, then ``N_INSTALLS`` cross-site CATCH+throw splices (an oval).
 
-    Returns a list of ``(old_record, new_record, stroke_calls, arm_calls)``,
-    the call counts being the twin measurements that ONE install made."""
+    Returns a list of ``(old_record, new_record, stroke_calls, arm_calls,
+    splice_k)``, the call counts being the twin measurements that ONE install
+    made and ``splice_k`` the splice knot ``install_segment`` reported."""
     geom = StewartGeometry()
     limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
@@ -92,7 +93,7 @@ def chain():
                 rec, None, sg.CATCH, term, t_rel - ex.LEAD_S,
                 limits=limits, geom=geom)
             assert res.accepted, res.message
-            out.append((rec, new, counts['stroke'], counts['arm']))
+            out.append((rec, new, counts['stroke'], counts['arm'], res.splice_k))
             rec, t_rel = new, t_land + DWELL_S
     finally:
         uc.plan_stroke_clear_s, uc.plan_arm_lead_s = orig_s, orig_a
@@ -104,7 +105,7 @@ def test_every_mark_twin_equals_the_full_remeasure_on_the_joined_plan(chain):
     is recomputed here as the reference; the new path must match it exactly,
     for every mark, after every install of the chain."""
     n_marks = 0
-    for _old, new, _s, _a in chain:
+    for _old, new, _s, _a, _k in chain:
         for m in new.meta.releases:
             assert m.stroke_clear_s == uc.plan_stroke_clear_s(new.plan, m.t_s)
             n_marks += 1
@@ -115,23 +116,120 @@ def test_every_mark_twin_equals_the_full_remeasure_on_the_joined_plan(chain):
 
 
 def test_the_streamed_head_is_bit_identical_below_the_seam(chain):
-    """(a) The emitted Knots are untouched: below the splice knot every array of
-    the new plan equals the old record's, and the origin did not move."""
-    for old, new, _s, _a in chain:
-        k_s = new.plan.n_knots - 1
-        n = min(old.plan.n_knots, new.plan.n_knots)
-        # The seam is >= WIRE_READ_KNOTS ahead of the emitter; everything the
-        # wire could have read is at least this far below the shorter plan.
-        # Compare the common prefix up to the first differing knot: it must
-        # be a long run (the whole head) and never start earlier than the head.
-        diff = np.nonzero(np.any(old.plan.pose[:n] != new.plan.pose[:n],
-                                 axis=1))[0]
-        first = int(diff[0]) if diff.size else n
-        assert first >= 1 and new.t0_s == old.t0_s
-        assert np.array_equal(old.plan.pose[:first], new.plan.pose[:first])
-        assert np.array_equal(old.plan.hand_rev[:first],
-                              new.plan.hand_rev[:first])
-        assert k_s >= first
+    """(a) The emitted Knots are untouched: below the SPLICE knot every per-knot
+    array the twins (and the wire) read equals the old record's, bit for bit,
+    and the origin did not move.  At the splice knot itself the position is
+    pinned and only the velocity is re-derived."""
+    n_truncated = 0
+    for old, new, _s, _a, k_s in chain:
+        assert k_s >= 1 and new.t0_s != 0.0
+        n_old = old.plan.n_knots
+        assert k_s <= n_old - 1
+        if k_s < n_old - 1:
+            n_truncated += 1      # the head really was cut, not just extended
+        o, w = old.plan, new.plan
+        channels = (('pose', o.pose, w.pose),
+                    ('pose_vel', o.pose_vel, w.pose_vel),
+                    ('hand_rev', o.hand_rev, w.hand_rev),
+                    ('hand_vel_rps', o.hand_vel_rps, w.hand_vel_rps))
+        for name, a, b in channels:
+            below = np.nonzero(np.any(
+                (a[:k_s] != b[:k_s]).reshape(k_s, -1), axis=1))[0]
+            assert below.size == 0, (name, int(below[0]), k_s)
+            assert np.array_equal(a[:k_s], b[:k_s]), name
+        # The seam knot's POSITION is pinned (velocity may be re-derived).
+        assert np.array_equal(o.pose[k_s], w.pose[k_s])
+        assert o.hand_rev[k_s] == w.hand_rev[k_s]
+        assert w.dt == o.dt
+    # Every install of this chain cut the head short (CATCH splices mid-record),
+    # so the identity above is not the trivial extend-at-the-end case.
+    assert n_truncated == len(chain), (n_truncated, len(chain))
+
+
+# ---- direct boundary tests of the two predicates --------------------------------
+
+DT = 0.025
+MARGIN = uc._ARM_SUPPRESS_MARGIN_S
+N_A = 200
+
+
+def _clear_at(n_stop_dt: float) -> float:
+    """A stroke_clear_s whose ``old - margin`` equals ``n_stop_dt * DT``."""
+    return n_stop_dt * DT + MARGIN
+
+
+def test_release_predicate_none_is_always_remeasured():
+    for n_a in (2, 3, 50, 1280):
+        assert uc._release_twin_needs_remeasure(None, n_a, DT) is True
+
+
+def test_release_predicate_boundary_at_n_a_minus_3():
+    """``old - margin <= (n_a - 3) dt`` is the skip side; one ULP-ish above flips."""
+    n_a = N_A
+    assert not uc._release_twin_needs_remeasure(_clear_at(n_a - 3), n_a, DT)
+    assert uc._release_twin_needs_remeasure(_clear_at(n_a - 3) + 1e-6, n_a, DT)
+    # stops (clear = stop knot k * dt + margin) at n_a-2, n_a-1, n_a: remeasure.
+    for k in (n_a - 2, n_a - 1, n_a):
+        assert uc._release_twin_needs_remeasure(_clear_at(k), n_a, DT), k
+    # a stop at n_a-4 and far below: skip.
+    for k in (n_a - 4, n_a - 10, 5):
+        assert not uc._release_twin_needs_remeasure(_clear_at(k), n_a, DT), k
+
+
+def test_release_exactly_at_the_seam_is_remeasured():
+    """A release at the seam knot has its stop at or beyond it by construction."""
+    n_a = N_A
+    seam_t = (n_a - 1) * DT
+    assert uc._release_twin_needs_remeasure(seam_t + MARGIN, n_a, DT)
+    assert uc._release_twin_needs_remeasure(seam_t, n_a, DT)
+
+
+def test_catch_predicate_boundary():
+    """int(t/dt) = n_a-1 and n_a-2 are re-measured (the catch knot is at or one
+    short of the seam knot n_a-1); n_a-3 and below keep their carried value."""
+    n_a = N_A
+    # t a hair above the knot so int() is exact
+    def t_of(k):
+        return (k + 0.25) * DT
+    assert uc._catch_twin_needs_remeasure(t_of(n_a - 1), n_a, DT)
+    assert uc._catch_twin_needs_remeasure(t_of(n_a - 2), n_a, DT)
+    assert not uc._catch_twin_needs_remeasure(t_of(n_a - 3), n_a, DT)
+    assert not uc._catch_twin_needs_remeasure(t_of(n_a - 4), n_a, DT)
+    assert not uc._catch_twin_needs_remeasure(t_of(10), n_a, DT)
+
+
+def test_predicates_skip_only_when_a_full_remeasure_is_bit_equal(chain):
+    """Seeded property check on real installs: for a random head mark of the OLD
+    record (below the splice knot, as ``extend`` sees it), whenever a predicate
+    says skip, the twin carried from the old record equals a FULL re-measure on
+    the NEW joined plan, bit for bit.  ``n_a = k_s + 1`` is the head length."""
+    rng = np.random.RandomState(20261129)
+    n_skips = 0
+    for _ in range(50):
+        old, new, _s, _a, k_s = chain[int(rng.randint(len(chain)))]
+        n_a = k_s + 1
+        if rng.randint(2) == 0:
+            marks = list(old.meta.releases)
+            if not marks:
+                continue
+            m = marks[int(rng.randint(len(marks)))]
+            if int(round(m.t_s / DT)) > k_s:
+                continue          # a discarded-tail mark: not a head mark
+            if not uc._release_twin_needs_remeasure(m.stroke_clear_s, n_a, DT):
+                n_skips += 1
+                assert m.stroke_clear_s == uc.plan_stroke_clear_s(
+                    new.plan, m.t_s)
+        else:
+            marks = list(old.meta.catches)
+            if not marks:
+                continue
+            m = marks[int(rng.randint(len(marks)))]
+            if int(m.t_s / DT) > k_s:
+                continue
+            if not uc._catch_twin_needs_remeasure(m.t_s, n_a, DT):
+                n_skips += 1
+                assert m.arm_lead_s == uc.plan_arm_lead_s(new.plan, m.t_s)
+    assert n_skips >= 10, n_skips
 
 
 def test_twin_measurements_per_splice_do_not_grow_with_record_length(chain):
@@ -140,7 +238,7 @@ def test_twin_measurements_per_splice_do_not_grow_with_record_length(chain):
     record (~2 per install of depth; the logbook's fail-before run measured
     9, 11, 13, 15, 17, 19, ... with a max of 35); now it is the new
     segment's own marks plus the few head marks near the seam."""
-    totals = [s + a for _o, _n, s, a in chain]
+    totals = [s + a for _o, _n, s, a, _k in chain]
     deep = chain[-1][1].plan.n_knots
     assert deep > 500
     assert max(totals) <= 8, totals
