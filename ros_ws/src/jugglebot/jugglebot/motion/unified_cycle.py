@@ -2526,7 +2526,9 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
                                          start_tilt=start_tilt,
                                          rest_slew=rest_slew,
                                          held_from_k=held_from_k,
-                                         start_tilt_rate=start_tilt_rate)
+                                         start_tilt_rate=start_tilt_rate,
+                                         seed_at_rest=_seed_is_at_rest(state),
+                                         geom=geom)
             except ValueError as exc:
                 raise CycleInfeasible(TILT_PIN, [str(exc)])
         # ⚠ THE ATTITUDE HALF OF THE PLATFORM HOLD IS *NOT* TAKEN — measured, not

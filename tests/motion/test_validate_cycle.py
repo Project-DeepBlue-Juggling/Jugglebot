@@ -1749,7 +1749,10 @@ def test_rung1_holdless_raw_chain_reads_the_pinned_values(geom):
     assert plan.catch_k == 35
     rep = _validate_oval(plan, geom)
     assert rep.code == 'OK', (rep.code, rep.reasons)
-    assert rep.max_cup_seating_deg == pytest.approx(20.16, abs=0.05)
+    # RE-PINNED 2026-11-28 (BUG-159, I-PLAN-18): 20.16 -> 20.48 deg.  The Banking
+    # schedule now scores its Leg jerk on the realised Hermite and spends more of
+    # its unchanged budget; 0.32 deg is 1.3 % of the 24.8 deg left to the 45 deg cone.
+    assert rep.max_cup_seating_deg == pytest.approx(20.48, abs=0.05)
     assert rep.min_cup_seating_az_g == pytest.approx(0.760, abs=0.002)
     assert rep.catch_closing_ratio == pytest.approx(0.568, abs=0.005)
     assert rep.catch_skid_mmps == pytest.approx(14.0, abs=1.5)
@@ -1862,7 +1865,10 @@ def test_rung1_through_the_production_segment_path_passes_the_45_deg_cone(
     assert rep.code == 'OK', (rep.code, rep.reasons)
     assert windows[0].catch_k == 35
     assert rep.cup_stroke_end_k == (42,)
-    assert rep.max_cup_seating_deg == pytest.approx(34.71, abs=0.1)
+    # RE-PINNED 2026-11-28 (BUG-159, I-PLAN-18; owner approved): 34.71 -> 35.37
+    # deg. The Banking schedule now scores the curve the gate reads and spends
+    # tilt budget the old score held back; the bound is the 45 deg cone.
+    assert rep.max_cup_seating_deg == pytest.approx(35.37, abs=0.1)
     assert 30.0 < rep.max_cup_seating_deg < feas.CUP_SEATING_CONE_DEG
     assert rep.min_cup_seating_az_g == pytest.approx(0.742, abs=0.01)
     assert rep.max_cup_braking_deg == pytest.approx(21.13, abs=0.1)
@@ -1901,7 +1907,9 @@ def test_the_production_default_carry_reads_the_holdless_seating(monkeypatch, ge
         lambda: _oval_carry_segment(0.50, hold_s=0.0), monkeypatch)
     rep = feas.validate_cycle(windows[0], _oval_limits(), geom)
     assert rep.code == 'OK', (rep.code, rep.reasons)
-    assert rep.max_cup_seating_deg == pytest.approx(20.17, abs=0.1)
+    # RE-PINNED 2026-11-28 (BUG-159, I-PLAN-18): 20.17 -> 20.50 deg, the raw
+    # chain's move above (1.3 % of the margin to 45 deg, 3.4 % of it to 30 deg).
+    assert rep.max_cup_seating_deg == pytest.approx(20.50, abs=0.1)
     assert rep.max_cup_seating_deg < 30.0
 
 
