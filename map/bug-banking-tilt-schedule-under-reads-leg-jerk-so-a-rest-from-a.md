@@ -2,9 +2,9 @@
 id: BUG-159
 kind: bug
 title: Banking tilt schedule under-reads Leg jerk, so a REST from a moving state can be refused at the live limits
-status: in_progress
+status: complete
 created: '2026-11-28'
-updated: '2026-11-28T05:18:32Z'
+updated: '2026-11-28T14:21:54Z'
 owners: []
 priority: medium
 effort: m
@@ -14,7 +14,8 @@ radius: subsystem
 diagnosis: confirmed
 area: skill-stack
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-28-banking-schedule-scores-the-realised-curve.md
 filed_by: claude
 ---
 
@@ -42,3 +43,4 @@ Whether any of the robot's 101 CATCH LIMIT_JERK refusals share this cause; the j
 ## Progress
 
 - 2026-11-28: fix built on branch offline/bug159, not merged. The Banking schedule scores its Leg jerk on the curve the gate reads; all ten self-Throw seeds plan at the live limits (REST peaks 87-106 % to about 50 %); no Pattern loses a Catch in the sim; tilt stage 1.4 to 2.0 times slower, budgets green. Open with the owner: two pinned measurements and the held Hop ordering test.
+- 2026-11-29: Fixed (I-PLAN-18): the Banking schedule scores its Leg jerk on the curve the plan gate reads. Sim at the live limits: all ten self-Throw seeds plan (REST peaks 87-106 % to about 50 %), no Pattern loses a Catch. Nomination margins: Hop, oval, polygon walk up; Columns down 3 %; turned Columns at 45 deg 0.036 to 0.026. Merged 2026-11-29 after the full gate; unflown.
