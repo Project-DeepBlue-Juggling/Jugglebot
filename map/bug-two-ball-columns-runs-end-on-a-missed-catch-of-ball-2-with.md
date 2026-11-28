@@ -4,7 +4,7 @@ kind: bug
 title: 'Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws'
 status: in_progress
 created: '2026-11-06'
-updated: '2026-11-28T02:07:41Z'
+updated: '2026-11-28T14:24:16Z'
 owners: []
 priority: high
 effort: m
@@ -49,16 +49,16 @@ Two-ball Columns runs of 2026-11-06 mostly end on a smooth missed Catch of Ball 
 ## Sitting
 
 - setup: level, armed, bb-fed
-- why: the 15 mm outward Catch authority trial read leaning positive (0 of 50 Ball 2 Landing Catches missed) and the owner chose a larger value next; late lateral re-plans are hard on the Leg base joints, so the trial watches the Legs as much as the Catches.
+- why: 25 mm of outward Catch authority lifted Leg 1 off its Base joint; the owner set the default to 15 mm, and this trial flies at it with the lowered Leg acceleration limit, after BUG-160's refit so the Feed does not confound it.
 - do:
-  - Fly after BUG-160's Feed bias trim (6 Attempts), with that trim left in force, so the two are not confounded.
-  - Before arming: `ros2 param set /skill_node catch_outward_authority_mm 25.0`.
+  - Before powering: inspect the Leg 0-2 Base joints by hand (seating, play, any witness marks) and note what you find.
+  - Fly after BUG-160's refit trial, with the Feed trim at zero.
+  - Before arming, once the code change (default 15 mm, a refusal above it, Leg acceleration limit 4500 mm/s^2) is on main and built: do not set `catch_outward_authority_mm`; leave it at the default.
   - Before arming: `ros2 service call /skills/nominate jugglebot_interfaces/srv/SetString "{data: 'columns,apex_m=0.95,separation_mm=125,dwell_s=0.27'}"` and read the margins, including the line with the Catch re-aim at its limit.
-  - Fly 8 Columns Attempts (Sep. 125, Apex 0.95, Dwell 0.27, Throws 21).
-  - Afterwards `ros2 param set /skill_node catch_outward_authority_mm 10.0`.
-- pass: no Attempt ends on a Leg guard latch or a LIMIT refusal of a Catch re-aim, and no Leg base joint moves; the debrief counts the Catches whose aim went more than 10 mm outward and how many were caught.
+  - Fly 8 Columns Attempts (Sep. 125, Apex 0.95, Dwell 0.27, Throws 21) at the default authority.
+- pass: no Leg base joint moves and no Attempt ends on a Leg guard latch; the debrief reads the realized Leg acceleration per Catch (bar: none above 4500 mm/s^2) and the Platform tilt (none above 3.5 deg).
 - record: the nomination margins, caught of thrown and the end code per Attempt, anything heard or seen at the Leg base joints.
-- minutes: 20
+- minutes: 15
 
 ## Sitting result (2026-11-28 12:39)
 
@@ -86,6 +86,34 @@ Reading: leaning positive, not proven. Owner decision: try a larger value next (
 - Confounds: the trial also ran the merged Learner (BUG-158) and the sample is 8 Attempts.
 - Offline check of 25 mm: the live node does not bound the parameter, and the nomination for Columns Sep. 125, Apex 0.95, Dwell 0.27 with the Catch re-aim at its limit is accepted at 10, 15, 20 and 25 mm with worst margins 0.137, 0.111, 0.095 and 0.113 (2026-11-28, `nominate.nominate` with `AimAuthority(30, out, 35)` at the launch limits, all margins above 0).
 
+## Sitting result (2026-11-28)
+
+- verdict: fail
+- notes (split into bullets):
+  - I ran 10 attempts because so many ended prematurely. Attempts:
+  - 1 - Ball2 feed collided with the Platform
+  - 2 - Mid-air collision right at the start
+  - 3 - Collision
+  - 4 - Mid-air collision right at the start
+  - 5 - Ball2 feed wasn't caught properly
+  - 6 - Ball2 feed wasn't caught properly. Ball2 jammed under hand (briefly)
+  - 7 - Messy Ball2 catch (post-start). BB Ball2 feed was clean
+  - 8 - Mid-air collision right at the end. Looked relatively clean, and the Ball2 feed was great.
+  - 9 - Completed. Was a little messy and Platform seemed a little wobbly at times.
+  - 10 - Leg 1 separated from the Base towards the end.
+  - (sheet 2026-11-28-robot, step 9)
+  - derived: launch log 2026-11-28-19-38-37 and bag: in the last Attempt (start line 7024) a Catch re-aim of 30.8 mm (21.5 mm outward, 30.8 mm across) was installed 0.567 s before contact and passed every limit (realized Leg acceleration 5015 of 8000 mm/s^2); the Platform then rose about 8 mm above its median and tilted 4.8 deg within 125 ms, and the owner saw Leg 1 separate from the Base. One Catch re-aim was refused LIMIT_JERK.
+  - derived (cont.): 4 of 10 Attempts completed.
+
+## Evening Sitting 2026-11-28: fail at 25 mm, Leg 1 separated from the Base
+
+- 25 mm is not to be flown again. In the last Attempt (skill 17) a RESEND re-aim of 30.8 mm (21.5 mm outward, 30.8 mm across, the across demand clamped from 51.5) was installed 0.567 s before contact.
+- Every check passed: realized Leg peaks 348 mm/s, 5015 mm/s^2 and 137k mm/s^3, 58 to 69 % of the limits 600 / 8000 / 200000. The Platform then rose about 8 mm above its median (184.5 mm) and tilted 4.8 deg within 125 ms; Leg 1 reseated on the deceleration (inferred from Mocap and currents).
+- The 21.5 mm outward part was possible only at 25 mm authority (about 6.5 mm at 10).
+- Near-miss at 10 mm: step 7 Attempt 3, last Catch, 5754 mm/s^2, Platform z 179.3 mm and tilt 2.4 deg (owner: Leg 1 extremely close to being pulled from the Base). These two are the maxima over 353 Catches; every morning Catch stayed at or below 4394 mm/s^2.
+- Medians are unchanged from the morning, and BUG-161's fix is not implicated (re-aims taken per Catch 1.25 against 1.27). Ruled out: the Feed trim, Mocap-driven demand growth, lateness.
+- Owner decisions 2026-11-29: default outward authority 15 mm with a refusal above it; Leg acceleration limit 8000 to 4500 mm/s^2. The gap is filed as BUG-163.
+
 ## Progress
 
 - 2026-11-06: 2026-11-06 20:20 Sitting: goals 2 and 4 are smooth Ball 2 misses with the ball deflected at Cup height: sideways speed jumps to 1.8 and 0.3 m/s within 30 ms, cup raw 0 throughout, so a false EMPTY and a late fit are out for these two. Ball 45 and 37 mm off the Platform origin at z 1000 (caught median 19, p90 36), Platform at 406 and 784 mm/s. Rim, Cone or edge: mocap cannot say.
@@ -99,3 +127,4 @@ Reading: leaning positive, not proven. Owner decision: try a larger value next (
 - 2026-11-25: 300 Hz replay of 32 final missed Catches against 338 caught entries: no feature (lateral offset, relative vertical speed, Cup descent, late re-aim) separates them; the marker's 30 mm offset from the ball centre hides 3 to 15 mm entries. The 15 mm outward trial's gain cannot be predicted from Mocap; its own pass criterion stays the measurement.
 - 2026-11-28: Sitting step E5 of the learner-efficacy plan: the 15 mm outward authority trial flies at the next Sitting, after BUG-158's check; E1 (2026-11-27) shows landing scatter 14-17 mm per axis is a Hand floor, so the Catch must absorb it.
 - 2026-11-28: Trial at 15 mm flown 2026-11-28: 0 of 105 Landing Catches missed (leaning positive, 8 Attempts, Learner confound); clamp still binding; next trial 25 mm after BUG-160's Feed trim (detail below)
+- 2026-11-29: Failed at the Sitting of 2026-11-28 (evening): Leg 1 separated from the Base at 25 mm authority on a 30.8 mm RESEND re-aim that passed every Leg limit. 25 mm is not flown again; next trial 15 mm default, 4500 mm/s^2 Leg limit, BUG-163 (detail below)

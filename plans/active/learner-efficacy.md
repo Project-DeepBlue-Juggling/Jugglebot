@@ -137,7 +137,7 @@ Step ids: the frontmatter ids are `PE0` to `PE7` (a constraint of the plan tooli
 | E2 | Learner correctness fixes (BUG-137, BUG-138, one Memory) | none | COMPLETE 2026-11-28: fixes merged, one-Memory rule written (I-LEARN-1), first flight passed (BUG-158: 10 Attempts, Memory loaded with 0 unusable rows, no Learner refusal, landing error unchanged) | nothing downstream; independent |
 | E3 | The transit term and yaw | robot | RETIRED 2026-11-25 | - |
 | E4 | Hand change against the baseline | robot | RETIRED 2026-11-28 | - |
-| E5 | Catch-side robustness | robot | IN PROGRESS: the 15 mm trial flew 2026-11-28 (0 of 105 Landing Catches missed, leaning positive, 8 Attempts); next is 25 mm (BUG-78) after the Feed bias trim (BUG-160); BUG-161 fixes the re-send filter | whether the 15 mm authority and the bounce-out causes need Items |
+| E5 | Catch-side robustness | robot | IN PROGRESS: the 15 mm trial flew 2026-11-28 (0 of 105 Landing Catches missed, 8 Attempts); the 25 mm trial FAILED that evening (Leg 1 separated from the Base, BUG-78, BUG-163) and the default becomes 15 mm with a refusal above it; the Catch-robustness work waits on the Feed fix (BUG-160: refit BB's aim table) | whether the 15 mm authority and the bounce-out causes need Items |
 | E6 | The Platform IMU's part | robot | RETIRED 2026-11-25 | - |
 | E7 | Close-out | none | COMPLETE 2026-11-28 | archive of this plan, once E2's first flight and E5's trial have flown |
 
@@ -299,7 +299,7 @@ this step stands on absorbing it at the Catch.
 
 **Preconditions.** None beyond E1's result. BUG-158 flew first (passed 2026-11-28).
 
-**Work.** The 15 mm outward-authority trial flew 2026-11-28 (leaning positive; the clamp still bound the median demand of 20 mm). Owner, 2026-11-28: try 25 mm next; it is BUG-78's Sitting row and flies after BUG-160's Feed bias trim so the two are not confounded. Then the bounce-out causes.
+**Work.** The 15 mm outward-authority trial flew 2026-11-28 (leaning positive; the clamp still bound the median demand of 20 mm). Owner, 2026-11-28: try 25 mm next. It flew that evening and FAILED: a late re-aim passed every Leg limit and Leg 1 separated from the Base (BUG-78, BUG-163). Owner, 2026-11-29: the default becomes 15 mm (a value above it refused) and the Leg acceleration limit 4500 mm/s^2; BUG-160's Feed trim also failed, so BB's aim table is refitted first and BUG-78 re-flies at 15 mm after it. Then the bounce-out causes.
 
 **Hardware and safety.** Robot; the Catch clamp is a safety-adjacent bound, so a change is analysed against
 `validate_cycle` and the Teensy `MAX_DEVIATION` guard first.

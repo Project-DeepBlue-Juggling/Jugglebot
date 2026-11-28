@@ -1,3 +1,39 @@
+closed:
+  at: 2026-11-29 00:05
+  items:
+  - BUG-160
+  - BUG-78
+confirmed:
+  at: 2026-11-29 00:05
+  changed: []
+derived:
+  7:
+    BUG-160:
+      by: sitting-debrief 2026-11-28
+      criterion: median |dx| of Ball 2's Feed at the Catch plane, measured from the
+        bag against the schedule Site (not against the Cup, which follows the ball),
+        is 10 mm or less, and no more than 1 of 6 Attempts is lost to Ball 2's Feed.
+      evidence: 'bag 2026-11-28_19-38-37, six Attempts of step 7: Ball 2 Feed dx against
+        the Site +5.6, +14.1, +16.6, +13.3, +20.5, +24.2 mm (schedule frame), median
+        |dx| 15.3 mm; Attempts 2, 4 and 6 ended MISSED_CATCH at skill 3 (launch log
+        2026-11-28-19-38-37), so 3 of 6 lost to the Feed. The trim moved BB''s aim
+        25 mm inward as intended, but BB''s own shortfall this evening was about 8
+        mm (Attempts 1-12) and about 35 mm (13-16), not the morning''s steady 25-29
+        mm.'
+      verdict: fail
+  9:
+    BUG-78:
+      by: sitting-debrief 2026-11-28
+      criterion: no Attempt ends on a Leg guard latch or a LIMIT refusal of a Catch
+        re-aim, and no Leg base joint moves; the debrief counts the Catches whose
+        aim went more than 10 mm outward and how many were caught.
+      evidence: 'launch log 2026-11-28-19-38-37 and bag: in the last Attempt (start
+        line 7024) a Catch re-aim of 30.8 mm (21.5 mm outward, 30.8 mm across) was
+        installed 0.567 s before contact and passed every limit (realized Leg acceleration
+        5015 of 8000 mm/s^2); the Platform then rose about 8 mm above its median and
+        tilted 4.8 deg within 125 ms, and the owner saw Leg 1 separate from the Base.
+        One Catch re-aim was refused LIMIT_JERK. 4 of 10 Attempts completed.'
+      verdict: fail
 schema: 2
 steps:
   1:
