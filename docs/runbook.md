@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (20 Items, 740 min)
+## Robot  (21 Items, 770 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -17,6 +17,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen | 40 | armed | - | - |
 | BUG-78 Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws | 15 | level, armed, bb-fed | - | - |
 | BUG-89 teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall | 40 | level, armed, bb-fed | - | - |
+| FEAT-31 Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load) | 30 | level, armed, bb-fed | `night-shift/2026-11-29-FEAT-31` | - |
 | FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0) | 45 | armed, bb-fed, bridge-cycled | - | - |
 | FEAT-39 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30 | 50 | level, armed, bb-fed, bridge-cycled | - | - |
 | FEAT-69 can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19) | 25 | level, bridge-cycled | - | - |
@@ -51,6 +52,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-135 [Robot] Platform CAN receive queue overflows during the inclinometer re-probe stall: no ## Sitting section
 - BUG-136 [Robot] Catching cone catch stamps could run 10 ms early per stranded receive frame: no ## Sitting section
 - BUG-142 [Robot] Hand park reports already parked on a Hand that is Idle on its bottom stop: no ## Sitting section
+- BUG-156 [Robot] IMU Charts appear out-of-sync in live viewer: no ## Sitting section
 - BUG-27 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - BUG-29 [Robot] RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball: no ## Sitting section
 - BUG-32 [Robot] Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff: no ## Sitting section
@@ -68,7 +70,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - FEAT-12 [Robot] Wave camera: optical frame calibration maps the START tick to a recorded frame: no ## Sitting section
 - FEAT-3 [Robot] Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware: no ## Sitting section
 - FEAT-30 [Robot] Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28): no ## Sitting section
-- FEAT-31 [Robot] Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load): no ## Sitting section
 - FEAT-37 [Robot] One-off 2 m Throws: raised Hand limits and an overshoot protection the speed-scaled margin cannot give: no ## Sitting section
 - FEAT-4 [Robot] Magazine feed-tuning loop (`magazine` + `reload` patterns, hand-only throw): no ## Sitting section
 - FEAT-40 [Robot] Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED: no ## Sitting section
@@ -86,4 +87,5 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- none
+- TKT-109 BUG-146 on night-shift/2026-11-28-BUG-146: relax BUG-152's knot-0 test to a tolerance on the later Hand rates, feed the spline the old start rate, or drop the branch? (parent BUG-146)
+- TKT-110 BUG-75: refused second re-aims cost no Catch in the logs; close it as accepted, decline them before the solve, or measure the wasted solve first? (parent BUG-75)
