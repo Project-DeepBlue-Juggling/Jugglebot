@@ -86,4 +86,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
 ## Questions a Sitting can answer
 
-- none
+- TKT-109 BUG-146 on night-shift/2026-11-28-BUG-146: relax BUG-152's knot-0 test to a tolerance on the later Hand rates, feed the spline the old start rate, or drop the branch? (parent BUG-146)
