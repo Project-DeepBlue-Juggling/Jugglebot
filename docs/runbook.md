@@ -6,7 +6,7 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (17 Items, 580 min)
+## Robot  (18 Items, 640 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
@@ -25,6 +25,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 | FEAT-27 Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | 35 | level, armed, bb-fed | - | - |
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | - | - |
+| IDEA-12 JP-11 Rotating columns: the pair turns a few degrees every Beat | 60 | level, armed, bb-fed | - | - |
 | IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 20 | level, armed | - | - |
 | IDEA-27 Measure the Platform ring at Dwell 0.40 with the IMU | 15 | level, armed, bb-fed | - | - |
 
@@ -71,7 +72,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - FEAT-40 [Robot] Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED: no ## Sitting section
 - FEAT-57 [Robot] Archive the SpaceMouse follower under a tag: no ## Sitting section
 - FEAT-64 [Robot] Can-bridge FW 50 exports the per-axis encoder sample age: no ## Sitting section
-- IDEA-12 [Robot] JP-11 Rotating columns: the pair turns a few degrees every Beat: no ## Sitting section
 - IDEA-13 [Robot] JP-13 Rising and sinking columns: the whole Pattern rides the Platform in z: no ## Sitting section
 - IDEA-14 [Robot] JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm: no ## Sitting section
 - IDEA-15 [Robot] JP-15 Over the top: Ball 1 straight up, Ball 2 arcs over it (needs P4): no ## Sitting section
