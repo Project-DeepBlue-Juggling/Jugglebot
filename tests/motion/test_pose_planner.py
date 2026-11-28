@@ -161,8 +161,12 @@ def test_pose_rung2_baseline_cell_reads_the_measured_values(limits, geom, releas
     while a numpy point release does not."""
     _, lvl = _folded(0.50, uc.PLANNER_LEVEL, limits, geom)
     _, pose = _folded(0.50, uc.PLANNER_POSE, limits, geom)
-    assert lvl.report.peak_leg_jerk_mmps3 == pytest.approx(111510, rel=0.01)
-    assert lvl.report.max_cup_seating_deg == pytest.approx(34.71, abs=0.3)
+    # RE-PINNED 2026-11-28 (BUG-159, I-PLAN-18; owner approved): level jerk
+    # 111,510 (112,052 measured on main) -> 119,513 mm/s^3 and level seating
+    # 34.71 -> 35.37 deg, for the same cause as test_validate_cycle's rung-1
+    # pin; bounds 200,000 mm/s^3 and the 45 deg cone.
+    assert lvl.report.peak_leg_jerk_mmps3 == pytest.approx(119513, rel=0.01)
+    assert lvl.report.max_cup_seating_deg == pytest.approx(35.37, abs=0.3)
     # 2026-10-24 touch-down skid bound 175 mm/s: 44,329 -> 53,341 at 0.50.
     assert pose.report.peak_leg_jerk_mmps3 == pytest.approx(54073, rel=0.01)
     assert pose.report.max_cup_seating_deg == pytest.approx(18.6, abs=0.3)

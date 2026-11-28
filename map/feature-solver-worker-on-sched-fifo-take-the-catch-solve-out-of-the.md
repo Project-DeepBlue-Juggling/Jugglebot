@@ -17,9 +17,10 @@ links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
-night_skip: waiting-trigger
-night_skip_on: '2026-11-27'
-night_skip_note: Off by owner decision; re-opens only if BUG-32's cpu_partition arm shows the Catch solve tail still biting.
+night_skip: input-decision
+night_skip_on: '2026-11-28'
+night_skip_note: Builds the SCHED_FIFO worker with an offline lateness test and a Sitting A/B section, then holds it for a Sitting.
+night_skip_input: 'Pick 1-3 in TKT-104: build the SCHED_FIFO worker now, wait for BUG-149''s fix and re-measure, or drop it.'
 ---
 
 Owner pick 2026-10-28 evening as the lever after BUG-21.
@@ -54,6 +55,14 @@ Bounded: a solve is <= ~100 ms CPU, so a runaway RT lock-up is not a realistic r
 - Hand, bridge, thermal ruled out on telemetry.
 - Owner: default OFF (solver_rt_priority 0; the 21:02 CFS state is the accepted result), emitter-gap (45 ms) and sched_stops WARNs added so a stall fails loudly.
 - Back to backlog: pick up only if a future Sitting shows the solve tail biting again; the design then is a CPU partition (worker on cores trajectory_node and teensy_bridge_node never run on), dress-rehearsed on the loaded box before the robot is powered.
+
+## Options (2026-11-28)
+
+The trigger fired at the 2026-11-27 Sitting: the wall tail still bites and is preemption. TKT-104 asks which way.
+
+1. Build the SCHED_FIFO worker now, held for a Sitting A/B (recommended).
+2. Wait for BUG-149's install fix and re-measure first.
+3. Drop it.
 
 ## Progress
 

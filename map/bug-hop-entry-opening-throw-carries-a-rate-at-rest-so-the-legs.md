@@ -2,19 +2,20 @@
 id: BUG-152
 kind: bug
 title: Hop entry opening Throw carries a rate at rest, so the Legs ripple before the first Throw
-status: inbox
+status: complete
 created: '2026-11-27'
-updated: '2026-11-27T10:47:25Z'
+updated: '2026-11-28T00:10:27Z'
 owners: []
 priority: medium
 effort: s
-hardware: none
+hardware: robot
 owner: decision
 radius: subsystem
 diagnosis: confirmed
 area: skill-stack
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-28-rest-seed-knot0-rate.md
 parent: pattern-progression-columns-to-centre-and-orbit
 filed_by: claude
 ---
@@ -37,3 +38,7 @@ Found 2026-11-27 while gating JP-11 rotating Columns (IDEA-12) in the sim.
 ## Unchecked
 
 Whether other fresh-origin plans from rest (the Feed Throw, the one-ball opening Throw) carry the same rate. Probes: scratchpad out/jp11diag of the session that filed this.
+
+## Progress
+
+- 2026-11-28: Fixed in the planner (I-PLAN-17): a plan seeded from rest takes the seed's zero rate at its first Knot. Hop entry Leg mirror on the opening plan 1.196e-4 to 1.15e-7 rev in the sim. The one-ball opening Throw and a fresh REST carried it too. Moving seeds are unchanged: their first Knot is dropped at the splice. Unflown.

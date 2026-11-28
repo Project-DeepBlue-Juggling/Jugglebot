@@ -17,9 +17,10 @@ blocked_by: []
 links:
 - logbook/2026-11-06-sitting-debrief-2.md
 filed_by: claude
-night_skip: waiting-trigger
-night_skip_on: '2026-11-27'
-night_skip_note: 'Owner decision 2026-11-26: read the logged re-aim direction from the next Sitting''s launch log, then choose the second re-aim policy.'
+night_skip: input-decision
+night_skip_on: '2026-11-28'
+night_skip_note: Builds the second re-aim policy you choose with its replay numbers and a Sitting section, then holds it for a Sitting.
+night_skip_input: 'Pick 1-4 in TKT-103: BUMP second re-aims, send none, raise the BUMP-LAUNCH bound, or only second re-aims above about 20 mm that do not reverse the first.'
 ---
 
 `RESEND-REFUSED INFEASIBLE ... QP infeasible: unbounded dual step` on 29 of 346 Throws at the Sitting of 2026-11-06 15:53, against 2.3 % at the 13:19 Sitting and 0 to 0.4 % in the endurance logs the same afternoon.
@@ -196,6 +197,15 @@ From TKT-59. You chose option 1 and will run it yourself: a day Session runs the
 - The Next Sitting Runbook takes hardware steps only, and steps 1 to 3 are offline: they need no power, only `tools/probes/late_reaim/`.
 - So BUG-75 is rated `hardware: robot` for step 5. Until then the Runbook lists it under "Needs a Sitting section" as your reminder.
 - The Night Shift writes the `## Sitting` section when it builds step 4.
+
+## Options (2026-11-28)
+
+The 2026-11-27 Sitting logged the direction: second re-aims mostly take back noise in the first. TKT-103 asks which policy.
+
+1. BUMP for second re-aims (replay 41 to 57 % diagonal, 79 to 83 % axis, short of the bar).
+2. No second re-aim (recommended: removes most refusals, loosens no bound).
+3. Raise the BUMP-LAUNCH bound (a safety bound: your Session).
+4. A second re-aim only above about 20 mm and not reversing the first.
 
 ## Progress
 

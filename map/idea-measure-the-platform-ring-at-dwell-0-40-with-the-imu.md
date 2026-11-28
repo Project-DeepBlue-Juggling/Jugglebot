@@ -18,8 +18,8 @@ links:
 - plans/parked/carry-ring-zvd.md
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-24'
-night_skip_note: Its Sitting section is written (one Attempt at Dwell 0.40, rehearsal first); it rides on any robot Sitting.
+night_skip_on: '2026-11-28'
+night_skip_note: One Dwell 0.40 Attempt rang and one did not; the Sitting section now flies four.
 ---
 
 Decides whether plans/parked/carry-ring-zvd.md comes back or is archived (owner, 2026-11-23). At Dwell 0.50 the IMU, on the bridge clock, shows the x ring quiet at the measured separation (about 4 ms after the planned release) and surging to about 19 mm/s 42 ms after it (logbook 2026-11-23-ring-study-release-timing-redone-on-the-bridge-clock, which corrects the earlier 43 mm/s). Dwell 0.40 is where the old 76 mm long landings were seen and is unmeasured.

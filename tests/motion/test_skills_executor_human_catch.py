@@ -192,8 +192,11 @@ def _all_other_compiles():
     for p in nm.NOMINATED_PATTERNS:
         if p == 'human_catch':
             continue         # the one compile that sets the field (U5a)
+        # rotating Columns refuses a zero step and a t0 start by name
+        extra = ({'step_deg': 10.0, 'entry': 'hop'}
+                 if p == sc.COLUMNS_ROTATING else {})
         out.append((p, nm.compile_schedule(
-            nm.NominationConfig(p, 0.9, 100.0, 0.27))))
+            nm.NominationConfig(p, 0.9, 100.0, 0.27, **extra))))
     out.append(('columns hop entry', nm.compile_schedule(
         nm.NominationConfig('columns', 0.9, 100.0, 0.27, entry='hop'))))
     site = st.columns_sites(150.0)[0]

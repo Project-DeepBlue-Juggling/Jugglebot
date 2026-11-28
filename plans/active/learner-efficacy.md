@@ -1,5 +1,5 @@
 ---
-title: Learner efficacy - find the launch term and fix it at the Hand; Learner correctness; Catch robustness
+title: Learner efficacy - measure the launch term (a floor of this Hand); Learner correctness; Catch robustness
 created: 2026-11-24
 status: active
 owner: Harrison
@@ -8,22 +8,25 @@ pathway: learner-generalisation
 branch: main
 scope: >-
   Fewer Attempts lost to Throw accuracy. Re-scoped 2026-11-25 after E0 (owner): the launch term is a
-  property of the ball leaving the Cup, so the plan measures it on the robot's Hand (a Self-throw baseline) and
-  fixes it in the Hand itself, judged against that baseline. The Learner keeps only its two correctness fixes; the transit
+  property of the ball leaving the Cup, so the plan measures it on the robot's Hand (a Self-throw baseline). E1 found about 15 mm/s per axis,
+  accepted 2026-11-28 as this Hand's floor (E4 retired); the Catch absorbs it. The Learner keeps only its two correctness fixes; the transit
   term, yaw, the shrinkage estimator and the IMU study are retired from this plan and stay as Items.
 steps:
   - {id: PE0, title: Unsettled-ball test from existing bags, kind: phase, status: complete, completed: 2026-11-25, effort: m, hardware: none}
   - {id: PE1, title: Launch baseline on the robot's Hand, kind: phase, status: complete, completed: 2026-11-27, effort: s, hardware: robot}
-  - {id: PE2, title: Learner correctness fixes, kind: phase, status: in_progress, effort: m, hardware: none}
+  - {id: PE2, title: Learner correctness fixes, kind: phase, status: complete, completed: 2026-11-28, effort: m, hardware: none}
   - {id: PE3, title: The transit term and yaw, kind: phase, status: retired, date: 2026-11-25, effort: l, hardware: robot}
-  - {id: PE4, title: Hand change against the baseline, kind: phase, status: not_started, effort: m, hardware: robot}
+  - {id: PE4, title: Hand change against the baseline, kind: phase, status: retired, date: 2026-11-28, effort: m, hardware: robot}
   - {id: PE5, title: Catch-side robustness, kind: phase, status: not_started, effort: m, hardware: robot}
   - {id: PE6, title: The Platform IMU's part, kind: phase, status: retired, date: 2026-11-25, effort: m, hardware: robot}
-  - {id: PE7, title: Close-out, kind: phase, status: not_started, effort: s, hardware: none}
+  - {id: PE7, title: Close-out, kind: phase, status: complete, completed: 2026-11-28, effort: s, hardware: none}
 related_logbook:
   - 2026-11-24-learner-efficacy-review-and-scatter-decomposition.md
   - 2026-11-25-learner-efficacy-e0-unsettled-ball-test.md
   - 2026-11-27-learner-efficacy-e1-launch-baseline.md
+  - 2026-11-26-plant-model-lateral-law-per-release-kind.md
+  - 2026-11-27-plant-model-process-noise-on-b.md
+  - 2026-11-28-learner-efficacy-close-out.md
 related_code:
   - ros_ws/src/jugglebot/jugglebot/motion/skills/{learner,plant_model,memory,executor,schedule}.py (Learner.command at learner.py:296, the most-recent-k selection at learner.py:270, the exact-match key at learner.py:261, SkillExecutor._command_u, the yaw refusal BEAT_YAW_NOT_SUPPORTED at schedule.py:822 and :1507)
   - ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md (I-LEARN-1, I-BEAT-1)
@@ -117,10 +120,9 @@ built to tell the two apart.
 - **A mid-Pattern operator channel on the robot** and **per-Site xy**: unbuilt by owner priority (2026-11-23).
 - **The transit term, yaw, the shrinkage estimator and the IMU study** (retired 2026-11-25, see E3, E6 and
   E2): none can be felt while the scatter is about 20 mm sd. They stay as Items (BUG-79, IDEA-12, IDEA-18,
-  FEAT-65, IDEA-27) and are worth reopening once the launch scatter is down.
-- **The Pathway's Destination is now wider than this plan.** It still names bias "for carried Throws, new
-  configurations and yaw"; with E3 retired, completing this plan does not complete it. Whether to narrow
-  the Destination again or leave those as its remaining Items is an owner decision (§ 7).
+  FEAT-65, IDEA-27) and are worth reopening only if something new cuts the launch scatter (E4 is retired; the floor stands).
+- **The Pathway's Destination was narrowed 2026-11-28 (owner)** to match: no bias for new configurations or
+  yaw, and carried Throws only as far as BUG-138. Those stay as Items.
 - Reducing scatter by a better landing-space law: the ceiling is 2-4 %.
 - Jerk and Leg-separation roughness (BUG-72). (The 15 mm outward-authority trial is in scope, under E5.)
 
@@ -132,14 +134,14 @@ Step ids: the frontmatter ids are `PE0` to `PE7` (a constraint of the plan tooli
 |---|---|---|---|---|
 | E0 | Unsettled-ball test from existing bags | none | COMPLETE 2026-11-25: BETWEEN, leaning against | what E1 asks |
 | E1 | Launch baseline on the robot's Hand (FEAT-68, report FEAT-67) | robot | COMPLETE 2026-11-27 | separation; baseline 15 mm/s per axis in every block |
-| E2 | Learner correctness fixes (BUG-137, BUG-138, one Memory) | none | IN PROGRESS: fixes merged 2026-11-28; the one-Memory rule and the first flight open | nothing downstream; independent |
+| E2 | Learner correctness fixes (BUG-137, BUG-138, one Memory) | none | COMPLETE 2026-11-28: fixes merged, one-Memory rule written (I-LEARN-1), first flight passed (BUG-158: 10 Attempts, Memory loaded with 0 unusable rows, no Learner refusal, landing error unchanged) | nothing downstream; independent |
 | E3 | The transit term and yaw | robot | RETIRED 2026-11-25 | - |
-| E4 | Hand change against the baseline | robot | NOT STARTED | whether the launch term is cut |
-| E5 | Catch-side robustness | robot | NOT STARTED | whether the 15 mm authority and the bounce-out causes need Items |
+| E4 | Hand change against the baseline | robot | RETIRED 2026-11-28 | - |
+| E5 | Catch-side robustness | robot | IN PROGRESS: the 15 mm trial flew 2026-11-28 (0 of 105 Landing Catches missed, 8 Attempts); the 25 mm trial FAILED that evening (Leg 1 separated from the Base, BUG-78, BUG-163) and the default becomes 15 mm with a refusal above it; the Catch-robustness work waits on the Feed fix (BUG-160: refit BB's aim table) | whether the 15 mm authority and the bounce-out causes need Items |
 | E6 | The Platform IMU's part | robot | RETIRED 2026-11-25 | - |
-| E7 | Close-out | none | NOT STARTED | archive of this plan |
+| E7 | Close-out | none | COMPLETE 2026-11-28 | archive of this plan, once E2's first flight and E5's trial have flown |
 
-Order: E1, then E4. E2 needs no hardware and can run at any time. E5 can follow E1 at any point.
+Order: BUG-158 flew first (passed 2026-11-28), then the 15 mm trial; the 25 mm trial (BUG-78) flies after BUG-160's Feed bias trim so the two are not confounded.
 
 ## 5. Phases in detail
 
@@ -219,7 +221,7 @@ point estimates (the ratio intervals reach 1.52 to 1.62 against 1.5); seating is
 per axis, Platform-corrected: S 14.9 mm/s (95 % 12.2..17.2), D27 15.5, D50 14.7, D100 15.0; variance against
 S 1.08, 0.98 and 1.01. Landing sd 14 to 17 mm per axis in every block. The ball is at rest in the Cup before
 release in every block. The measured Platform motion explains about a fifth of block S's variance and yaw
-none. Not measured: the Cup's own lateral motion against the Platform during the stroke.
+none. Not measured: the Cup's own lateral motion against the Platform during the stroke. **Owner, 2026-11-28: about 15 mm/s is accepted as the launch-scatter floor of this Hand** (see E4).
 
 ### Phase E2: Learner correctness fixes
 
@@ -234,7 +236,7 @@ rows move Columns commands (the applied offset at the +62.5 mm Site moves from -
 - (b) BUG-138. Split or term the plant model by release kind: theta must not be pooled across carried and
   free_cup rows.
 - (c) One Memory for the robot: plant `jugglebot` always, a new plant only when hardware physically changes
-  (ball type, Hand motor, recalibration, **a new Cup from E4**); experiments load the main Memory and write
+  (ball type, Hand motor, recalibration, a new Cup); experiments load the main Memory and write
   to a scratch copy.
 - (d) Tests for the two fixes: a long single-Site memory against the guard, leakage between release kinds.
 
@@ -264,53 +266,40 @@ tests are in. On the live Memory (5,811 rows) the next launch's command moves by
 Site) and 0.3 mm at the +/-62.5 mm Sites; replay rms 23.86 / 22.42 / 21.00 mm against 23.86 / 22.41 / 21.00,
 accepted by the owner as no worse. `./run_tests.sh --full` and the sim gate ran green but for one stale
 source-scan test, fixed. A cold release kind's 100 mm gate is left pinned and filed as BUG-153 (owner).
-Open: (c) the one-Memory rule is not written down or built; the `/skills/nominate` rehearsal and the first
-Columns Attempt are owed. Entries: `logbook/2026-11-26-plant-model-lateral-law-per-release-kind.md`,
+(c) written 2026-11-28 (owner-agreed), in I-LEARN-1: plant `jugglebot` always; a new plant only when the hardware physically changes (ball type, Hand motor, recalibration, a new Cup); an experiment loads the main Memory and writes to a scratch copy, made by `tools/memory_scratch.py` (copies the main plant's Memory CSV under `temp/runtime/learn/` to a scratch plant name and refuses to overwrite; the scratch plant gets an empty seed, so the debrief merge archives its rows on their own and never touches the main plant). Owed on the robot: a `/skills/nominate` rehearsal with the launch up and Homed, and a first normal Columns Attempt, both in BUG-158's Sitting row. Entries: `logbook/2026-11-26-plant-model-lateral-law-per-release-kind.md`,
 `logbook/2026-11-27-plant-model-process-noise-on-b.md`.
 
 ### Phase E3: The transit term and yaw — RETIRED 2026-11-25
 
 Retired by the re-scope (owner, 2026-11-25). The expected gain is a bias of 9-15 mm on two-ball Throws under
 about 20 mm sd of scatter, which barely moves the rms. BUG-79, IDEA-12 and IDEA-18 stay open as Items;
-`BEAT_YAW_NOT_SUPPORTED` (schedule.py:822, :1507) stays. **What would reopen it:** E4 cutting the launch
-scatter enough that the bias is a visible share of the landing error.
+`BEAT_YAW_NOT_SUPPORTED` (schedule.py:822, :1507) stays. **What would reopen it:** a cut in the launch scatter
+(E4 is retired, so a new cause found) large enough that the bias is a visible share of the landing error.
 
-### Phase E4: Hand change against the baseline
+### Phase E4: Hand change against the baseline — RETIRED 2026-11-28
 
-**Purpose.** The only step in this plan that can cut the launch scatter, which is 35-70 % of lateral landing
-variance: removing it would take about 20 mm sd to 11-16 mm.
+Retired by the owner after E1. The launch scatter, about 15 mm/s per axis (landing sd 14 to 17 mm), is
+accepted as the floor of this Hand. Why: the Cup cannot move sideways against the Platform during the stroke
+and the Hand is stiff and symmetric; no marker can go on the Hand; the ball is wholly covered in
+retroreflective tape. There is nothing left to measure or change on the Hand side. The scatter is angular
+(about 0.2 degrees), so landing scatter grows with flight time: a lower Apex lands tighter.
 
-**Preconditions.** E1's result and number: separation, 15 mm/s per axis in every block.
-
-**Target after E1.** The release, not seating: a Cup that seats the ball faster or a more on-axis Catch is
-not expected to help. E1 could not tell two causes apart: the Cup moving sideways against the Platform during
-the stroke (play or flex in the Hand's guide), or the ball's contact with the Cup wall as it lifts off. The
-first iteration should tell them apart before a Cup is redesigned, for example with one marker on the Cup or
-its carriage for a repeat of block S alone (30 Throws).
-
-**Work.** The owner's Hand or Cup change (design his). Each iteration re-flies FEAT-68's row, or only the blocks that showed the scatter, and is kept or
-dropped on those numbers. A kept change then flies a normal Columns Attempt.
-
-**Criterion.** To be pre-registered here before the first iteration. Proposed form (§ 7, question 2): block
-S's launch sd at least halved, from 14.9 to 7.5 mm/s or less per axis.
-
-**Hardware and safety.** Robot. A new Cup changes the
-ball's seat height and release point: re-check the Hand top stop and the Catch plane before the first robot
-Throw, and start a new plant Memory (E2(c)).
-
-**Decides.** Whether the launch term is cut; whether E3 is worth reopening.
+**What would reopen it.** The one unflown idea is a ball-orientation check, not filed as an Item. Mark the ball
+with a pen, for the operator's eye. Place it in one orientation for 30 settled one-Throw Attempts, then rotated
+90 degrees for 30 more. If the launch direction follows the mark, the ball is the cause. Also: a Hand repair or
+a new Cup, which means re-flying FEAT-68's row first.
 
 ### Phase E5: Catch-side robustness
 
 **Purpose.** Scatter that is random has to be absorbed at the Catch, or it keeps ending Attempts: outward
 Catch authority is 10 mm (35 mm inward) against about 20 mm sd, and on-target bounce-outs are 18 % of ends
 (6 of 11 diagnosed entered 3-15 mm from the Cup axis; 10 of 11 were Ball 2; two far Throws followed a
-late-seating Catch). E1 did not support the seating account (2026-11-27), so this step no longer feeds E4:
-it stands on absorbing the scatter at the Catch.
+late-seating Catch). E1 did not support the seating account (2026-11-27) and E4 is retired, so the scatter is a floor and
+this step stands on absorbing it at the Catch.
 
-**Preconditions.** None beyond E1's result.
+**Preconditions.** None beyond E1's result. BUG-158 flew first (passed 2026-11-28).
 
-**Work.** The 15 mm outward-authority trial (owner-decided, not flown) and the bounce-out causes.
+**Work.** The 15 mm outward-authority trial flew 2026-11-28 (leaning positive; the clamp still bound the median demand of 20 mm). Owner, 2026-11-28: try 25 mm next. It flew that evening and FAILED: a late re-aim passed every Leg limit and Leg 1 separated from the Base (BUG-78, BUG-163). Owner, 2026-11-29: the default becomes 15 mm (a value above it refused) and the Leg acceleration limit 4500 mm/s^2; BUG-160's Feed trim also failed, so BB's aim table is refitted first and BUG-78 re-flies at 15 mm after it. Then the bounce-out causes.
 
 **Hardware and safety.** Robot; the Catch clamp is a safety-adjacent bound, so a change is analysed against
 `validate_cycle` and the Teensy `MAX_DEVIATION` guard first.
@@ -323,23 +312,18 @@ Retired by the re-scope (owner, 2026-11-25): the IMU cannot see the ball against
 launch term there. IDEA-27 (the ring at Dwell 0.40) stays on `plans/parked/carry-ring-zvd.md`. **What would
 reopen it:** an Apex-scatter question, which this plan no longer carries.
 
-### Phase E7: Close-out
+### Phase E7: Close-out — COMPLETE 2026-11-28
 
 **Purpose.** Leave the normative rows true to what was built.
 
-**Preconditions.** E2 landed; E4 decided.
+**Done** (`ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md`): the new row I-LEARN-2 (the Learner's
+lateral authority is a Learner bound, never an actuator bound; widening c_max is safe only while install-time
+`validate_cycle` and the Teensy `MAX_DEVIATION` guard stay on the path); I-BEAT-1's yaw clause re-pointed to
+IDEA-12; I-LEARN-1's stale "verified at the plan's P5" clause replaced by the one-Memory rule. The oval on the
+shared Memory (old P5 item 4) is not flown under this plan: it needs `compile_oval` on `compile_beats`, which
+does not exist, and is IDEA-31 with E2(b) as its precondition. PWAY-2's Destination was narrowed (§ 3).
 
-**Work.** The INVARIANTS rows: the D3 lateral-authority row (the authority is a Learner bound, never an
-actuator bound; widening c_max is safe only while install-time `validate_cycle` and the Teensy
-`MAX_DEVIATION` guard stay on the path), the stale I-BEAT-1 yaw clause re-pointed to IDEA-12, an I-LEARN-1
-update for E2's fixes and its "verified at the plan's P5" clause. The oval on the shared Memory (old P5
-item 4) is not flown under this plan: it needs `compile_oval` on `compile_beats`, which does not exist, and
-goes to an Item with E2(b) as its precondition.
-
-**Hardware and safety.** None; the INVARIANTS edits are normative-doc edits and go through
-`/audit --unstaged`.
-
-**Decides.** Archive of this plan.
+**Decides.** Archive of this plan. It stays active until BUG-158 and BUG-78's trial have flown.
 
 ## 6. Mapping from the old plan's P5
 
@@ -348,7 +332,7 @@ goes to an Item with E2(b) as its precondition.
 | 1 Arrival pull (BUG-79) | Retired with E3 (2026-11-25); the Item stays open |
 | 2 Per-beat yaw (IDEA-12) | Retired with E3 (2026-11-25); the Item stays open |
 | 3 Mid-Pattern change on the robot | Not pursued (owner priority 2026-11-23); see § 3 |
-| 4 The oval on the shared Memory | To an Item at E7, conditional on E2(b) |
+| 4 The oval on the shared Memory | IDEA-31 (filed 2026-11-28), conditional on E2(b) |
 | 5 INVARIANTS rows | E7 |
 
 The old plan's stance "stays open until these have flown" (owner, 2026-11-06) was reversed by the owner on
@@ -356,12 +340,9 @@ The old plan's stance "stays open until these have flown" (owner, 2026-11-06) wa
 
 ## 7. Open questions
 
-1. The Destination of PWAY-2 still names bias for carried Throws, new configurations and yaw, which this plan
-   no longer delivers (§ 3). Narrow it, or leave those as the Pathway's remaining Items?
-2. E4's criterion is to be fixed before its first iteration. E1 showed the scatter in every block, so the
-   proposed form is: block S's launch sd at least halved, from 14.9 to 7.5 mm/s or less per axis.
-3. E2's replay gate (rms no worse on every axis) comes from a prediction-quality replay, not a closed-loop
-   simulation; owner to confirm.
+All answered. 1: PWAY-2's Destination was narrowed (owner, 2026-11-28; § 3). 2: E4's criterion is moot, E4
+is retired (owner, 2026-11-28). 3: E2's replay gate (rms no worse on every axis) was accepted by the owner
+on 2026-11-28 as no worse.
 
 Answered 2026-11-24 (owner): Mocap will cover the bench Hand (E1); E5 stays in this plan;
 `learner-generalisation.md` is archived. Answered 2026-11-25 (owner): the re-scope of § 2.

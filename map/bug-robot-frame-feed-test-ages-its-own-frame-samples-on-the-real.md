@@ -1,0 +1,39 @@
+---
+id: BUG-154
+kind: bug
+title: Robot-frame Feed test ages its own frame samples on the real clock and fails the suite on this box
+status: complete
+created: '2026-11-28'
+updated: '2026-11-28T01:11:56Z'
+owners:
+- night-shift
+priority: high
+effort: xs
+hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: skill-stack
+blocked_by: []
+links: []
+filed_by: claude
+---
+
+Found by the Night Shift 2026-11-28: the merge gate's `./run_tests.sh --full` for BUG-150 failed `tests/ros/test_skill_node_robot_frame.py::test_moved_frame_announcement_landing_is_the_robot_frame_prior`. The self_toss Feed was refused REJECTED_FRAME_OFFSET: the Platform body sample is stale, 1.10 s old against the 1.0 s window.
+
+## Findings
+
+- It fails on a quiet box on main (469617cd), and at every commit tried back to af0f9175, the tip last night's gate passed. So the trigger is on the box, not in a commit; what changed is unchecked.
+- The test builds its node with `frame=False` and keeps the real `perf_counter` frame clock. It stamps its frame samples, then `_start_reload` runs the frame check over a second later.
+- The fixture froze this clock for every `frame=True` test on 2026-10-28 (BUG-14, d0928ffc). Freezing it in this test too makes it pass in 0.48 s.
+
+## Wanted
+
+- Freeze the frame clock in this test, as the fixture does.
+- Later: name what makes the Feed start path take over a second on this box (Memory size, uptime), in case a flown Feed start waits as long.
+- Answered 2026-11-28: nothing on the box changed. The night ran bare `pytest`, which leaves OpenBLAS multithreaded; on a loaded box it thrashes (a 60x60 inverse took 420 ms, against 0.2 ms pinned). `run_tests.sh` and the live launch both pin it, and pinned the cold Feed start is about 0.5 s: a load flake with 2x headroom, not a red main.
+
+## Progress
+
+- 2026-11-28: Night Shift 2026-11-28: held on night-shift/2026-11-28-BUG-154: one audit finding open (a second test needs the same freeze); main's full suite fails until it merges
+- 2026-11-28: day Session: fixture freezes the frame clock for frame=False tests too (two more exposed tests found by an unpinned isolation probe); night branch merged, as the owner chose in TKT-107 (option 3)

@@ -19,8 +19,15 @@ import numpy as np
 import jugglebot.hardware_config as hw
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills.segments import CATCH, KINDS, REST, THROW
-from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
-                                           REST_HAND_REV, Site)
+from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM,
+                                           ORBIT_ODD_THROW_COUNT,
+                                           REST_CUP_Z_MM, REST_HAND_REV,
+                                           ROTATING_APEX_PAIR_UNEQUAL,
+                                           ROTATING_NEEDS_HOP_ENTRY,
+                                           ROTATING_PHANTOM_REFUSED,
+                                           ROTATING_WITH_ORBIT, Site,
+                                           check_rotating_step,
+                                           rotating_sites)
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import tilt_geometry as tg
 
@@ -315,6 +322,20 @@ def transit_s(flight_s_: float, dwell_s: float) -> float:
 #: The ``Schedule.pattern`` label (and nomination pattern; formerly the admissible-box pattern) of a Columns
 #: whose two balls fly to DIFFERENT Apexes (JP-9, goal ``columns_highlow``).
 COLUMNS_HIGHLOW = 'columns_highlow'
+
+#: The ``Schedule.pattern`` label (and nomination pattern, goal and records
+#: id) of JP-14 Centre and orbit (map IDEA-14, plan pattern-progression P9):
+#: two-ball Columns whose Ball 2 steps around a LIST of Sites
+#: (:attr:`Pattern.orbit_sites`) while Ball 1 keeps the centre Site.
+#: Provisional until the owner names it (plan decision D-b).
+CENTRE_ORBIT = 'centre_orbit'
+
+#: The ``Schedule.pattern`` label (and nomination pattern, goal and records
+#: id) of JP-11 rotating Columns (map IDEA-12): two-ball Columns whose Site
+#: pair turns about the Platform origin by :attr:`Pattern.step_deg` every
+#: Beat.  The Learner and the Admissible box see it as their own pattern, so
+#: a turning Throw never borrows plain Columns' seed.
+COLUMNS_ROTATING = 'columns_rotating'
 
 #: The ``Schedule.pattern`` label of :func:`compile_human_catch`'s per-Throw
 #: Schedule (PWAY-11 P2).
@@ -742,8 +763,72 @@ class Pattern:
     #: ``sites[1]``) ball B's Apex is flown at the FEED Site.
     #: :func:`columns_ball_timing` is the arithmetic.
     apex_m_ball_b: Optional[float] = None
+    #: JP-14 Centre and orbit (:data:`CENTRE_ORBIT`, map IDEA-14): Ball B's
+    #: (id 1, "Ball 2") Site LIST in lap order, ``sites.centre_orbit_sites``'s
+    #: ``O1 .. On``.  ``None`` (every other Pattern) is Columns, bit for bit.
+    #: When set, ``sites[0]`` is the centre Site ball A keeps and ``sites[1]``
+    #: MUST be ``orbit_sites[0]`` (ball B's first Site, the Feed Site); ball
+    #: B's Throw ``j`` (stream event ``2 j + 1``) is released at
+    #: ``orbit_sites[j % n]`` and aimed at ``orbit_sites[(j + 1) % n]``
+    #: (:func:`columns_events`).  One Apex, no phantom (refused here).
+    orbit_sites: Optional[Tuple[Site, ...]] = None
+    #: JP-11 rotating Columns (:data:`COLUMNS_ROTATING`, map IDEA-12): the
+    #: Site pair turns about the Platform origin by this many degrees per
+    #: Beat (``sites.rotating_sites``).  ``None`` or ``0`` (every other
+    #: Pattern) is plain Columns, bit for bit.  ``sites`` must be a Columns
+    #: pair about the origin with ``sites[1]`` the Feed Site; only the hop
+    #: entry starts it (:func:`columns_events`); one Apex, no phantom.
+    step_deg: Optional[float] = None
 
     def __post_init__(self):
+        if self.step_deg is not None and float(self.step_deg) != 0.0:
+            check_rotating_step(self.step_deg)
+            if self.orbit_sites is not None:
+                raise ValueError('%s: rotating Columns and Centre and orbit '
+                                 'are two different Site streams'
+                                 % (ROTATING_WITH_ORBIT,))
+            if self.phantom_balls:
+                raise ValueError('%s: rotating Columns flies two real balls; '
+                                 'phantom_balls must be (), got %r'
+                                 % (ROTATING_PHANTOM_REFUSED,
+                                    self.phantom_balls))
+            if (self.apex_m_ball_b is not None
+                    and float(self.apex_m_ball_b) != float(self.apex_m)):
+                raise ValueError('%s: rotating Columns flies one Apex; '
+                                 'apex_m_ball_b must be None or apex_m, got '
+                                 '%r' % (ROTATING_APEX_PAIR_UNEQUAL,
+                                         self.apex_m_ball_b))
+            rotating_sites(self.sites, self.step_deg, 0)   # the pair check
+        if self.orbit_sites is not None:
+            orb = tuple(self.orbit_sites)
+            if len(orb) < 2 or not all(isinstance(s, Site) for s in orb):
+                raise ValueError('orbit_sites must be a tuple of >= 2 Sites, '
+                                 'got %r' % (self.orbit_sites,))
+            if not _same_site(self.sites[1], orb[0]):
+                raise ValueError(
+                    'orbit_sites[0] (%s) must be sites[1] (%s): Ball 2 starts '
+                    'its lap where it is fed' % (orb[0].name,
+                                                 self.sites[1].name))
+            if any(_same_site(self.sites[0], s) for s in orb):
+                raise ValueError('the centre Site %s must not be on the '
+                                 'orbit' % (self.sites[0].name,))
+            if self.phantom_balls:
+                raise ValueError('centre_orbit flies two real balls; '
+                                 'phantom_balls must be (), got %r'
+                                 % (self.phantom_balls,))
+            if (self.apex_m_ball_b is not None
+                    and float(self.apex_m_ball_b) != float(self.apex_m)):
+                raise ValueError('centre_orbit flies one Apex; apex_m_ball_b '
+                                 'must be None or apex_m, got %r'
+                                 % (self.apex_m_ball_b,))
+            if int(self.n_throws) % 2 != 0:
+                raise ValueError(
+                    '%s: centre_orbit needs an EVEN Throw count (an odd count '
+                    'ends on Ball 1\'s Stop onto Ball 2 at an orbit Site, '
+                    'closer than a ball diameter at the small radii), got %d; '
+                    'not rounded up -- ask for %d or %d'
+                    % (ORBIT_ODD_THROW_COUNT, int(self.n_throws),
+                       int(self.n_throws) - 1, int(self.n_throws) + 1))
         bad = tuple(b for b in self.phantom_balls if int(b) not in (0, 1))
         if bad:
             raise ValueError('phantom_balls may only name schedule ball ids '
@@ -861,6 +946,10 @@ class BeatSource:
     feed: Optional[LandingPrior]
     hop_entry: bool
     inflight: Optional[BeatEvent] = None
+    #: The Schedule label a non-Columns stream compiles under
+    #: (:data:`CENTRE_ORBIT`); ``None`` = Columns' own (``'columns'`` /
+    #: :data:`COLUMNS_HIGHLOW`).
+    label: Optional[str] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -939,7 +1028,8 @@ class Schedule:
                              rest_tail_s=src.rest_tail_s,
                              phantom_balls=src.phantom_balls,
                              t0_abs_s=src.t0_abs_s, feed=src.feed,
-                             hop_entry=src.hop_entry, inflight=src.inflight)
+                             hop_entry=src.hop_entry, inflight=src.inflight,
+                             label=src.label)
 
     def dwell_for(self, ball_id: int) -> float:
         """The Dwell (s) schedule ball ``ball_id`` spends in the Cup between
@@ -1245,6 +1335,10 @@ def _columns_timing_checked(apex_a_m: float, apex_b_m: float,
     return timing
 
 
+def _is_rotating(pattern: Pattern) -> bool:
+    return pattern.step_deg is not None and float(pattern.step_deg) != 0.0
+
+
 def columns_events(pattern: Pattern,
                    hop_entry: bool = False) -> Tuple[BeatEvent, ...]:
     """Columns' beat stream: one :class:`BeatEvent` per Throw of
@@ -1272,6 +1366,20 @@ def columns_events(pattern: Pattern,
             and ((n - 1) % 2) not in tuple(pattern.phantom_balls)):
         n += 1
     sites2 = (pattern.sites[0], pattern.sites[1])
+    if pattern.orbit_sites is not None:
+        return _cycle_events(pattern, n, timing, hop_entry,
+                             ((pattern.sites[0],), tuple(pattern.orbit_sites)))
+    if _is_rotating(pattern):
+        if not hop_entry:
+            raise ValueError(
+                '%s: rotating Columns starts only by the hop entry (Throw 0 '
+                'leaves the Feed Site %s for S(2)); a t0 start would leave '
+                '%s, a Site no ball is caught at'
+                % (ROTATING_NEEDS_HOP_ENTRY, pattern.sites[1].name,
+                   pattern.sites[0].name))
+        st = rotating_sites(sites2, pattern.step_deg, n)
+        return _cycle_events(pattern, n, timing, hop_entry,
+                             (st[0::2], st[1::2]))
     events = []
     for i in range(n):
         ball_i = i % 2
@@ -1286,6 +1394,44 @@ def columns_events(pattern: Pattern,
         events.append(BeatEvent(
             throw_site=sites2[1] if is_hop_throw else site_i,
             catch_site=sites2[n % 2] if is_stop_throw else site_i,
+            apex_m=pattern.apex_for(ball_i), dwell_s=timing.dwells[ball_i],
+            ball_id=ball_i))
+    return tuple(events)
+
+
+def _cycle_events(pattern: Pattern, n: int, timing: ColumnsTiming,
+                  hop_entry: bool,
+                  cycles: Tuple[Tuple[Site, ...], Tuple[Site, ...]]
+                  ) -> Tuple[BeatEvent, ...]:
+    """A two-ball stream in which each ball walks its own Site list
+    (``cycles = (ball A's, ball B's)``), the one body of JP-14 Centre and
+    orbit (``((C,), orbit)``) and JP-11 rotating Columns (``S(0::2),
+    S(1::2)``).
+
+    Throw ``i`` is ball ``b = i % 2``, its ``j``-th (``j = i // 2``): released
+    at ``cycles[b][j % m]`` -- where its previous one landed, or its first Site
+    for ``j = 0`` -- and aimed at ``cycles[b][(j + 1) % m]``.  The Stop (last
+    Throw, ``n >= 2``) lands where Throw ``n - 2``'s ball is held, as
+    Columns' does.  Under the hop entry Throw 0 is released from the Feed Site
+    ``sites[1]`` and lands at ball A's first aim.  Timing is Columns' (one
+    Apex, one Dwell; :class:`Pattern` refuses a second Apex or a phantom).
+
+    Centre and orbit (``n = 2 N + 1``) flies one closed lap: ball B leaves
+    every orbit Site once and is held at ``O1`` again when the Stop lands on
+    it.  A rotating stream's lists are long enough not to wrap."""
+    events = []
+    for i in range(n):
+        ball_i = i % 2
+        cyc = cycles[ball_i]
+        m = len(cyc)
+        j = i // 2
+        throw_site, catch_site = cyc[j % m], cyc[(j + 1) % m]
+        if hop_entry and i == 0:
+            throw_site = pattern.sites[1]
+        if i == n - 1 and n >= 2:
+            catch_site = events[n - 2].catch_site
+        events.append(BeatEvent(
+            throw_site=throw_site, catch_site=catch_site,
             apex_m=pattern.apex_for(ball_i), dwell_s=timing.dwells[ball_i],
             ball_id=ball_i))
     return tuple(events)
@@ -1475,7 +1621,10 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
                          rest_tail_s=pattern.rest_tail_s,
                          phantom_balls=pattern.phantom_balls,
                          t0_abs_s=t0_abs_s, feed=feed, hop_entry=hop_entry,
-                         inflight=_columns_inflight(pattern))
+                         inflight=_columns_inflight(pattern),
+                         label=(CENTRE_ORBIT if pattern.orbit_sites is not None
+                                else COLUMNS_ROTATING if _is_rotating(pattern)
+                                else None))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1775,7 +1924,8 @@ def compile_beats(events, *, launch_s: float, rest_tail_s: float,
                   t0_abs_s: Optional[float] = None,
                   feed: Optional[LandingPrior] = None,
                   hop_entry: bool = False,
-                  inflight: Optional[BeatEvent] = None) -> Schedule:
+                  inflight: Optional[BeatEvent] = None,
+                  label: Optional[str] = None) -> Schedule:
     """The Schedule of a beat stream (P4, D-P4-1): one :class:`BeatEvent`
     per Throw, the last one the Stop.  :func:`compile_columns` is
     ``compile_beats(columns_events(pattern), ...)``.
@@ -1793,7 +1943,9 @@ def compile_beats(events, *, launch_s: float, rest_tail_s: float,
     CATCH's is the transit after the release that precedes it.  Every event
     from the first deviation from the opening values on must pass
     :func:`next_beat` (the ValueError names the code, the Throw and the
-    numbers); a 2-periodic stream compiles bit for bit as before.  The
+    numbers); a 2-periodic stream compiles bit for bit as before.  ``label``
+    (default ``None``: Columns' own) names a stream of another Pattern
+    (:data:`CENTRE_ORBIT`, one Apex only).  The
     Schedule's scalars (``flight_s``, ``beat_s``, ``transit_s``, ``dwell_s``,
     the per-ball tuples, the ``'columns'`` / :data:`COLUMNS_HIGHLOW` label)
     are the OPENING pair's.
@@ -1849,7 +2001,7 @@ def compile_beats(events, *, launch_s: float, rest_tail_s: float,
     source = BeatSource(events=events, launch_s=launch_s,
                         rest_tail_s=rest_tail_s, phantom_balls=phantom_balls,
                         t0_abs_s=t0_abs_s, feed=feed, hop_entry=hop_entry,
-                        inflight=inflight)
+                        inflight=inflight, label=label)
     pre, timing, dwell_cmd = _opening(events, inflight)
     _validate_stream(events, pre, hop_entry)
     # One Site object per place, so the fold's identity test (`other.site is
@@ -1977,10 +2129,14 @@ def compile_beats(events, *, launch_s: float, rest_tail_s: float,
 
     t0 = float(t0_abs_s)
     skills = [_shifted(s, t0) for s in skills]
+    if label is not None and not timing.equal:
+        raise ValueError('%s: a %r stream flies one Apex; the opening pair '
+                         'differs' % (BEAT_STREAM_INVALID, label))
     if timing.equal:
         return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=beta,
                         transit_s=tau, dwell_s=float(dwell_cmd),
-                        t0_abs_s=t0, pattern='columns',
+                        t0_abs_s=t0,
+                        pattern='columns' if label is None else label,
                         phantom_balls=phantom_balls, source=source)
     # High-low (JP-9): its own pattern label, so a plain Columns at one of these
     # Apexes can never be planned with the other ball's seed and timing

@@ -64,3 +64,7 @@ Recommendation: 1, with knot 0 clamped to the seed's Hand rate so splice seams a
 - record: Catches and Throws, every refusal code in the launch log, any Hand Fault, and the bag name.
 - minutes: 15
 - branch: night-shift/2026-11-28-BUG-146
+
+## Progress
+
+- 2026-11-28: Night Shift 2026-11-28: held on night-shift/2026-11-28-BUG-146: clamped spline drop rates built per TKT-98; 1 audit finding open (no direct solver unit test); unblocked by a Sitting
