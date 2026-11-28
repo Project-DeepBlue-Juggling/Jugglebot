@@ -2,9 +2,9 @@
 id: TKT-108
 kind: ticket
 title: 'BUG-150 held on night-shift/2026-11-28-BUG-150: re-gate it after BUG-154, merge it in your Session, or drop it?'
-status: open
+status: complete
 created: '2026-11-28'
-updated: '2026-11-27T17:38:24Z'
+updated: '2026-11-28T00:46:40Z'
 owners: []
 priority: medium
 effort: xs
@@ -33,3 +33,7 @@ The gate held it at (a): the suite failed `test_moved_frame_announcement_landing
 1 or 2: the markers on the ODrive charts in replay. 3: BUG-150 reopens.
 
 Recommendation: 2 if you are in a Session with the GUI open; otherwise 1.
+
+## Answer
+
+With no IMU capture selected, the ODrive charts should still show ALL markers in the visible window. Please correct this.
