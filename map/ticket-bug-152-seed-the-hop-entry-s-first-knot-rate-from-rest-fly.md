@@ -2,9 +2,9 @@
 id: TKT-101
 kind: ticket
 title: 'BUG-152: seed the Hop entry''s first-Knot rate from rest, fly JP-11 with it open, or fix the whole Platform rate class?'
-status: open
+status: complete
 created: '2026-11-28'
-updated: '2026-11-27T15:51:49Z'
+updated: '2026-11-28T00:43:17Z'
 owners: []
 priority: medium
 effort: xs
@@ -33,3 +33,7 @@ It is the Platform half of the same finite-difference class as BUG-146, whose fi
 1: the next night builds and holds it for a Sitting (a fed Columns Attempt). 2: the Item is accepted as is and IDEA-12's gate needs another route. 3: the night drafts the class fix after BUG-146's Sitting.
 
 Recommendation: 1, because it removes the rate at its source with the smallest change, and the class fix can follow once BUG-146 has flown.
+
+## Answer
+
+Agreed. Go with Option 1
