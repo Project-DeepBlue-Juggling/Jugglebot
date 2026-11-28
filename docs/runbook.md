@@ -52,6 +52,7 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-135 [Robot] Platform CAN receive queue overflows during the inclinometer re-probe stall: no ## Sitting section
 - BUG-136 [Robot] Catching cone catch stamps could run 10 ms early per stranded receive frame: no ## Sitting section
 - BUG-142 [Robot] Hand park reports already parked on a Hand that is Idle on its bottom stop: no ## Sitting section
+- BUG-156 [Robot] IMU Charts appear out-of-sync in live viewer: no ## Sitting section
 - BUG-27 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - BUG-29 [Robot] RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball: no ## Sitting section
 - BUG-32 [Robot] Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff: no ## Sitting section
@@ -87,3 +88,4 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 ## Questions a Sitting can answer
 
 - TKT-109 BUG-146 on night-shift/2026-11-28-BUG-146: relax BUG-152's knot-0 test to a tolerance on the later Hand rates, feed the spline the old start rate, or drop the branch? (parent BUG-146)
+- TKT-110 BUG-75: refused second re-aims cost no Catch in the logs; close it as accepted, decline them before the solve, or measure the wasted solve first? (parent BUG-75)
