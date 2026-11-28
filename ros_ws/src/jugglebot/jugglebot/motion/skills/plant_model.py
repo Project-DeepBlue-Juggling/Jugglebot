@@ -73,6 +73,12 @@ Three rules the probe decided:
   while K is still uncertain so a plant whose gain is far from 1 (the sim's 1.23) is learned from
   cold rather than rejected forever; once K has converged it is the probe's fixed 9 % band.
   Rejected rows are counted (``n_rejected``) and the last one's reason kept: never silently lost.
+* **Run-length recovery of the lateral gate** (BUG-153, owner's option 1 in TKT-102,
+  2026-11-29). The lateral gate is relative to the kind's CURRENT law, which for a cold kind is
+  its prior (offset 0) and widens with nothing, so a kind whose true offset is past ~130 mm
+  rejected every row forever (the oval's measured +179 mm: 0 of 300). A kind therefore keeps a
+  run of its consecutive lateral-only rejections and accepts the row that completes
+  :data:`LATERAL_RECOVERY_RUN` agreeing ones; see that constant for the exact rule.
 
 Errors: every non-finite input raises ``ValueError`` naming the quantity (plan T-U5), and nothing
 else escapes (the executor converts only ``ValueError`` into a refusal): numeric failures of an
@@ -90,12 +96,59 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-__all__ = ['RELEASE_KINDS', 'PlantModelConfig', 'PlantModel']
+__all__ = ['RELEASE_KINDS', 'LATERAL_RECOVERY_RUN', 'LATERAL_RECOVERY_AGREE_M',
+           'PlantModelConfig', 'PlantModel']
 
 #: The categorical release kinds (the same tuple as ``learner.RELEASE_KINDS``, which re-exports
 #: this one, and ``memory.RELEASE_KINDS``). The first is the reference kind whose lateral
 #: parameters keep the unsuffixed names in :attr:`PlantModel.param_names`.
 RELEASE_KINDS = ('free_cup', 'carried')
+
+#: Run-length recovery of the lateral gate (BUG-153, owner's option 1 in TKT-102, 2026-11-29):
+#: the number of consecutive agreeing lateral rejections of ONE release kind after which the row
+#: that completes the run is accepted.
+#:
+#: Why: the lateral gate (``inlier_lateral_m``, 100 mm) is measured against the kind's current law,
+#: and while a kind has no rows that law is its prior (offset 0). Unlike the apex gate, the
+#: lateral gate does not widen while the law is uncertain, so a kind whose consistent offset is
+#: past ~130 mm never gets the first row that would move its law within reach: probe 2026-11-27,
+#: 5 seeds x 300 rows, 150 mm 0-128 accepted, the oval's measured 179 mm 0 of 300. A plant that
+#: lands five rows in a row at one consistent offset outside the gate is telling the model its
+#: law is wrong, not throwing outliers; a warm kind (2 rejections in the 1085 rows of the live
+#: Memory, 2026-11-27) never sees five agreeing ones in a row, so its commands are unchanged.
+#:
+#: The rule, per release kind (a row of another kind neither extends nor resets the run):
+#:
+#: * A row that fails the lateral gate ONLY (its apex ratio is inside the apex band, which this
+#:   rule never touches) is a candidate. It JOINS the run when, on each axis, its innovation is
+#:   within :data:`LATERAL_RECOVERY_AGREE_M` of the MEAN innovation of the rows already in the run
+#:   (an empty run takes any candidate). A candidate that does not agree (a wild row) RESETS the
+#:   run, and starts a new run of one: a run is never broken by a wild row and then resumed.
+#: * Any other row of the kind resets the run to empty: an accepted row, and a row the apex gate
+#:   rejects (whatever its lateral innovation).
+#: * The innovations of a run are all against the SAME law: the kind's lateral law changes only
+#:   when a row of that kind is accepted, and that resets the run.
+#: * When a candidate makes the run :data:`LATERAL_RECOVERY_RUN` long, THAT ROW ALONE is accepted
+#:   by the ordinary update (one RLS step, forgetting, unforgotten covariance, counters, exactly as
+#:   an inlier) and the run is cleared. The earlier rows of the run stay rejected (counted in
+#:   ``n_rejected``; the Learner's residual memory never holds them). Why not replay the run: K is
+#:   shared, so rows of the other kind accepted between the run's rows have moved K, and replaying
+#:   older apex data after newer would reorder the forgetting filter's rows; one row in file order
+#:   keeps the update law exactly. One row is enough: at a cold kind the update's gain on the
+#:   offset at the row's Site is ~0.7-0.8 (prior sd 30 mm, shot noise 20 mm), so a 179 mm offset
+#:   is pulled to within ~40-50 mm and the next rows pass the ordinary gate.
+LATERAL_RECOVERY_RUN = 5
+
+#: The agreement band of a recovery run [m], per axis (see :data:`LATERAL_RECOVERY_RUN`): the
+#: lateral gate's own width, ``PlantModelConfig.inlier_lateral_m`` (100 mm), so a candidate agrees
+#: with the run when it would pass the lateral gate of a law centred on the run's mean. Why that
+#: width: rows at one consistent offset scatter about their mean with the 20 mm shot noise per axis
+#: (a candidate's distance to the mean of k earlier rows has sd 20 sqrt(1 + 1/k) <= 28 mm, so a
+#: genuine run breaks with probability < 1e-3 per row), while a lone outlier (a tracker glitch,
+#: the 300 mm lateral row of ``test_a_300_mm_lateral_outlier_is_rejected_and_counted``) has no
+#: four neighbours within 100 mm of it in a row. Kept a module constant (not config) beside the
+#: gate it qualifies; it does not follow a changed ``inlier_lateral_m`` on its own.
+LATERAL_RECOVERY_AGREE_M = 0.100
 
 
 @dataclasses.dataclass(frozen=True)
@@ -304,6 +357,22 @@ class _Lateral(object):
         self.fy = _Filter([0.0] * (1 + nd), [cfg.prior_sd_b_m] + [cfg.prior_sd_delta_m] * nd,
                           cfg.noise_sd_lateral_m ** 2, q=[q] + [0.0] * nd)
         self.n_accepted = 0
+        #: The current recovery run (BUG-153): the (axis 0, axis 1) lateral innovations [m] of this
+        #: kind's consecutive agreeing lateral-only rejections. See :data:`LATERAL_RECOVERY_RUN`.
+        self.run: List[Tuple[float, float]] = []
+        #: Rows of this kind accepted by run-length recovery (each also counts in ``n_accepted``).
+        self.n_recovered = 0
+
+    def extended_run(self, ix: float, iy: float) -> List[Tuple[float, float]]:
+        """The run after a lateral-only rejection with innovations (``ix``, ``iy``): the current
+        run plus this row when it agrees with the run's mean on each axis, else this row alone (a
+        wild row resets the run). Nothing is committed."""
+        if self.run:
+            mx = sum(r[0] for r in self.run) / len(self.run)
+            my = sum(r[1] for r in self.run) / len(self.run)
+            if abs(ix - mx) < LATERAL_RECOVERY_AGREE_M and abs(iy - my) < LATERAL_RECOVERY_AGREE_M:
+                return self.run + [(ix, iy)]
+        return [(ix, iy)]
 
 
 class PlantModel(object):
@@ -333,6 +402,8 @@ class PlantModel(object):
         self.param_names = tuple(names)
         self.n_accepted = 0
         self.n_rejected = 0
+        #: Rows accepted by run-length recovery (BUG-153; each also counts in ``n_accepted``).
+        self.n_recovered = 0
         #: Why the last rejected row was rejected (None before the first rejection).
         self.last_rejection: Optional[str] = None
 
@@ -458,7 +529,9 @@ class PlantModel(object):
     def observe(self, u, y, site_x, ball_id, release_kind: str) -> bool:
         """One row: update theta if the row is an inlier. Returns whether it was accepted. An
         accepted row updates the shared K and ``release_kind``'s lateral law only; the lateral
-        innovations of the inlier rule are against that kind's own lateral law."""
+        innovations of the inlier rule are against that kind's own lateral law. A row that fails the
+        lateral gate only is accepted when it completes ``release_kind``'s run of
+        :data:`LATERAL_RECOVERY_RUN` agreeing such rows (BUG-153); ``n_recovered`` counts those."""
         u = _finite_vec(u, 3, 'u')
         y = _finite_vec(y, 3, 'y')
         sx = _finite_scalar(site_x, 'site_x')
@@ -484,9 +557,21 @@ class PlantModel(object):
                     reason = 'axis 0 innovation %.1f mm >= %.1f mm' % (1e3 * ix, 1e3 * cfg.inlier_lateral_m)
                 elif not abs(iy) < cfg.inlier_lateral_m:
                     reason = 'axis 1 innovation %.1f mm >= %.1f mm' % (1e3 * iy, 1e3 * cfg.inlier_lateral_m)
-                elif not abs(ratio - K) < band:
-                    reason = 'apex ratio %.4f outside K %.4f +- %.4f' % (ratio, K, band)
+                lateral_only = reason is not None
+                if not abs(ratio - K) < band:
+                    lateral_only = False
+                    if reason is None:
+                        reason = 'apex ratio %.4f outside K %.4f +- %.4f' % (ratio, K, band)
+                # BUG-153 run-length recovery (LATERAL_RECOVERY_RUN): a lateral-only rejection
+                # extends (or, wild, restarts) this kind's run; any other row of the kind resets it
+                run: List[Tuple[float, float]] = []
+                recovered = False
+                if lateral_only:
+                    run = lat.extended_run(ix, iy)
+                    if len(run) >= LATERAL_RECOVERY_RUN:
+                        recovered, run, reason = True, [], None
                 if reason is not None:
+                    lat.run = run
                     self.n_rejected += 1
                     self.last_rejection = '%s (%s)' % (reason, kind)
                     return False
@@ -500,8 +585,12 @@ class PlantModel(object):
                                  % (u.tolist(), y.tolist()))
         for f, (th, P, Pu) in zip(filters, new):
             f.th, f.P, f.P_unforgotten = th, P, Pu
+        lat.run = []
         self.n_accepted += 1
         lat.n_accepted += 1
+        if recovered:
+            self.n_recovered += 1
+            lat.n_recovered += 1
         return True
 
     # ------------------------------------------------------------------ read-outs
@@ -551,6 +640,7 @@ class PlantModel(object):
                     float(site_x), 'prior (0)' if p else '%+.1f mm' % (1e3 * ox)))
             parts.append('%d %s rows' % (self._lat[kind].n_accepted, kind))
         prior = self.at_prior()
-        return ('plant model: %s; rows %d accepted / %d rejected; at prior: %s'
-                % (', '.join(parts), self.n_accepted, self.n_rejected,
+        recovered = (' (%d by run-length recovery)' % self.n_recovered) if self.n_recovered else ''
+        return ('plant model: %s; rows %d accepted%s / %d rejected; at prior: %s'
+                % (', '.join(parts), self.n_accepted, recovered, self.n_rejected,
                    ', '.join(prior) if prior else 'none'))

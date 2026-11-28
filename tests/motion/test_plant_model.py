@@ -14,6 +14,7 @@ under the settings stated in ``test_pin_production_equals_the_probe_prototype_on
 """
 from __future__ import annotations
 
+import copy
 import math
 import os
 import sys
@@ -766,18 +767,122 @@ def test_bug138_a_cold_carried_kind_learns_an_offset_up_to_120_mm():
         assert m.offset_x(0.0625, 'free_cup')[0] == pytest.approx(0.005, abs=0.012)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    'BUG-153 (BUG-138 audit finding 2, open 2026-11-27): a cold release kind rejects every row whose '
-    'consistent lateral offset is past ~130-150 mm, because the 100 mm lateral gate is relative '
-    'to the prior; the fix (a consistent-run re-seed, or a wider carried prior) needs an owner '
-    'decision. See logbook/2026-11-26-plant-model-lateral-law-per-release-kind.md.'))
 def test_bug138_a_cold_carried_kind_learns_the_ovals_measured_179_mm_offset():
     """The oval's own measured lateral law (2026-11-24 review: b_x +179 mm) as a consistent offset
-    at a cold carried kind. Measured 2026-11-27 (5 seeds): 0 of 300 rows accepted, the kind stays
-    at its prior (identity laterally), and since only ACCEPTED rows enter the Learner's residual
-    memory, nothing corrects the Throw. At 150 mm 0-128 of 300 rows are accepted, depending on
-    whether a 2.5-sigma row arrives."""
+    at a cold carried kind. Before BUG-153 (measured 2026-11-27, 5 seeds): 0 of 300 rows accepted,
+    the kind stayed at its prior (identity laterally), and since only ACCEPTED rows enter the
+    Learner's residual memory, nothing corrected the Throw (was ``xfail(strict=True)``). Fixed by
+    run-length recovery (BUG-153, 2026-11-29): the 5th consecutive agreeing lateral rejection is
+    accepted, which pulls the law within the gate, and the rest pass the ordinary gate."""
     for seed in range(5):
         m, acc = _cold_carried(0.179, seed)
         off, at_prior = m.offset_x(-0.075, 'carried')
         assert not at_prior and off == pytest.approx(0.179, abs=0.010)
+        assert not acc[:4].any() and acc[4] and acc.sum() >= 290
+        assert m.n_recovered == 1 and m._lat['carried'].n_recovered == 1
+
+
+# --------------------------------------------------------------------------- BUG-153: run-length recovery
+CARRIED_SITE = -0.075
+
+
+def _warm_free_cup(seed=31):
+    """A warm free_cup kind (300 Columns rows, K 1.08, offset +5/-5 mm) and a cold carried kind."""
+    m, _acc = _cold_carried(0.0, seed, n=0)
+    return m
+
+
+def _carried(m, off_x, apex_ratio=1.08, off_y=0.004, kind='carried', site_x=CARRIED_SITE):
+    """Observe one noise-free row of ``kind`` landing ``off_x`` / ``off_y`` [m] from its command."""
+    u = np.array([0.01, -0.02, 1.0])
+    return m.observe(u, np.array([u[0] + off_x, u[1] + off_y, apex_ratio * u[2]]), site_x, 0, kind)
+
+
+def test_bug153_a_warm_kind_fed_one_wild_row_is_unchanged():
+    """A warm kind: one 300 mm wild row is rejected and the normal rows after it give BIT-IDENTICAL
+    parameters to the same rows without the wild one (the next accepted row resets the run, so a
+    lone outlier never contributes). Five consecutive wild rows that disagree with each other
+    (alternating +-300 mm) never recover either."""
+    rng = np.random.default_rng(2)
+    a = _converged(rng)
+    b = copy.deepcopy(a)
+    assert _carried(a, 0.0, off_y=0.300, kind='free_cup', site_x=0.075) is False
+    assert len(a._lat['free_cup'].run) == 1
+    for i in range(30):
+        sx = (-0.075, 0.075)[i % 2]
+        u = _cmd(rng)
+        y = _plant((1.08, 0.01, 0.012, -0.09), u, sx, 0) + rng.normal(0, [0.02, 0.02, 0.01])
+        assert a.observe(u, y, sx, 0, 'free_cup') == b.observe(u, y, sx, 0, 'free_cup')
+    assert np.array_equal(a.raw(), b.raw()) and np.array_equal(a.theta(), b.theta())
+    assert a.n_recovered == 0 and a._lat['free_cup'].run == []
+    th = a.raw().copy()
+    for i in range(8):
+        assert _carried(a, 0.0, off_y=(0.300, -0.300)[i % 2], kind='free_cup', site_x=0.075) is False
+    assert a.n_recovered == 0 and np.array_equal(a.raw(), th)
+
+
+def test_bug153_four_agreeing_rejections_then_a_wild_one_reset_the_run():
+    """4 rows at the oval's +179 mm (rejected, agreeing), then a wild row (+450 mm, > 100 mm from
+    the run's mean): no recovery; the run restarts, so it takes 5 MORE agreeing rows, and the 5th
+    of them is the one accepted. An apex-rejected row resets the run the same way."""
+    for wild in (dict(off_x=0.450), dict(off_x=0.179, apex_ratio=1.40)):
+        m = _warm_free_cup()
+        for _ in range(4):
+            assert _carried(m, 0.179) is False
+        assert len(m._lat['carried'].run) == 4
+        assert _carried(m, **wild) is False
+        assert m.n_recovered == 0
+        for _ in range(4):
+            assert _carried(m, 0.179) is False
+        assert _carried(m, 0.179) is True
+        assert m.n_recovered == 1
+
+
+def test_bug153_five_agreeing_rejections_recover_with_the_ordinary_update_of_the_fifth_row():
+    """5 rows at +179 mm on a cold carried kind: rows 1-4 rejected (counted), row 5 accepted by the
+    ORDINARY update (theta, P and the unforgotten P of K and the carried lateral filters exactly as
+    ``_Filter.proposed`` gives for that row alone; the free_cup law untouched), and the next rows
+    pass the ordinary gate."""
+    m = _warm_free_cup()
+    n_rej = m.n_rejected
+    for _ in range(4):
+        assert _carried(m, 0.179) is False
+    assert m.n_rejected == n_rej + 4 and 'axis 0' in m.last_rejection
+    before = copy.deepcopy(m)
+    u = np.array([0.01, -0.02, 1.0])
+    y = np.array([u[0] + 0.179, u[1] + 0.004, 1.08])
+    px, py = before._phis(CARRIED_SITE, 0)
+    lat = before._lat['carried']
+    want = [f.proposed(p, z) for f, p, z in ((before._fa, np.array([1.0]), y[2]),
+                                             (lat.fx, px, y[0] - u[0]), (lat.fy, py, y[1] - u[1]))]
+    assert m.observe(u, y, CARRIED_SITE, 0, 'carried') is True
+    got = (m._fa, m._lat['carried'].fx, m._lat['carried'].fy)
+    for f, (th, P, Pu) in zip(got, want):
+        assert np.array_equal(f.th, th) and np.array_equal(f.P, P) and np.array_equal(f.P_unforgotten, Pu)
+    assert m.n_recovered == 1 and m.n_rejected == n_rej + 4 and m._lat['carried'].run == []
+    assert m._lat['carried'].n_accepted == 1
+    for f0, f1 in ((before._lat['free_cup'].fx, m._lat['free_cup'].fx),
+                   (before._lat['free_cup'].fy, m._lat['free_cup'].fy)):
+        assert np.array_equal(f0.th, f1.th) and np.array_equal(f0.P, f1.P)
+    assert all(_carried(m, 0.179) for _ in range(20))
+    assert m.n_recovered == 1
+    assert m.offset_x(CARRIED_SITE, 'carried')[0] == pytest.approx(0.179, abs=0.010)
+    assert '(1 by run-length recovery)' in m.summary()
+
+
+def test_bug153_the_run_is_per_release_kind():
+    """Rows of the other kind neither extend nor reset a kind's run: 4 carried rejections with
+    free_cup rows between them (accepted ones, and a free_cup rejection with the SAME innovation)
+    leave the carried run at 4; the 5th CARRIED rejection recovers; the free_cup rejection was a
+    run of one for free_cup, reset by its next accepted row, and recovered nothing."""
+    m = _warm_free_cup()
+    for i in range(4):
+        assert _carried(m, 0.179) is False
+        assert _carried(m, 0.005, off_y=-0.005, kind='free_cup', site_x=0.0625) is True
+        if i == 1:
+            assert _carried(m, 0.179, kind='free_cup', site_x=CARRIED_SITE) is False
+            assert len(m._lat['free_cup'].run) == 1
+    assert len(m._lat['carried'].run) == 4 and m._lat['free_cup'].run == []
+    assert m.n_recovered == 0
+    assert _carried(m, 0.179) is True
+    assert m._lat['carried'].n_recovered == 1 and m._lat['free_cup'].n_recovered == 0

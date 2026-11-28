@@ -2,25 +2,22 @@
 id: BUG-153
 kind: bug
 title: 'Plant model: a release kind with no rows rejects every row more than about 120 mm off its prior, so a cold carried kind cannot learn the oval''s 179 mm offset'
-status: inbox
+status: complete
 created: '2026-11-28'
-updated: '2026-11-27T15:50:25Z'
+updated: '2026-11-28T16:17:51Z'
 owners: []
 priority: low
 effort: s
 hardware: none
-owner: decision
+owner: none
 radius: subsystem
 diagnosis: confirmed
 area: learner
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-29-plant-model-run-length-recovery.md
 parent: learner-generalisation
 filed_by: claude-e2
-night_skip: input-decision
-night_skip_on: '2026-11-28'
-night_skip_note: Builds the recovery you choose, flips the 179 mm xfail and replays the live Memory; merges if the gate says MERGE.
-night_skip_input: 'Pick 1-4 in TKT-102: run-length recovery, a wider prior in config, a widening lateral gate, or leave it pinned by the xfail.'
 ---
 
 A release kind at its prior measures the plant model's 100 mm lateral gate against an offset of 0. The Apex gate widens while K is uncertain; the lateral one does not, and nothing re-seeds.
