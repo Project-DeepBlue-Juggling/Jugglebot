@@ -4296,6 +4296,54 @@ class SkillExecutor:
                        + np.clip(across, -a_mm, a_mm))
         return clipped, a_mm, out_mm, in_mm
 
+    def _reaim_moved_enough(self, idx: int, skill: Skill, landing: Landing,
+                            clamped: Landing, committed_mm) -> bool:
+        """The position half of the WITHIN-TOLERANCE fence of BOTH re-aim
+        paths (:meth:`_resend_live_catch` over xyz, :meth:`_catch_bump_decide`
+        over xy, by the length of ``committed_mm``): True when the re-aim is
+        worth a solve.
+
+        An axis counts when its CLAMPED move (``clamped`` minus the committed
+        aim) exceeds :attr:`resend_pos_tol_mm` -- the rule since 2026-09-18,
+        which keeps a Fit that only asks for a lateral move the Catch may not
+        take from spending a solve.  It ALSO counts when the lateral clamp
+        bit that axis AND the Fit's unclamped demand there exceeds the
+        tolerance (so it is not Fit noise) AND the clamped move is more than
+        ``min(tolerance, half the authority on that side)``.  Without that
+        second arm an authority at or below the tolerance could never be
+        used by a re-aim from a Catch committed at its Site: a 16-36 mm
+        outward demand clamped to exactly the 10 mm outward authority was
+        judged 10.0 <= 10.0 and discarded, on the re-send and the bump
+        alike, and the Cup never moved (Sittings 2026-11-27 and 2026-11-28,
+        six lost Feeds).  The half-authority floor keeps a Catch already at
+        (or within half the authority of) the edge from being re-solved for
+        the sliver the clamp leaves, so the arm adds at most the one solve
+        an authority above the tolerance already paid."""
+        tol = self.resend_pos_tol_mm
+        n = len(committed_mm)
+        committed = np.asarray(committed_mm, dtype=float)[:n]
+        applied = np.asarray(clamped.pos_mm, dtype=float)[:n] - committed
+        if float(np.max(np.abs(applied))) > tol:
+            return True
+        predicted = self._predicted_landing(idx, skill)
+        if predicted is None:
+            return False      # nothing to clamp toward: the clamp never bit
+        demand = np.asarray(landing.pos_mm, dtype=float)[:2] - committed[:2]
+        # The applied offset from the Site, per axis: on a bitten axis this
+        # is the authority on that side (the clamp put the aim on the edge).
+        edge = (np.asarray(clamped.pos_mm, dtype=float)[:2]
+                - np.asarray(predicted.pos_mm, dtype=float)[:2])
+        for i in range(2):
+            if abs(float(demand[i] - applied[i])) <= 1e-9:
+                continue      # the clamp did not bite this axis
+            # 1e-6 mm: a zero authority (fully pinned) never re-aims on
+            # float residue between two clamps onto the same Site.
+            floor = max(min(tol, abs(float(edge[i])) / 2.0), 1e-6)
+            if (abs(float(demand[i])) > tol
+                    and abs(float(applied[i])) > floor):
+                return True
+        return False
+
     def _catch_terminal(self, idx: int, skill: Skill,
                         landing: Landing,
                         t_abs_s: Optional[float] = None) -> CatchTerminal:
@@ -7721,7 +7769,10 @@ class SkillExecutor:
         # raw one: a fit that only asks for a lateral move the catch may not
         # take (:meth:`_clamp_lateral_to_schedule`) has not moved the catch
         # at all, and must not spend a re-send fence-checking a move that
-        # never reaches the platform (2026-09-18).
+        # never reaches the platform (2026-09-18).  Where the clamp BIT, the
+        # Fit's unclamped demand decides noise vs real instead, so a clamp
+        # that shrinks a real move to within the tolerance does not discard
+        # it (:meth:`_reaim_moved_enough`, 2026-11-28).
         clamped = self._clamp_lateral_to_schedule(idx, skill, landing)
         clamp_lines = self._pending_notes
         self._pending_notes = []
@@ -7734,7 +7785,10 @@ class SkillExecutor:
         if not landing.from_fit:
             return clamp_lines + self._resend_declined(
                 t_abs_s, idx, 'NO-CONVERGED-FIT', moved_mm, moved_s, dir_xy)
-        if (moved_mm <= self.resend_pos_tol_mm
+        # Judged on the clamped move AND, where the clamp bit, on the Fit's
+        # unclamped demand (:meth:`_reaim_moved_enough`, 2026-11-28).
+        if (not self._reaim_moved_enough(idx, skill, landing, clamped,
+                                         terminal.landing_mm)
                 and abs(moved_s) <= self.resend_t_tol_s):
             return clamp_lines + self._resend_declined(
                 t_abs_s, idx, 'WITHIN-TOLERANCE', moved_mm, moved_s, dir_xy)
@@ -7842,7 +7896,9 @@ class SkillExecutor:
         Fences (plan § 2): the per-pattern switch (:attr:`catch_bump_enabled`),
         NO-CONVERGED-FIT, the lateral clamp (Δ is the CLAMPED landing's xy
         minus the committed one), WITHIN-TOLERANCE on |Δ| (xy only: a timing
-        move is absorbed by the 0.050 s pre-hold), CAP-SPENT (accepted re-aims
+        move is absorbed by the 0.050 s pre-hold; a clamp-bitten axis is
+        judged on the unclamped demand, :meth:`_reaim_moved_enough`),
+        CAP-SPENT (accepted re-aims
         only), BUMP-FREEZE (terminal, past ``t_c - BUMP_FREEZE_LEAD_S`` =
         0.225 s at emit lead 0; it replaces CONTACT-WINDOW, MIN_WINDOW and
         :attr:`catch_freeze_s` on this path), and the BUMP-WINDOW retry rule (a
@@ -7906,7 +7962,9 @@ class SkillExecutor:
         moved_mm = float(np.max(np.abs(delta)))
         moved_s = float(clamped.t_land_abs_s) - float(terminal.t_land_s)
         kw = dict(delta=delta, moved_mm=moved_mm, moved_s=moved_s)
-        if moved_mm <= self.resend_pos_tol_mm:
+        if not self._reaim_moved_enough(
+                idx, skill, landing, clamped,
+                np.asarray(terminal.landing_mm, dtype=float)[:2]):
             return out('WITHIN-TOLERANCE', **kw)
         if self._resend_counts.get(idx, 0) >= self.resend_max_per_catch:
             return out('CAP-SPENT', **kw)

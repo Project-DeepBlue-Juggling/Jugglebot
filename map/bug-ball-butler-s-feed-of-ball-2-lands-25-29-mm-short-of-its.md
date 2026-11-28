@@ -4,7 +4,7 @@ kind: bug
 title: Ball Butler's Feed of Ball 2 lands 25-29 mm short of its announced landing in Columns
 status: inbox
 created: '2026-11-28'
-updated: '2026-11-28T02:06:53Z'
+updated: '2026-11-28T07:58:28Z'
 owners: []
 priority: high
 effort: s
@@ -53,3 +53,7 @@ Ball Butler's Feed of Ball 2 in Columns lands about 25 to 29 mm short of the poi
 - pass: median |dx| of Ball 2's Feed at the Catch plane, measured from the bag against the schedule Site (not against the Cup, which follows the ball), is 10 mm or less, and no more than 1 of 6 Attempts is lost to Ball 2's Feed.
 - record: the end code and caught of thrown per Attempt, and the Ball 2 Feed dx and dy per Attempt.
 - minutes: 20
+
+## Progress
+
+- 2026-11-28: The BUG-161 re-aim fix is on main, so at the default 10 mm authority the Cup now moves to the clamp edge on a short Feed. Judge the trim on the Feed's dx against the Site, which the fix does not change; read the lost-Feed count with that in mind.
