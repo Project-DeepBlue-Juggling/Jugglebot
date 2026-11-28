@@ -1,5 +1,5 @@
 ---
-id: BUG-152
+id: BUG-156
 kind: bug
 title: IMU Charts appear out-of-sync in live viewer
 status: inbox
