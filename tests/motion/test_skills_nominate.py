@@ -82,7 +82,8 @@ def test_columns_at_p4_plans_every_segment_and_matches_the_p3a_probe_cell():
         assert v.seed == 'release of skill 1'
         assert v.margin == pytest.approx(0.381994251, abs=TOL)
         assert _refused(rep, 1, frac).margin == pytest.approx(0.383161404, abs=TOL)
-        assert _refused(rep, 5, frac).margin == pytest.approx(0.334698211, abs=TOL)
+        # # RE-PINNED 2026-11-28 (BUG-159, I-PLAN-18): 0.334698211 -> 0.324625858 (jerk, CATCH Ball 2 at P1)
+        assert _refused(rep, 5, frac).margin == pytest.approx(0.324625858, abs=TOL)
         assert _refused(rep, 0, frac).margin == pytest.approx(1.0, abs=TOL)
     w = rep.worst()
     assert (w.idx, w.flight_frac, w.binding) == (5, -0.20, 'jerk')
@@ -91,14 +92,14 @@ def test_columns_at_p4_plans_every_segment_and_matches_the_p3a_probe_cell():
     assert rep.aim_verdicts == [] and rep.aim_solves == 0
     assert rep.summary() == (
         'nomination OK: columns apex 0.95 m, separation 125 mm, dwell 0.27 s, '
-        'pose; worst margin 0.335 (jerk, CATCH Ball 2 at P1, rung -20 %)')
+        'pose; worst margin 0.325 (jerk, CATCH Ball 2 at P1, rung -20 %)')  # # RE-PINNED 2026-11-28 (BUG-159, I-PLAN-18): 0.335 -> 0.325
     # ... and asking for it adds the second figure to the SAME cached report
     both = nm.nominate(C('columns', 0.95, 125.0, 0.27), P4, search=False,
                        aim=nm.LAUNCH_AIM)
     assert both is rep
     assert both.summary().startswith(
         'nomination OK: columns apex 0.95 m, separation 125 mm, dwell 0.27 s, '
-        'pose; worst margin 0.335 at the nominal Sites '
+        'pose; worst margin 0.325 at the nominal Sites '  # # RE-PINNED 2026-11-28 (BUG-159, I-PLAN-18): 0.335 -> 0.325
         '(jerk, CATCH Ball 2 at P1, rung -20 %), ')
     assert 'with the Catch re-aim at its limit' in both.summary()
 
@@ -159,7 +160,8 @@ def test_phase_gate_highlow_105_95_refused_at_125_names_separation_100():
                          (5, 'MARGIN', None)]
     assert _refused(rep, 1, 0.0).margin == pytest.approx(-0.073450838, abs=TOL)
     assert _refused(rep, 1, 0.0).binding == 'vel'
-    assert _refused(rep, 5, 0.0).margin == pytest.approx(-0.078540885, abs=TOL)
+    # # RE-PINNED 2026-11-28 (BUG-159, I-PLAN-18): -0.078540885 -> -0.101531885 (acc, still MARGIN)
+    assert _refused(rep, 5, 0.0).margin == pytest.approx(-0.101531885, abs=TOL)
     assert _refused(rep, 5, 0.0).binding == 'acc'
     assert [(p, v) for p, v, _ in rep.nearest] == [('separation', 100.0),
                                                    ('dwell', 0.22)]
@@ -183,7 +185,7 @@ def test_oval_refused_dwell_names_the_first_viable_dwell_at_p4():
     """``oval_1ball`` 0.95 / 150, pose, carry_zvd false, at P4: dwell 0.30 is
     refused (the carried catch: LIMIT_JERK leg 0 at -20 %, MARGIN -0.034 at
     the nominal; viable at +10 %), and the search walks the dwell UP and names
-    0.35 s (margin 0.123), and separation 100 mm."""
+    0.35 s (margin 0.210 since BUG-159; was 0.123), and separation 100 mm."""
     nm.clear_cache()
     rep = nm.nominate(C('oval_1ball', 0.95, 150.0, 0.30), P4)
     assert not rep.ok
@@ -201,7 +203,9 @@ def test_oval_refused_dwell_names_the_first_viable_dwell_at_p4():
                                                        'dwell': 0.35}
     assert 'dwell 0.35 s, longer' in rep.summary()
     ok = nm.nominate(C('oval_1ball', 0.95, 150.0, 0.35), P4, search=False)
-    assert ok.ok and ok.worst().margin == pytest.approx(0.123371798, abs=TOL)
+    # # RE-PINNED 2026-11-28 (BUG-159, I-PLAN-18): 0.123371798 -> 0.210430375 (the worst moved from THROW
+    # Ball 1 at P1, now 0.4437, to CATCH Ball 1 at P2, rung -20 %)
+    assert ok.ok and ok.worst().margin == pytest.approx(0.210430375, abs=TOL)
 
 
 def test_oval_carry_zvd_at_gate_limits_refuses_035_and_names_040():
@@ -223,16 +227,21 @@ def test_oval_carry_zvd_at_gate_limits_refuses_035_and_names_040():
 
 # ── one nomination per GUI pre-fill (juggle-panel.js PATTERN_POINTS), P4 ────
 
+# # RE-PINNED 2026-11-28 (BUG-159, I-PLAN-18): every non-1.0 margin below except columns_highlow (unchanged) moved:
+# hop 0.206879713 -> 0.295808721; columns and columns_1ball_fed 0.334698211 -> 0.324625858;
+# columns_1ball 0.333152066 -> 0.322881741; columns_turned 0.035540900 -> 0.025742961;
+# oval_1ball and oval_1ball_fed 0.123371798 -> 0.438746375.  The parametrised ids embed
+# the value, so they changed with it.
 @pytest.mark.parametrize('config, worst, solves', [
     (C('self_toss', 0.9, 0.0, 0.27), 1.0, 12),
-    (C('hop', 0.9, 250.0, 0.27), 0.206879713, 18),
-    (C('columns', 0.95, 125.0, 0.27), 0.334698211, 18),
-    (C('columns_1ball', 0.95, 125.0, 0.27), 0.333152066, 21),
-    (C('columns_1ball_fed', 0.95, 125.0, 0.27), 0.334698211, 18),
-    (C('columns_turned', 0.95, 125.0, 0.27, angle_deg=45.0), 0.035540900, 18),
+    (C('hop', 0.9, 250.0, 0.27), 0.295808721, 18),
+    (C('columns', 0.95, 125.0, 0.27), 0.324625858, 18),
+    (C('columns_1ball', 0.95, 125.0, 0.27), 0.322881741, 21),
+    (C('columns_1ball_fed', 0.95, 125.0, 0.27), 0.324625858, 18),
+    (C('columns_turned', 0.95, 125.0, 0.27, angle_deg=45.0), 0.025742961, 18),
     (C('columns_highlow', 1.0, 100.0, 0.27, apex_m_ball2=0.9), 0.136236957, 18),
-    (C('oval_1ball', 0.95, 150.0, 0.65), 0.123371798, 12),
-    (C('oval_1ball_fed', 0.95, 150.0, 0.65), 0.123371798, 12),
+    (C('oval_1ball', 0.95, 150.0, 0.65), 0.438746375, 12),
+    (C('oval_1ball_fed', 0.95, 150.0, 0.65), 0.438746375, 12),
 ], ids=lambda x: x.pattern if isinstance(x, C) else None)
 def test_every_gui_prefill_nominates_at_p4(config, worst, solves):
     rep = nm.nominate(config, P4, search=False)
@@ -629,7 +638,7 @@ def test_worst_rung_walk_equals_the_full_walk_on_the_probe_cases():
 
 def test_worst_rung_is_independent_of_float_noise_between_tied_margins():
     """The margin is flat across the rungs where one leg peak binds (skill 5
-    at P4: 0.3346982112 at all three, differing ~1e-10 with BLAS threading and
+    at P4: 0.3246258584 at all three, differing ~1e-10 with BLAS threading and
     summation order).  A bare ``min`` named -20 % on a quiet one-thread run and
     +10 % on a loaded box (BUG-148).  No wall clock is in the path (the only
     ``perf_counter`` reads fill report timing fields); the noise is.  Driven

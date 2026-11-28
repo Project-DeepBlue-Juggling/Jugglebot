@@ -78,6 +78,25 @@ All runs 2026-11-28 in the branch worktree with the venv; "main" is origin/main 
 - Determinism: `python -m pytest tests/motion/test_solver_worker.py -q -k "round_trips_identically or round_trips_equal"`: 2 passed, alone; twice under five CPU burners on this branch and twice on main; and the whole file after `test_cup_zvd.py` and `test_blas_threads.py`: 75 passed, 1 xfailed.
 - Re-pinned cells: `python -m pytest -q tests/motion/test_validate_cycle.py::test_rung1_holdless_raw_chain_reads_the_pinned_values tests/motion/test_validate_cycle.py::test_the_production_default_carry_reads_the_holdless_seating`: 2 passed.
 - Both-bounds toggle and cost: `$S/out/bug159/fin/bench.py` on the captured calls (numbers in the Discussion); held hop: `$S/out/bug159/fin/hop.py` on main, this branch and the toggle.
+
+### Nomination margins re-pinned
+
+Eleven pinned nomination margins moved by this change (the Banking tilt schedule now scores its Leg jerk on the curve the plan gate reads, so the planned tilt differs). Old = origin/main 94d406cf in a detached worktree, new = this branch, both measured 2026-11-28 with `python -m pytest`-free probes (`nm.nominate(..., P4, search=False)` at the 600 / 8000 / 200000 mm/s^n, Hand 4500 working point). Every verdict is unchanged (viable stays viable, refused stays refused with the same nearest viable configuration, the same Throw and Catch counts and solve counts). Re-pinned in `tests/motion/test_skills_nominate.py` and `tests/motion/test_skills_polygon_walk.py`, tolerance unchanged (1e-6).
+
+| Pin | old | new | change | limiting term and Skill, new |
+|---|---|---|---|---|
+| columns, skill 5 (and both summary strings 0.335 to 0.325) | 0.334698211 | 0.324625858 | -3.0 % | jerk, CATCH Ball 2 at P1 |
+| columns_highlow 1.05 / 0.95 at 125 mm, GATE, skill 5 | -0.078540885 | -0.101531885 | -29 % (deeper refusal) | acc, CATCH Ball 2 at P1, still MARGIN; nearest viable still separation 100 mm or dwell 0.22 s |
+| oval_1ball 0.30 s, dwell 0.35 viable | 0.123371798 | 0.210430375 | +71 % | jerk, CATCH Ball 1 at P2 (the old worst, THROW Ball 1 at P1, is now 0.4437) |
+| hop | 0.206879713 | 0.295808721 | +43 % | jerk, THROW Ball 1 at P1 |
+| columns_1ball | 0.333152066 | 0.322881741 | -3.1 % | jerk, CATCH Ball 1 at P2 (skill 6) |
+| columns_1ball_fed | 0.334698211 | 0.324625858 | -3.0 % | jerk, CATCH Ball 2 at P1 |
+| columns_turned, 45 deg | 0.035540900 | 0.025742961 | -27.6 % | jerk, CATCH Ball 2 at P1@45 (skill 5); peak Leg jerk 173 603 to 175 366 mm/s^3 against the 180 000 gate |
+| oval_1ball, dwell 0.65 | 0.123371798 | 0.438746375 | +256 % | jerk, THROW Ball 1 at P1 (rung 0) |
+| oval_1ball_fed, dwell 0.65 | 0.123371798 | 0.438746375 | +256 % | same |
+| polygon_walk 125 mm, dwell 0.45 | 0.199972183 | 0.441335830 | +121 % | jerk, THROW Ball 1 at P1 (skill 1) |
+
+Unchanged by the change: columns_highlow 1.0 / 0.9 at 100 mm (0.136236957), polygon_walk 100 mm (0.188923959), the Skill 1 and 2 pins of the columns test, the highlow 1.05 / 0.95 Skill 1 pin (-0.073450838). Re-run 2026-11-28: `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 flock /tmp/jugglebot-tests.lock python -m pytest -n 2 -m "nightly or not nightly" -q` on test_skills_nominate, test_skills_polygon_walk, test_skills_columns_rotating_wiring, test_skills_nominate_human_catch, test_skills_columns_rotating, test_skills_centre_orbit, test_skills_landing_offset (tests/motion), test_skill_node_nominate, test_gui_juggle_nomination, test_gui_juggle_defaults (tests/ros), test_skills_gate_nominate, test_skills_gate_beats (tests/sim): before the re-pin 11 failed, 292 passed in 90.32 s; after, **303 passed in 94.73 s**.
 - The five new tests in `test_banking_realised_jerk.py` fail on main and pass here (previous unit's run, same day; passed again inside the scoped run above).
 
 ## Open Questions

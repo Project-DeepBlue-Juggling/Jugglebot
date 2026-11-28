@@ -133,7 +133,9 @@ def test_existing_labels_and_site_count_rules_are_unchanged():
 
 @pytest.mark.parametrize('edge,dwell,worst', [
     (100.0, 0.27, 0.188923959),
-    (125.0, 0.45, 0.199972183),
+    # # RE-PINNED 2026-11-28 (BUG-159, I-PLAN-18): 0.199972183 -> 0.441335830 (the worst moved from CATCH
+    # Ball 1 at P2, skill 10, to THROW Ball 1 at P1, skill 1)
+    (125.0, 0.45, 0.441335830),
 ])
 def test_the_square_nominates_and_every_segment_is_planned(edge, dwell, worst):
     rep = nm.nominate(C('polygon_walk', 0.9, edge, dwell), P4, search=False)
