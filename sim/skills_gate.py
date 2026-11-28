@@ -155,17 +155,19 @@ from sim import stream_chain                                       # noqa: E402
 from sim.gate_common import ViewerClosed, attach_viewer             # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Sitting limits -- read out of THIS SOURCE by regex
-# (tests/ros/test_unified_cycle_bench.py::
-#  test_the_sitting_limits_match_the_gates_that_planned_them), so this triple
-# is the ONE place the R2 operating point's leg limits live for that bench.
+# Sitting limits -- the sim gate plans and judges against the SAME working point
+# the robot launches with: the generated config constants (owner decision
+# 2026-11-28). History in one line: 250 -> 300 -> 350 mm/s over R2-R5
+# (2026-10-04, sitting 3), typed here with 5000 mm/s^2; the launch value became
+# 600 / 8000 / 200000 on 2026-11-03 (db435e54) and this triple lagged, so plain
+# Columns at 74 Throws ended LIMIT_VEL on 4 of 5 seeds at 350 and passed at the
+# live limits. Never type these again
+# (tests/firmware/test_hand_copied_constants.py::
+#  test_sim_skills_gate_leg_limits_follow_the_config).
 # ---------------------------------------------------------------------------
-# 300 -> 350 on 2026-10-04 (R5 sitting 3): the roomier columns geometry (apex
-# 0.95, dwell 0.25, separation 125) is swept and flown at 350 mm/s; at 300 the
-# one-ball trial's steady catch refused LIMIT_VEL at 300.2 mm/s.
-_SESSION_LEG_VEL_MMPS = 350.0
-_SESSION_LEG_ACC_MMPS2 = 5000.0
-_SESSION_LEG_JERK_MMPS3 = 200000.0
+_SESSION_LEG_VEL_MMPS = float(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS)
+_SESSION_LEG_ACC_MMPS2 = float(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2)
+_SESSION_LEG_JERK_MMPS3 = float(hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3)
 # Owner, 2026-10-02: 3900 (was 3500). The fed columns rehearsal's same-site
 # catch-and-throw fold peaked at 101 % of 3500 in BOTH feed layouts (the
 # 2026-09-30 pass was the same knife edge landing on the right side), so the
@@ -275,6 +277,18 @@ class SkillsGateConfig:
     separation_mm: float = 100.0
     #: JP-10: rotate the columns Site pair by this many degrees (0 = straight).
     angle_deg: float = 0.0
+    #: JP-14 Centre and orbit (``--orbit-n``): Ball 2's Sites per lap; then
+    #: :attr:`separation_mm` is the orbit RADIUS, ball A keeps the centre C
+    #: and ball B starts at O1 (``sites.centre_orbit_sites``,
+    #: ``Pattern.orbit_sites``).  ``None`` = plain Columns, unchanged.
+    orbit_n: Optional[int] = None
+    #: JP-11 rotating Columns (``--step-deg``): the Site pair turns by this
+    #: many degrees per Beat (``Pattern.step_deg``).  Flown from the HOP ENTRY
+    #: (the only start a rotating stream has): ball A is held at the Feed Site
+    #: P1 and hop-thrown from it, ball B is fed at P1 (``compile_columns(feed=
+    #: ..., hop_entry=True)``, the node's own compile).  ``None`` = plain
+    #: Columns, unchanged.
+    step_deg: Optional[float] = None
     dwell_s: float = 0.27
     n_throws: int = 20
     seeds: tuple = (0, 1, 2, 3, 4)
@@ -1706,10 +1720,22 @@ class SkillsGate:
         plant = self.plant
         geom = self.geom
         noise = JuggleNoise(cfg.noise, seed=seed)
-        site0, site1 = sites.columns_sites(cfg.separation_mm, cfg.angle_deg)
+        orbit = None
+        rotating = cfg.step_deg is not None
+        if cfg.orbit_n is not None:
+            _all = sites.centre_orbit_sites(cfg.separation_mm, cfg.orbit_n)
+            site0, site1, orbit = _all[0], _all[1], _all[1:]
+        elif rotating:
+            # the fed layout: (held P2, Feed P1), as the node's _run_columns
+            _p1, _p2 = sites.columns_sites(cfg.separation_mm)
+            site0, site1 = _p2, _p1
+        else:
+            site0, site1 = sites.columns_sites(cfg.separation_mm,
+                                               cfg.angle_deg)
 
-        # 1. Settle the machine at rest at site 0 (ball A's home).
-        rest0 = self._rest_state(site0)
+        # 1. Settle the machine at rest at site 0 (ball A's home); a rotating
+        # stream's hop entry holds ball A at the Feed Site (site 1) instead.
+        rest0 = self._rest_state(site1 if rotating else site0)
         pose0 = np.asarray(rest0.pose, dtype=float)
         plant.reset(pose0)
         plant.command(plant.pose_to_extensions(pose0))
@@ -1746,8 +1772,22 @@ class SkillsGate:
 
         pattern = sk.Pattern(sites=(site0, site1), apex_m=cfg.apex_m,
                              dwell_s=cfg.dwell_s, n_throws=cfg.n_throws,
-                             apex_m_ball_b=cfg.apex_m_ball2)
-        sched = sk.compile_columns(pattern, t0_abs_s)
+                             apex_m_ball_b=cfg.apex_m_ball2,
+                             orbit_sites=orbit, step_deg=cfg.step_deg)
+        if rotating:
+            # ball B's nominal arrival at the Feed Site is the landing prior
+            # (Ball Butler's announcement on the robot): t0 is READ OFF it,
+            # exactly t_spawn + beta as for the plain stream above.
+            _tm = sk.columns_ball_timing(cfg.apex_m, apex_b, cfg.dwell_s)
+            _feed = sk.LandingPrior(
+                pos_mm=np.asarray(pos1, dtype=float),
+                vel_mm_s=np.asarray(bal.arrival_velocity(
+                    np.array([0.0, 0.0, v0_mm_s]), _tm.flights[1]),
+                    dtype=float),
+                t_land_abs_s=t_spawn + _tm.flights[1])
+            sched = sk.compile_columns(pattern, feed=_feed, hop_entry=True)
+        else:
+            sched = sk.compile_columns(pattern, t0_abs_s)
         scheduled_catches = sum(1 for s in sched.skills if s.kind == CATCH)
         # The Stop (D2, E1'): the last throw is aimed at the OTHER site and
         # lands ON the ball already held there — read straight off the
@@ -3868,6 +3908,10 @@ _NOMINATE_DEFAULTS = {
     'oval_1ball_fed':    (0.95, _OVAL_SEPARATION_MM, _OVAL_DWELL_S),
     # JP-5: the square's EDGE (nominated 2026-11-18: 100 mm/0.27 s margin 0.189)
     'polygon_walk':      (0.9, 100.0, 0.27),
+    # JP-14: the orbit RADIUS (nominated 2026-11-25 at orbit_n 8: margin 0.189)
+    'centre_orbit':      (0.95, 100.0, 0.27),
+    # JP-11: the rotating pair's separation; --step-deg sets the step (10)
+    'columns_rotating':  (0.95, 125.0, 0.27),
 }
 _NOMINATE_DEFAULTS_HELP = '; '.join(
     '%s %g/%g/%g' % ((k,) + v) for k, v in _NOMINATE_DEFAULTS.items()
@@ -3898,13 +3942,22 @@ def _main_nominate(p, args) -> int:
     if angle and pattern != 'columns_turned':
         p.error('--angle-deg only applies to --pattern columns_turned '
                 'under --nominate')
+    step = args.step_deg
+    if pattern == 'columns_rotating' and step is None:
+        step = 10.0
+    if step is not None and pattern != 'columns_rotating':
+        p.error('--step-deg only applies to --pattern columns_rotating '
+                'under --nominate')
     cfg = nom.NominationConfig(
         pattern=pattern,
+        step_deg=float(step or 0.0),
+        entry=('hop' if pattern == 'columns_rotating' else 't0'),
         apex_m=float(args.apex_m if args.apex_m is not None else apex),
         separation_mm=float(args.separation_mm if args.separation_mm
                             is not None else sep),
         dwell_s=float(args.dwell_s if args.dwell_s is not None else dwell),
         apex_m_ball2=ball2, angle_deg=float(angle),
+        orbit_n=int(args.orbit_n if args.orbit_n is not None else 8),
         planner_mode=args.planner_mode,
         carry_zvd=(args.carry_zvd == 'true'),
         n_throws=args.n_throws)
@@ -3927,6 +3980,16 @@ def main(argv=None) -> int:
                    help='headless (the default; accepted for symmetry)')
     p.add_argument('--viewer-speed', type=float, default=1.0)
     p.add_argument('--report', default=None)
+    p.add_argument('--orbit-n', type=int, default=None,
+                   help='JP-14 centre_orbit: Ball 2 Sites per lap (the plain '
+                        'gate and --nominate --pattern centre_orbit; '
+                        '--separation-mm is the orbit radius)')
+    p.add_argument('--step-deg', type=float, default=None,
+                   help='JP-11 rotating Columns: the Site pair turns by this '
+                        'many degrees per Beat (0 < step <= 20; pose planner; '
+                        'the plain gate and --nominate --pattern '
+                        'columns_rotating; 10 deg: --n-throws 38 is one '
+                        'full turn)')
     p.add_argument('--angle-deg', type=float, default=0.0,
                    help='JP-10: turn the columns Site pair by this angle '
                         '(deg) about the origin (pose planner)')
@@ -4243,6 +4306,20 @@ def main(argv=None) -> int:
         cfg.apex_m = float(args.apex_m)
     if args.apex_ball2 is not None:
         cfg.apex_m_ball2 = float(args.apex_ball2)
+    if args.step_deg is not None:
+        if args.planner_mode != 'pose':
+            p.error('--step-deg needs --planner-mode pose (JP-11 is pose-only, '
+                    'IDEA-12)')
+        if args.angle_deg or args.orbit_n is not None or (
+                args.apex_ball2 is not None) or beat_spec is not None:
+            p.error('--step-deg cannot combine with --angle-deg, --orbit-n, '
+                    '--apex-ball2 or --beat-change')
+        cfg.step_deg = float(args.step_deg)
+    if args.orbit_n is not None:
+        if args.planner_mode != 'pose':
+            p.error('--orbit-n needs --planner-mode pose (JP-14 is pose-only, '
+                    'IDEA-14)')
+        cfg.orbit_n = int(args.orbit_n)
     if beat_spec is not None:
         if beat_spec['throw'] > cfg.n_throws - 1:
             p.error('--beat-change throw=%d needs a stream of at least %d '

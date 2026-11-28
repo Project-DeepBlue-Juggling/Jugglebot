@@ -18,6 +18,9 @@ blocked_by: []
 links:
 - map/bug-hand-stalls-at-the-70-a-clamp-mid-dive-probably-on-a-ball.md
 filed_by: claude
+night_skip: owner-session
+night_skip_on: '2026-11-28'
+night_skip_note: The warning fired correctly at the 2026-11-27 Sitting; closing it and deleting night-shift/2026-11-14-FEAT-50 is yours.
 ---
 
 BUG-84's three Hand stalls on 2026-11-13 were each a Ball trapped under the Hand that the Tracker had dropped; tools/trapped_ball_finder.py finds them offline from the raw unlabelled markers on /mocap_data. This asks for the live version: a log-only WARN at the moment it happens ("marker dwelling under the Hand at (x,y,z) for N ms, Hand at R rev"), repeated at 1 Hz while it persists.

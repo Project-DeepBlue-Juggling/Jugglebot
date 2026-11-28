@@ -149,7 +149,7 @@ RUNGS = (-0.20, 0.0, 0.10)
 NOMINATED_PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
                       'columns_1ball_fed', 'columns_turned', 'columns_highlow',
                       'oval_1ball', 'oval_1ball_fed', 'polygon_walk',
-                      'human_catch')
+                      'centre_orbit', 'columns_rotating', 'human_catch')
 #: PWAY-11 P2 U5b: the Pattern whose nomination is ONE nominal CATCH, not a
 #: Site cycle (:func:`build_pattern` / :func:`compile_schedule`): a Ball
 #: thrown by a person arrives VERTICALLY at the wait Site at the policy's
@@ -176,7 +176,7 @@ NOT_NOMINATED_PATTERNS = {'magazine': 'formulaic (a MAGAZINE throw from rest)',
 
 _ONE_PERIOD_PATTERNS = ('self_toss', 'oval_1ball', 'oval_1ball_fed')
 COLUMNS_FED = ('columns', 'columns_turned', 'columns_highlow',
-                'columns_1ball_fed')
+                'columns_1ball_fed', 'centre_orbit', 'columns_rotating')
 
 #: BUG-80: the Patterns a commanded landing offset (skill_node params
 #: ``landing_offset_x_mm`` / ``landing_offset_y_mm``) applies to. Only the
@@ -253,6 +253,10 @@ class NominationConfig:
     #: ``polygon_walk`` only (JP-5): the Site count N (skill_node param
     #: ``polygon_n``); ``separation_mm`` is the polygon's edge.
     polygon_n: int = 4
+    #: ``centre_orbit`` only (JP-14): Ball 2's Sites per lap N (skill_node
+    #: param ``orbit_n``); ``separation_mm`` is the orbit's RADIUS (every cup
+    #: transit, centre <-> orbit Site, is that distance).
+    orbit_n: int = 8
     #: ``human_catch`` only (PWAY-11 P2 U5b): the wait Site xy, the latest
     #: planned lead (D3) and the nominal arrival's absolute Apex (D9) -- the
     #: node's ``human_catch_home_x_mm`` / ``_home_y_mm`` / ``_first_lead_s`` /
@@ -260,6 +264,11 @@ class NominationConfig:
     hc_home_xy_mm: Tuple[float, float] = tuple(_HC_DEFAULTS['home_xy_mm'])
     hc_first_lead_s: float = _HC_DEFAULTS['first_lead_s']
     hc_nominal_apex_m: float = _HC_DEFAULTS['nominal_apex_m']
+    #: ``columns_rotating`` only (JP-11, skill_node param
+    #: ``columns_step_deg``): the Site pair's turn per Beat, degrees, in
+    #: ``(0, 20]`` (:func:`sites.check_rotating_step`; 0 is REFUSED here, not
+    #: read as plain Columns).  Last field: every positional use is unchanged.
+    step_deg: float = 0.0
 
     def key(self) -> tuple:
         return dataclasses.astuple(self)
@@ -274,6 +283,18 @@ def short_n_throws(pattern: str) -> int:
     self-toss / oval (-> 3)."""
     per = 1 if pattern in _ONE_PERIOD_PATTERNS else 2
     return 1 + 2 * per
+
+
+def rotating_span(step_deg: float) -> int:
+    """JP-11: the Throws that cover one FULL TURN of a rotating Columns pair,
+    ``ceil(360 / step) + 2`` (36 + 2 = 38 at 10 deg per Beat).  Throw ``k``
+    flies the chord ``S(k) -> S(k + 2)`` at its own pair angle, so a nomination
+    of this many Throws plans every angle the Attempt can reach at the three
+    RUNGS (Throws past it repeat the angles of the first turn).  Raises
+    ``ValueError`` naming ``ROTATING_STEP_OUT_OF_RANGE`` for a step outside
+    ``(0, 20]``."""
+    d = st.check_rotating_step(step_deg)
+    return int(math.ceil(360.0 / d - 1e-9)) + 2
 
 
 def landing_offset_refusal(x_mm, y_mm, authority_mm: float,
@@ -387,6 +408,40 @@ def build_pattern(config: NominationConfig, n_throws: Optional[int] = None):
         return _human_catch_pattern(
             config, int(n_throws if n_throws is not None
                         else (config.n_throws or 1)))
+    if p == sc.CENTRE_ORBIT:
+        # JP-14: Ball 1 keeps the centre C, Ball 2 is fed at O1 and walks the
+        # orbit. The SHORT pattern is one closed lap plus one Throw (2 N + 2):
+        # Ball 2 throws every chord O1 -> O2 .. On -> O1 once (the Platform is
+        # not symmetric under every orbit rotation), then the Stop is Ball
+        # 2's, O1 -> C onto Ball 1: the EVEN-count Stop a Rung flies, whose
+        # ball-to-ball clearance is Columns' own (an odd count, which the
+        # Pattern REFUSES by name (ORBIT_ODD_THROW_COUNT), ends on Ball
+        # 1's Stop onto Ball 2 at an orbit Site, 4 mm closer at r 100, N 8;
+        # tools/probes/centre_orbit_clearance.py).
+        allsites = st.centre_orbit_sites(config.separation_mm, config.orbit_n)
+        if n_throws is None and not config.n_throws:
+            n = 2 + 2 * int(config.orbit_n)
+        return sc.Pattern(sites=(allsites[0], allsites[1]),
+                          apex_m=config.apex_m, dwell_s=config.dwell_s,
+                          n_throws=n, orbit_sites=allsites[1:])
+    if p == sc.COLUMNS_ROTATING:
+        # JP-11: Columns' own fed pair (held P2, Feed P1) turning
+        # ``step_deg`` per Beat.  The SHORT pattern is one full turn plus two
+        # Throws (:func:`rotating_span`); an operator count is capped at it
+        # for a NOMINATION (``n_throws`` None, ``config.n_throws`` set) and
+        # used as given for the Attempt's own build (``n_throws`` passed), so
+        # the two Patterns are the same stream, the nomination's a prefix.
+        span = rotating_span(config.step_deg)       # refuses 0 / out of range
+        if n_throws is None:
+            n = min(int(config.n_throws), span) if config.n_throws else span
+        # The Feed Site is ALWAYS P1 (S(1) = P1, Ball Butler's lane and the
+        # hop entry are Columns' own); `columns_feed_site` is not read.
+        sites = st.columns_sites(config.separation_mm)
+        feed_site, a_site = sites[0], sites[1]
+        return sc.Pattern(sites=(a_site, feed_site), apex_m=config.apex_m,
+                          dwell_s=config.dwell_s, n_throws=n,
+                          apex_m_ball_b=config.apex_m_ball2,
+                          step_deg=float(config.step_deg))
     if p in COLUMNS_FED:
         sites = st.columns_sites(config.separation_mm,
                                  config.angle_deg if p == 'columns_turned' else 0.0)
@@ -1025,6 +1080,8 @@ class NominationReport:
             s += ', landing offset (%+.1f, %+.1f) mm' % tuple(c.landing_offset_mm)
         if c.pattern == 'columns_turned':
             s += ', angle %.0f deg' % c.angle_deg
+        if c.pattern == sc.COLUMNS_ROTATING:
+            s += ', step %g deg per Beat' % c.step_deg
         s += ', %s%s' % (c.planner_mode, ', carry_zvd' if c.carry_zvd else '')
         return s
 
@@ -1325,6 +1382,9 @@ def workspace_ok(config: NominationConfig) -> bool:
     try:
         if config.pattern == 'polygon_walk':
             sites = st.polygon_sites(config.polygon_n, config.separation_mm)
+        elif config.pattern == sc.CENTRE_ORBIT:
+            sites = st.centre_orbit_sites(config.separation_mm,
+                                          config.orbit_n)
         else:
             sites = st.columns_sites(
                 config.separation_mm,

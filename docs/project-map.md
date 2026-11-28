@@ -25,7 +25,7 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 **Attached inbox items:**
 
-- bug: BUG-146 [Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-aimed-throw-from-a-level-rest-is-refused-hand-limit-c2-past.md) (inbox)
+- bug: BUG-146 [Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-aimed-throw-from-a-level-rest-is-refused-hand-limit-c2-past.md) (in_progress)
 
 ## Two-ball oval
 
@@ -105,33 +105,33 @@ _Status: closed (complete)._
 
 ## Learner generalisation
 
-**Destination:** Fewer Attempts are lost to Throw accuracy. The launch scatter is traced to its source and cut there, the Catch absorbs what remains, and a quiet Learner on one shared Memory removes bias for carried Throws, new configurations and yaw, on top of the global plant model and online admissibility delivered 2026-11-06.
+**Destination:** Fewer Attempts are lost to Throw accuracy. The launch scatter is measured and traced to the release (about 15 mm/s per axis, accepted as the floor of this Hand), the Catch absorbs it, and the Learner on one Memory, with the plant model's lateral law fitted per release kind, keeps carried and Columns Throws from biasing each other, on top of the global plant model and online admissibility delivered 2026-11-06.
 
-**Progress:** 9 of 13 stops done
+**Progress:** 11 of 12 stops done
 
-**Next:** PE2 Learner correctness fixes ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
+**Next:** PE5 Catch-side robustness ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
 
 **Owners:** harrison
 
 **Remaining:**
 
-- PE2 Learner correctness fixes ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md)) — in progress
-- PE4 Hand change against the baseline ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
 - PE5 Catch-side robustness ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
-- PE7 Close-out ([learner-efficacy.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/learner-efficacy.md))
 
 **Attached inbox items:**
 
+- bug: BUG-163 [A Catch re-aim that passes every Leg limit can lift a Leg off the Base: the gate checks along-Leg motion, not the load at the Base joint](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-a-catch-re-aim-that-passes-every-leg-limit-can-lift-a-leg.md) (inbox)
+- bug: BUG-160 [Ball Butler's Feed of Ball 2 lands 25-29 mm short of its announced landing in Columns](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-ball-butler-s-feed-of-ball-2-lands-25-29-mm-short-of-its.md) (in_progress)
 - bug: BUG-153 [Plant model: a release kind with no rows rejects every row more than about 120 mm off its prior, so a cold carried kind cannot learn the oval's 179 mm offset](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-plant-model-a-release-kind-with-no-rows-rejects-every-row.md) (inbox)
 - bug: BUG-79 [Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-two-ball-throws-land-about-9-mm-toward-the-partner-site-an.md) (inbox)
 - feature: FEAT-27 [Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-kinematic-calibration-acceptance-the-flying-frame-check-and.md) (in_progress)
 - feature: FEAT-65 [Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-learner-a-noise-aware-shrinkage-estimator-in-place-of-the.md) (backlog)
+- idea: IDEA-31 [The oval on the shared Memory: compile the oval on compile_beats, then fly it on plant jugglebot](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-the-oval-on-the-shared-memory-compile-the-oval-on-compile.md) (inbox)
 
 ## Pattern progression: Columns to Centre and orbit
 
 **Destination:** JP-14 Centre and orbit flown on the robot: 30 consecutive Catches in one Attempt at radius 100 mm with 8 Sites per lap, under pose.
 
-**Progress:** 6 of 10 stops done
+**Progress:** 7 of 10 stops done
 
 **Next:** P5 JP-9 high-low Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 
@@ -141,13 +141,12 @@ _Status: closed (complete)._
 
 - P5 JP-9 high-low Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 - P8 JP-11 rotating Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md)) — in progress
-- P9 Centre and orbit compile ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 - P10 JP-14 Centre and orbit ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 
 **Attached inbox items:**
 
-- bug: BUG-152 [Hop entry opening Throw carries a rate at rest, so the Legs ripple before the first Throw](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hop-entry-opening-throw-carries-a-rate-at-rest-so-the-legs.md) (inbox)
-- idea: IDEA-12 [JP-11 Rotating columns: the pair turns a few degrees every Beat](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-11-rotating-columns-the-pair-turns-a-few-degrees-every.md) (inbox)
+- bug: BUG-155 [A full-turn rotating Columns goal can block the goal accept for minutes while it nominates](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-a-full-turn-rotating-columns-goal-can-block-the-goal-accept.md) (inbox)
+- idea: IDEA-12 [JP-11 Rotating columns: the pair turns a few degrees every Beat](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-11-rotating-columns-the-pair-turns-a-few-degrees-every.md) (in_progress)
 - idea: IDEA-14 [JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-14-centre-and-orbit-ball-1-in-a-column-ball-2-on-a-circle.md) (inbox)
 
 ## Map improvements
@@ -178,8 +177,8 @@ _Status: closed (complete)._
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug Ball Butler yaw-settle gate aborts settled throws (THROW_ABORTED_NOT_SETTLED false positives); feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | GUI Improvements | — | — | — | — |
-| Learner generalisation | PE2 Learner correctness fixes | — | PE4 Hand change against the baseline; PE5 Catch-side robustness; PE7 Close-out; bug Plant model: a release kind with no rows rejects every row more than about 120 mm off its prior, so a cold carried kind cannot learn the oval's 179 mm offset; bug Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z; feature Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows | PE0 Unsettled-ball test from existing bags; PE1 Launch baseline on the robot's Hand; Box sweep fidelity for same-site families (plan what the executor dispatches); P3a Command-time admissibility check; P3b Nomination-time check and the nearest viable configuration; P3c Box retirement; P1 Learner core; P2 The characterisation sitting; P4 BeatEvent stream and the columns wrapper |
-| Pattern progression: Columns to Centre and orbit | P8 JP-11 rotating Columns | P5 JP-9 high-low Columns | P9 Centre and orbit compile; P10 JP-14 Centre and orbit; bug Hop entry opening Throw carries a rate at rest, so the Legs ripple before the first Throw; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm | P1 Launch current check; P2 Turned Columns on the compiled path; P3 JP-10 turned Columns; P4 Per-Site Apex; P6 Per-Beat Sites dependency owned by PWAY-2; P7 JP-5 polygon walk |
+| Learner generalisation | — | PE5 Catch-side robustness | bug A Catch re-aim that passes every Leg limit can lift a Leg off the Base: the gate checks along-Leg motion, not the load at the Base joint; bug Ball Butler's Feed of Ball 2 lands 25-29 mm short of its announced landing in Columns; bug Plant model: a release kind with no rows rejects every row more than about 120 mm off its prior, so a cold carried kind cannot learn the oval's 179 mm offset; bug Two-ball Throws land about 9 mm toward the partner Site: an arrival transient the plant model has no term for; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z; feature Learner: a noise-aware shrinkage estimator in place of the mean of the 16 most recent rows; idea The oval on the shared Memory: compile the oval on compile_beats, then fly it on plant jugglebot | PE0 Unsettled-ball test from existing bags; PE1 Launch baseline on the robot's Hand; PE2 Learner correctness fixes; PE7 Close-out; Box sweep fidelity for same-site families (plan what the executor dispatches); P3a Command-time admissibility check; P3b Nomination-time check and the nearest viable configuration; P3c Box retirement; P1 Learner core; P2 The characterisation sitting; P4 BeatEvent stream and the columns wrapper |
+| Pattern progression: Columns to Centre and orbit | P8 JP-11 rotating Columns | P5 JP-9 high-low Columns | P10 JP-14 Centre and orbit; bug A full-turn rotating Columns goal can block the goal accept for minutes while it nominates; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm | P1 Launch current check; P2 Turned Columns on the compiled path; P3 JP-10 turned Columns; P4 Per-Site Apex; P6 Per-Beat Sites dependency owned by PWAY-2; P7 JP-5 polygon walk; P9 Centre and orbit compile |
 | Map improvements | — | — | — | closed |
 | Two-ball skill stack | — | — | — | closed |
 | Wave camera on CAN3 | — | — | — | closed |
@@ -209,7 +208,7 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | FEAT-30 | feature | [Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-trim-the-nice-0-chain-cpu-the-flame-graphs-point-at-skill.md) | inbox | medium | m | robot | none | subsystem | skill-stack | Two-ball oval | filed 2026-10-28 |
 | BUG-41 | bug | [Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-brake-and-hold-currents-sit-far-below-the-throw.md) | backlog | medium | s | bench-hand | hands | subsystem | hand | — | filed 2026-10-30 |
 | IDEA-17 | idea | [Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-hand-end-of-stroke-bumper-and-first-the-planner-s-own-brake.md) | inbox | medium | l | robot | decision | cross-cutting | hand | — | filed 2026-10-30 |
-| IDEA-12 | idea | [JP-11 Rotating columns: the pair turns a few degrees every Beat](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-11-rotating-columns-the-pair-turns-a-few-degrees-every.md) | inbox | medium | l | robot | hands | cross-cutting | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-10-30 |
+| IDEA-12 | idea | [JP-11 Rotating columns: the pair turns a few degrees every Beat](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-11-rotating-columns-the-pair-turns-a-few-degrees-every.md) | in_progress | medium | l | robot | hands | cross-cutting | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-10-30 |
 | IDEA-13 | idea | [JP-13 Rising and sinking columns: the whole Pattern rides the Platform in z](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-13-rising-and-sinking-columns-the-whole-pattern-rides-the.md) | inbox | medium | l | robot | hands | cross-cutting | skill-stack | — | filed 2026-10-30 |
 | IDEA-14 | idea | [JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-14-centre-and-orbit-ball-1-in-a-column-ball-2-on-a-circle.md) | inbox | high | l | robot | hands | cross-cutting | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-10-30 |
 | IDEA-15 | idea | [JP-15 Over the top: Ball 1 straight up, Ball 2 arcs over it (needs P4)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-15-over-the-top-ball-1-straight-up-ball-2-arcs-over-it.md) | inbox | medium | l | robot | hands | cross-cutting | skill-stack | — | filed 2026-10-30 |
@@ -263,10 +262,15 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/bench-hand/robot; Owner none/deci
 | BUG-140 | bug | [Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-fresh-rest-rebases-outside-the-band-are-uncapped-up-to-1-0-s.md) | in_progress | medium | s | robot | decision | subsystem | skill-stack | — | filed 2026-11-25 |
 | BUG-142 | bug | [Hand park reports already parked on a Hand that is Idle on its bottom stop](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-park-reports-already-parked-on-a-hand-that-is-idle-on.md) | inbox | medium | xs | robot | hands | local | hand | — | filed 2026-11-25 |
 | BUG-144 | bug | [Juggle action feedback and status topics are in the bag record list but have never been recorded](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-juggle-action-feedback-and-status-topics-are-in-the-bag.md) | in_progress | medium | xs | robot | none | local | tests-tooling | — | filed 2026-11-25 |
-| BUG-146 | bug | [Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-aimed-throw-from-a-level-rest-is-refused-hand-limit-c2-past.md) | inbox | medium | s | robot | decision | subsystem | skill-stack | Human-partner juggling | filed 2026-11-26 |
+| BUG-146 | bug | [Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-aimed-throw-from-a-level-rest-is-refused-hand-limit-c2-past.md) | in_progress | medium | s | robot | none | subsystem | skill-stack | Human-partner juggling | filed 2026-11-26 |
 | FEAT-69 | feature | [can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-can-bridge-fw-53-a-leg-leaves-closed-loop-only-at-stow-i-fw.md) | in_progress | high | l | robot | hands | normative | can-bridge | — | filed 2026-11-26 |
 | FEAT-70 | feature | [can-bridge reports each Leg's measured Closed-loop engage time](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-can-bridge-reports-each-leg-s-measured-closed-loop-engage.md) | inbox | medium | s | none | none | subsystem | can-bridge | — | filed 2026-11-27 |
-| BUG-152 | bug | [Hop entry opening Throw carries a rate at rest, so the Legs ripple before the first Throw](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hop-entry-opening-throw-carries-a-rate-at-rest-so-the-legs.md) | inbox | medium | s | robot | decision | subsystem | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-11-27 |
-| BUG-150 | bug | [ODrive Charts' Throw/Catch markers disappear for future events](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-odrive-charts-throw-catch-markers-disappear-for-future-event.md) | inbox | medium | s | — | — | — | — | — | filed 2026-11-27 |
+| BUG-156 | bug | [IMU Charts appear out-of-sync in live viewer](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-imu-charts-appear-out-of-sync-in-live-viewer.md) | inbox | medium | s | — | — | — | — | — | filed 2026-11-27 |
+| BUG-150 | bug | [ODrive Charts' Throw/Catch markers disappear for future events](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-odrive-charts-throw-catch-markers-disappear-for-future-event.md) | in_progress | medium | s | none | none | local | gui | — | filed 2026-11-27 |
 | IDEA-30 | idea | [The 13 ms Mocap alignment constant may be almost all Leg lag, leaving little for Mocap latency](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-the-13-ms-mocap-alignment-constant-may-be-almost-all-leg-lag.md) | inbox | low | s | none | none | subsystem | tracking | — | filed 2026-11-27 |
+| BUG-155 | bug | [A full-turn rotating Columns goal can block the goal accept for minutes while it nominates](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-a-full-turn-rotating-columns-goal-can-block-the-goal-accept.md) | inbox | low | s | none | none | local | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-11-28 |
+| BUG-160 | bug | [Ball Butler's Feed of Ball 2 lands 25-29 mm short of its announced landing in Columns](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-ball-butler-s-feed-of-ball-2-lands-25-29-mm-short-of-its.md) | in_progress | high | s | robot | none | subsystem | ball-butler | Learner generalisation | filed 2026-11-28 |
 | BUG-153 | bug | [Plant model: a release kind with no rows rejects every row more than about 120 mm off its prior, so a cold carried kind cannot learn the oval's 179 mm offset](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-plant-model-a-release-kind-with-no-rows-rejects-every-row.md) | inbox | low | s | none | decision | subsystem | learner | Learner generalisation | filed 2026-11-28 |
+| BUG-162 | bug | [Solver worker round-trip tests fail when the BLAS thread count is not pinned](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-solver-worker-round-trip-tests-fail-when-the-blas-thread.md) | inbox | low | xs | none | none | local | tests-tooling | — | filed 2026-11-28 |
+| IDEA-31 | idea | [The oval on the shared Memory: compile the oval on compile_beats, then fly it on plant jugglebot](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-the-oval-on-the-shared-memory-compile-the-oval-on-compile.md) | inbox | low | — | robot | — | — | — | Learner generalisation | filed 2026-11-28 |
+| BUG-163 | bug | [A Catch re-aim that passes every Leg limit can lift a Leg off the Base: the gate checks along-Leg motion, not the load at the Base joint](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-a-catch-re-aim-that-passes-every-leg-limit-can-lift-a-leg.md) | inbox | high | m | robot | none | subsystem | skill-stack | Learner generalisation | filed 2026-11-29 |

@@ -162,6 +162,127 @@ def polygon_sites(n: int, edge_mm: float) -> Tuple[Site, ...]:
     return tuple(out)
 
 
+#: ``centre_orbit`` (JP-14, IDEA-14): the radius (mm) and the Sites-per-lap
+#: count the compile accepts, both inclusive.  ORIGIN: the 2026-10-30 offline
+#: probe (radius 95-105 mm, 6-12 steps) re-measured in the sim skills gate
+#: and the nomination check 2026-11-25 (logbook
+#: ``2026-11-25-jp14-centre-and-orbit-compile.md``).  Outside them the compile
+#: REFUSES by name (:data:`ORBIT_RADIUS_OUT_OF_RANGE`,
+#: :data:`ORBIT_N_OUT_OF_RANGE`); nothing is clamped.
+ORBIT_RADIUS_RANGE_MM = (95.0, 105.0)
+ORBIT_N_RANGE = (6, 12)
+ORBIT_RADIUS_OUT_OF_RANGE = 'ORBIT_RADIUS_OUT_OF_RANGE'
+ORBIT_N_OUT_OF_RANGE = 'ORBIT_N_OUT_OF_RANGE'
+#: An ODD Throw count ends on Ball 1's Stop onto Ball 2 at an orbit Site, the
+#: closest ball-to-ball approach of the Pattern (71.8 mm centre distance at
+#: r 95 N 6, below the 74 mm ball diameter; owner decision 2026-11-25: refuse
+#: it, never round it up). :class:`schedule.Pattern` refuses it by this name.
+ORBIT_ODD_THROW_COUNT = 'ORBIT_ODD_THROW_COUNT'
+
+
+def centre_orbit_sites(radius_mm: float, n: int) -> Tuple[Site, ...]:
+    """The ``centre_orbit`` Sites (JP-14, IDEA-14): ``(C, O1, .., On)``.
+
+    ``C`` is the Platform centre (0, 0), Ball 1's column.  ``O1`` .. ``On``
+    are Ball 2's Sites, a regular ``n``-gon inscribed in a circle of
+    ``radius_mm`` about ``C``, in lap order (counter-clockwise), ``O1`` at
+    (-r, 0): where :func:`columns_sites` puts ``P1``, the Site nearest Ball
+    Butler, so it is the Feed Site.  Every cup transit is C <-> Ok, exactly
+    ``radius_mm`` (Columns at separation r); Ball 2's Throw Ok -> Ok+1 travels
+    the chord ``2 r sin(pi / n)`` (76.5 mm at r 100, n 8).
+
+    Raises ``ValueError`` naming :data:`ORBIT_RADIUS_OUT_OF_RANGE` or
+    :data:`ORBIT_N_OUT_OF_RANGE` outside :data:`ORBIT_RADIUS_RANGE_MM` /
+    :data:`ORBIT_N_RANGE` -- a refusal, never a clamp."""
+    r = float(radius_mm)
+    lo, hi = ORBIT_RADIUS_RANGE_MM
+    if not (math.isfinite(r) and lo <= r <= hi):
+        raise ValueError('%s: centre_orbit radius (separation_mm) %r mm is '
+                         'outside the compiled range %g..%g mm'
+                         % (ORBIT_RADIUS_OUT_OF_RANGE, radius_mm, lo, hi))
+    if isinstance(n, bool) or int(n) != n:
+        raise ValueError('%s: orbit_n must be an integer, got %r'
+                         % (ORBIT_N_OUT_OF_RANGE, n))
+    n = int(n)
+    nlo, nhi = ORBIT_N_RANGE
+    if not nlo <= n <= nhi:
+        raise ValueError('%s: orbit_n %d Sites per lap is outside the '
+                         'compiled range %d..%d'
+                         % (ORBIT_N_OUT_OF_RANGE, n, nlo, nhi))
+    z = CATCH_CUP_Z_MM
+    out = [Site('C', np.array([0.0, 0.0, z]))]
+    for k in range(n):
+        a = math.pi + 2.0 * math.pi * k / n
+        out.append(Site('O%d' % (k + 1), np.array(
+            [r * math.cos(a), r * math.sin(a), z])))
+    return tuple(out)
+
+
+#: JP-11 rotating Columns (map IDEA-12): the Site pair turns about the Platform
+#: origin by ``step_deg`` every Beat.  The step range is the ladder's top
+#: (5 / 10 / 20 deg per Beat); outside ``(0, 20]`` is REFUSED by name, never
+#: clamped.  ``0`` / ``None`` is plain Columns (the Pattern field's default).
+ROTATING_STEP_RANGE_DEG = (0.0, 20.0)
+ROTATING_STEP_OUT_OF_RANGE = 'ROTATING_STEP_OUT_OF_RANGE'
+ROTATING_APEX_PAIR_UNEQUAL = 'ROTATING_APEX_PAIR_UNEQUAL'
+ROTATING_PHANTOM_REFUSED = 'ROTATING_PHANTOM_REFUSED'
+ROTATING_NEEDS_HOP_ENTRY = 'ROTATING_NEEDS_HOP_ENTRY'
+ROTATING_NOT_A_PAIR = 'ROTATING_NOT_A_PAIR'
+ROTATING_WITH_ORBIT = 'ROTATING_WITH_ORBIT'
+
+
+def check_rotating_step(step_deg) -> float:
+    """``step_deg`` as a float in ``(0, 20]``, else ``ValueError`` naming
+    :data:`ROTATING_STEP_OUT_OF_RANGE` (a refusal, never a clamp)."""
+    lo, hi = ROTATING_STEP_RANGE_DEG
+    try:
+        d = float(step_deg)
+    except (TypeError, ValueError):
+        d = float('nan')
+    if isinstance(step_deg, bool) or not (math.isfinite(d) and lo < d <= hi):
+        raise ValueError('%s: rotating Columns step %r deg per Beat is '
+                         'outside (%g, %g]' % (ROTATING_STEP_OUT_OF_RANGE,
+                                               step_deg, lo, hi))
+    return d
+
+
+def rotating_sites(pair: Tuple[Site, Site], step_deg: float,
+                   n_throws: int) -> Tuple[Site, ...]:
+    """The Sites ``S(0) .. S(n_throws + 1)`` of a rotating-Columns stream
+    (JP-11).  ``pair = (sites[0], sites[1])`` is a Columns pair about the
+    Platform origin (``sites[1]`` the Feed Site, ``columns_sites``' ``P1``,
+    angle ``phi1``; ``sites[0]`` its antipode): Throw ``k`` leaves ``S(k)`` and
+    is caught at ``S(k + 2)``, where it is thrown again.  ``S(k)`` sits at
+    polar angle ``phi1 + (k - 1) * (step + 180) deg`` and radius ``r`` (half
+    the pair separation): the pair turns ``step`` per Beat and the two balls
+    stay on opposite sides.  ``S(1)`` is exactly ``sites[1]`` (the Feed Site at
+    pair angle 0, Ball Butler's lane and the hop entry are Columns' own) and
+    ``S(0)`` is exactly ``sites[0]`` (the unrotated partner Site; under the
+    hop entry Throw 0 leaves ``sites[1]``, so ``S(0)`` is never a Catch Site).
+    Chord of a Throw ``S(k) -> S(k + 2)``: ``2 r sin(step)``; transit
+    ``S(k) -> S(k + 1)``: ``2 r cos(step / 2)``.  Names are unique per Site
+    (``R<k>@<angle>``): the executor keys its outward unit and the stand-in on
+    names."""
+    d = check_rotating_step(step_deg)
+    a, b = pair
+    ra, rb = np.asarray(a.cup_mm, dtype=float), np.asarray(b.cup_mm, dtype=float)
+    r = math.hypot(float(rb[0]), float(rb[1]))
+    if (r <= 0.0 or float(ra[2]) != float(rb[2])
+            or math.hypot(float(ra[0] + rb[0]), float(ra[1] + rb[1])) > 1e-6):
+        raise ValueError('%s: the pair must be a Columns pair about the '
+                         'Platform origin, got %s %s and %s %s'
+                         % (ROTATING_NOT_A_PAIR, a.name, ra.tolist(),
+                            b.name, rb.tolist()))
+    phi1 = math.atan2(float(rb[1]), float(rb[0]))
+    z = float(rb[2])
+    out = [a, b]
+    for k in range(2, int(n_throws) + 2):
+        ang = phi1 + math.radians((k - 1) * (d + 180.0))
+        out.append(Site('R%d@%g' % (k, round(math.degrees(ang) % 360.0, 3)),
+                        np.array([r * math.cos(ang), r * math.sin(ang), z])))
+    return tuple(out)
+
+
 def columns_sites(separation_mm: float,
                   angle_deg: float = 0.0) -> Tuple[Site, Site]:
     """The two columns-pattern sites, ``separation_mm`` apart, straddling x=0.

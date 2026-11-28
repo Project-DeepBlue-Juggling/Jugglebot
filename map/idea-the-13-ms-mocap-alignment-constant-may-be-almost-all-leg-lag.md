@@ -16,6 +16,9 @@ blocked_by: []
 links:
 - bug-legs-trail-the-command-by-13-to-15-ms-on-2026-11-27-against
 filed_by: claude
+night_skip: low-priority
+night_skip_on: '2026-11-28'
+night_skip_note: 'Feasibility noted 2026-11-28: one offline pass over a bag with bridge_stamp splits the 13 ms into Leg lag and Mocap latency.'
 ---
 
 tools/probes/_bag_time.py aligns /mocap_data to the bridge clock with a 13.05 ms constant measured from body motion against the FK of the executed command. It was read as Mocap latency plus a modelled Leg lag of 1.3 to 3 ms. BUG-151 measured the Leg lag directly on 2026-11-27 at 13.2 ms (sd 0.5, 10 oval Attempts). If both numbers hold, almost none of the constant is Mocap latency (unchecked).

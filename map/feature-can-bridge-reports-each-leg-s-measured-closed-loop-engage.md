@@ -16,6 +16,9 @@ blocked_by: []
 links:
 - feature-can-bridge-fw-53-a-leg-leaves-closed-loop-only-at-stow-i-fw
 filed_by: claude
+night_skip: frozen-path
+night_skip_on: '2026-11-28'
+night_skip_note: Needs can-bridge firmware and wire-format changes, which the gate freezes at night; no branch built.
 ---
 
 FEAT-69's pass line asks that every Leg confirms Closed-loop in under 190 ms. At the Sitting of 2026-11-27 that clause could not be judged: the bag holds no stamp for when the bridge sends the Closed-loop command and none for a Leg's first Closed-loop heartbeat. The host-side figure (orchestrator command to all six Legs reading Closed-loop on /robot_state, 10 ms samples) was 266 to 389 ms and includes host latency.

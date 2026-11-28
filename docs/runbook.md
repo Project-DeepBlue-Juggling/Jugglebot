@@ -6,24 +6,28 @@ waiting Items: the order a Sitting flies in, and every step, is on its Sitting s
 
 Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 
-## Robot  (16 Items, 565 min)
+## Robot  (20 Items, 740 min)
 
 | Item | Minutes | Setup | Branch | On a sheet |
 | --- | ---: | --- | --- | --- |
 | BUG-111 Hand SPINOUT at the Throw peak after a setpoint 12.6 ms late (2026-11-18) | 150 | level, armed, bb-fed | `sitting/emit-lead-1` | - |
 | BUG-122 Hand stays homed after its drive loses the position reference, so the next move rams the top stop | 5 | level | - | - |
+| BUG-160 Ball Butler's Feed of Ball 2 lands 25-29 mm short of its announced landing in Columns | 90 | level, armed, bb-fed | - | - |
+| BUG-163 A Catch re-aim that passes every Leg limit can lift a Leg off the Base: the gate checks along-Leg motion, not the load at the Base joint | 15 | level, armed, bb-fed | - | - |
 | BUG-58 Firmware scheduler STOPs a streamed lane while frames arrive on time and the host stream is clean: LANE_REFUSED ends, cause unseen | 40 | armed | - | - |
-| BUG-78 Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws | 20 | level, armed, bb-fed | - | - |
+| BUG-78 Two-ball Columns runs end on a missed Catch of Ball 2 with no collision: 13 of 23 ends, mean run 22 Throws | 15 | level, armed, bb-fed | - | - |
 | BUG-89 teensy_bridge_node forwards only the newest waiting knot; harmless at emit lead 0, but the cover has 7-14 ms of margin against a stall | 40 | level, armed, bb-fed | - | - |
 | FEAT-32 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0) | 45 | armed, bb-fed, bridge-cycled | - | - |
 | FEAT-39 P4 ramp Sitting: Columns canary at 600 / 8000 and 20 A, then the one-ball oval dwell ladder 0.40 / 0.35 / 0.30 | 50 | level, armed, bb-fed, bridge-cycled | - | - |
 | FEAT-69 can-bridge FW 53: a Leg leaves Closed-loop only at Stow (I-FW-19) | 25 | level, bridge-cycled | - | - |
 | BUG-140 Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid | 10 | level, armed, bb-fed | `night-shift/2026-11-27-BUG-140` | - |
 | BUG-144 Juggle action feedback and status topics are in the bag record list but have never been recorded | 5 | level, armed, bridge-cycled | `night-shift/2026-11-26-BUG-144` | - |
+| BUG-146 Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt | 15 | level, armed, bb-fed | `night-shift/2026-11-28-BUG-146` | - |
 | BUG-95 A long REST can be refused SPLICE_TOO_LATE: the fresh decision and the Knot choice use different leads | 35 | level, bb-fed | - | - |
 | FEAT-27 Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | 35 | level, armed, bb-fed | - | - |
 | FEAT-49 Arm a power capture with the fault trigger on the robot Hand to catch a BUG-57 fault | 60 | armed | - | - |
 | FEAT-50 Live warning when a marker dwells under the Hand | 10 | armed | - | - |
+| IDEA-12 JP-11 Rotating columns: the pair turns a few degrees every Beat | 60 | level, armed, bb-fed | - | - |
 | IDEA-16 JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them | 20 | level, armed | - | - |
 | IDEA-27 Measure the Platform ring at Dwell 0.40 with the IMU | 15 | level, armed, bb-fed | - | - |
 
@@ -47,8 +51,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - BUG-135 [Robot] Platform CAN receive queue overflows during the inclinometer re-probe stall: no ## Sitting section
 - BUG-136 [Robot] Catching cone catch stamps could run 10 ms early per stranded receive frame: no ## Sitting section
 - BUG-142 [Robot] Hand park reports already parked on a Hand that is Idle on its bottom stop: no ## Sitting section
-- BUG-146 [Robot] Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt: no ## Sitting section
-- BUG-152 [Robot] Hop entry opening Throw carries a rate at rest, so the Legs ripple before the first Throw: no ## Sitting section
 - BUG-27 [Robot] can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - BUG-29 [Robot] RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball: no ## Sitting section
 - BUG-32 [Robot] Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff: no ## Sitting section
@@ -72,7 +74,6 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - FEAT-40 [Robot] Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED: no ## Sitting section
 - FEAT-57 [Robot] Archive the SpaceMouse follower under a tag: no ## Sitting section
 - FEAT-64 [Robot] Can-bridge FW 50 exports the per-axis encoder sample age: no ## Sitting section
-- IDEA-12 [Robot] JP-11 Rotating columns: the pair turns a few degrees every Beat: no ## Sitting section
 - IDEA-13 [Robot] JP-13 Rising and sinking columns: the whole Pattern rides the Platform in z: no ## Sitting section
 - IDEA-14 [Robot] JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm: no ## Sitting section
 - IDEA-15 [Robot] JP-15 Over the top: Ball 1 straight up, Ball 2 arcs over it (needs P4): no ## Sitting section
@@ -81,9 +82,8 @@ Fly from a Sitting sheet: /sitting-sheet robot|bench-leg|bench-hand
 - IDEA-23 [Robot] seed a fresh plant K from the trained plant: no ## Sitting section
 - IDEA-26 [Robot] Platform IMU residue: unflown checks and the unmeasured lever arm: no ## Sitting section
 - IDEA-28 [Robot] Measure QTM's true latency with a physical edge seen by QTM and the bridge: no ## Sitting section
+- IDEA-31 [Robot] The oval on the shared Memory: compile the oval on compile_beats, then fly it on plant jugglebot: no ## Sitting section
 
 ## Questions a Sitting can answer
 
-- TKT-101 BUG-152: seed the Hop entry's first-Knot rate from rest, fly JP-11 with it open, or fix the whole Platform rate class? (parent BUG-152)
-- TKT-103 BUG-75: with the re-aim directions logged, BUMP second re-aims, send none, raise the launch bound, or gate them by size? (parent BUG-75)
-- TKT-104 FEAT-31: the pinned arm's wall tail is preemption; build the SCHED_FIFO worker now, wait for BUG-149, or drop it? (parent FEAT-31)
+- none

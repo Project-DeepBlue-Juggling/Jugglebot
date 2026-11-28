@@ -20,7 +20,7 @@ steps:
   - {id: P6, title: Per-Beat Sites dependency owned by PWAY-2, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P7, title: JP-5 polygon walk, kind: rung, status: complete, effort: s, hardware: robot}
   - {id: P8, title: JP-11 rotating Columns, kind: rung, status: in_progress, effort: l, hardware: robot}
-  - {id: P9, title: Centre and orbit compile, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P9, title: Centre and orbit compile, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P10, title: JP-14 Centre and orbit, kind: rung, status: not_started, effort: m, hardware: robot}
 related_logbook:
   - 2026-11-18-jp5-polygon-walk-compile.md
@@ -141,6 +141,7 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (IDEA-17), n
 - Rung gate: one full turn of the pair at 10 deg per Beat without a drop (about 36 consecutive Catches).
 - Depends on: P7. Items consumed: IDEA-12. Plus the three standing Rung preconditions.
 - Design agreed with the owner 2026-11-27: built on the held Centre and orbit branch (label `columns_rotating`, a `step_deg` on the Pattern); a command-time admissibility rule for rotating Throws is added, amending I-ADMIT-1, with its wording shown to the owner before it merges; the Apex (0.95 or 0.975) is chosen from the full-turn margins; the shared Memory is used and the Learner is unchanged.
+- Built and merged 2026-11-28 (compile, wiring, the command-time check, and the fix for BUG-152 that its sim gate exposed). Sim, full turn per trial at the live limits: 40 of 40 trials with every Catch at 5, 10 and 20 deg per Beat. The sim has no Learner and no command-time check, so those first run on the robot. Apex 0.95 chosen: lower Catch peaks than 0.975 (331 against 358 mm/s at 10 deg). The Sitting section is on IDEA-12.
 - The Learner follows only part of the pull that turns with the pair (about 40 % by estimate); the rest, 5 to 9 mm inward, is left to the Catch. Accepted by the owner 2026-11-27.
 
 ### P9: Centre and orbit compile
@@ -148,6 +149,7 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (IDEA-17), n
 - Adds: a Site list for Ball 2, aimed Ball 2 Throws across a 77 mm chord, a fixed centre Site for Ball 1.
 - Gate (Phase check): (date, `./run_tests.sh --full` plus `sim/skills_gate.py` on the new label plus the ball-to-ball clearance script at radius 100, result) - to be filled.
 - Depends on: P8. Items consumed: IDEA-14.
+- Built 2026-11-25 on a held branch and merged to main 2026-11-28 with rotating Columns, which reuses its compiler plumbing (`logbook/2026-11-25-jp14-centre-and-orbit-compile.md`: sim gate on 5 seeds and 5 geometries, odd counts refused). Gate at the merge: 2026-11-28, `./run_tests.sh --full`, RESULT PASS (848 s). The goal is unflown and on no sheet; P10 is its Rung.
 
 ### P10: JP-14 Centre and orbit
 

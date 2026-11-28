@@ -17,9 +17,10 @@ links:
 - 2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented
 parent: two-ball-oval
 filed_by: claude (BUG-21 21:02 Sitting read-out)
-night_skip: waiting-trigger
-night_skip_on: '2026-11-27'
-night_skip_note: Off by owner decision; re-opens only if BUG-32's cpu_partition arm shows the Catch solve tail still biting.
+night_skip: input-decision
+night_skip_on: '2026-11-28'
+night_skip_note: Builds the SCHED_FIFO worker with an offline lateness test and a Sitting A/B section, then holds it for a Sitting.
+night_skip_input: 'Pick 1-3 in TKT-104: build the SCHED_FIFO worker now, wait for BUG-149''s fix and re-measure, or drop it.'
 ---
 
 Owner pick 2026-10-28 evening as the lever after BUG-21.

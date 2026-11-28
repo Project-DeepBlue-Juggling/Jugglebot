@@ -2,14 +2,15 @@
 id: BUG-146
 kind: bug
 title: Aimed Throw from a level rest is refused HAND_LIMIT_C2 past about 6.3 deg of release tilt
-status: inbox
+status: in_progress
 created: '2026-11-26'
-updated: '2026-11-26T15:58:34Z'
-owners: []
+updated: '2026-11-27T17:24:09Z'
+owners:
+- night-shift
 priority: medium
 effort: s
 hardware: robot
-owner: decision
+owner: none
 radius: subsystem
 diagnosis: confirmed
 area: skill-stack
@@ -17,10 +18,6 @@ blocked_by: []
 links: []
 parent: human-partner-juggling
 filed_by: claude
-night_skip: input-decision
-night_skip_on: '2026-11-27'
-night_skip_note: Builds the fix you choose with a C2 test and a splice-seam test, writes its Sitting section, then holds it for a Sitting.
-night_skip_input: 'Pick option 1-4 in TKT-98: spline knot rates for the drop term, a fourth-order stencil, exact tilt rates, or leave the reach capped near 6.2 deg.'
 ---
 
 An aimed THROW from a level rest is refused `HAND_LIMIT_C2` once the release tilt passes about 6.3 to 6.9 deg. Found 2026-11-26 by the PWAY-11 P4 design sweep (`executor.check_segment`, the context of `tools/probes/human_catch_reach.py`).
@@ -56,3 +53,18 @@ Unchecked: splice seams (I-PLAN-11's 0.0041 rev/s Hand rate match would need kno
 4. Leave it: aimed reach stays capped at about 6.2 deg of release tilt.
 
 Recommendation: 1, with knot 0 clamped to the seed's Hand rate so splice seams are unchanged, then a Columns Attempt at a Sitting.
+
+## Sitting
+
+- setup: level, armed, bb-fed
+- why: every tilted plan's Hand knot rates changed (the drop term's rates are now a clamped spline, up to 0.02 rev/s at 9 deg), so the Hand torque feedforward sees new rates on every Banking and aimed Throw; only a flown Columns Attempt shows the Hand is still clean.
+- do:
+  - Fly one Columns Attempt, Ball Butler fed, at the current Sitting limits and the default Dwell, for at least 20 Throws.
+- pass: at least 20 consecutive Columns Catches, no HAND_LIMIT_C2 refusal in the launch log, no Hand Fault or Guard trip, and no audible or visible Hand knock at release or in the SETTLE tail.
+- record: Catches and Throws, every refusal code in the launch log, any Hand Fault, and the bag name.
+- minutes: 15
+- branch: night-shift/2026-11-28-BUG-146
+
+## Progress
+
+- 2026-11-28: Night Shift 2026-11-28: held on night-shift/2026-11-28-BUG-146: clamped spline drop rates built per TKT-98; 1 audit finding open (no direct solver unit test); unblocked by a Sitting

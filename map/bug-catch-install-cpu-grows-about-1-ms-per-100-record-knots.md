@@ -35,3 +35,7 @@ The splice (splice_at or extend) copies the whole record head at every install, 
 - If it is the copy, bound it (keep only the tail the splice needs). This is a cheaper lever on the 150 ms re-aim cliff than the warm start.
 
 Evidence: the debrief's analysis is summarised in logbook/2026-11-27-sitting-debrief.md.
+
+## Progress
+
+- 2026-11-28: Night Shift 2026-11-28: held on night-shift/2026-11-28-BUG-149: fix built, byte-identical, 2 test-strength audit findings open; unblocked by your answer in the hold ticket

@@ -4,7 +4,7 @@ kind: feature
 title: Install the host hold within one tick of a firmware scheduler STOP so a guard latch becomes a recoverable LANE_REFUSED
 status: backlog
 created: '2026-11-04'
-updated: '2026-11-07T17:49:27Z'
+updated: '2026-11-28T02:07:46Z'
 owners: []
 priority: medium
 effort: m
@@ -139,3 +139,4 @@ Parked on the owner's answer in TKT-45. The guard stays the authority and a latc
 
 - 2026-11-05: Probe done 2026-11-05 (option 1): STOP -> hold 130-340 / 300 / 320 / 275 ms; WARN lag from 10 Hz link_status 0-130 ms, then 110-210 ms END -> hold installed. Guard latched before the hold in 2 of 4 (L1399 by 170 ms, L2361 by 51 ms). Publishing on change helps; the END -> install leg is the larger term.
 - 2026-11-08: Night Shift 2026-11-08: parked on the owner's answer in TKT-45 until a LANE_REFUSED or guard latch within 300 ms of a STOP on FW 40 with lost 0 (detail below)
+- 2026-11-28: three more Hand MAX_DEVIATION ends (Attempts 7, 3 and 7 of the two Sittings) with the same chain: bridge loop gap 34-58 ms, newer knot forwarded at lag 46-52 ms, firmware STOP stamp gap, refused plan, guard trip. Hand current under 4 A, not the motor. Base rate about 0.10 per Attempt since 2026-11-18 (15 in about 149).

@@ -267,6 +267,44 @@ STANDIN_SYMMETRY_TOL_MM = 1.0
 _STANDIN_SAME = 'same'          # (i) the target is this Catch's own Site
 _STANDIN_REFLECT = 'reflect'    # (ii) point-symmetric hop: reflect
 _STANDIN_NONE = 'none'          # (iii) no faithful stand-in: envelope only
+_STANDIN_ROTATE = 'rotate'      # (iv) rotating Columns: rotate back (JP-11)
+
+#: Stand-in rule (iv) (JP-11 rotating Columns, ``schedule.COLUMNS_ROTATING``):
+#: the largest turn, about the platform origin, from a Catch's Site to its
+#: Throw's target Site that the rotated-back stand-in is used for
+#: (:func:`_standin_rotation_deg`). A rotating Throw leaves S(k) for S(k+2),
+#: two Beats of turn: 2 x the top of ``sites.ROTATING_STEP_RANGE_DEG``
+#: (20 deg per Beat) = 40 deg. The leg layout is evaluated this far from
+#: where the Segment flies; the hop's rule (ii) already accepts 180 deg of
+#: the same kind of inexactness. The Stop (S(n-1) -> S(n), 180 + step deg)
+#: is past it and keeps rule (iii).
+STANDIN_ROTATE_MAX_DEG = 40.0
+
+
+def _standin_rotation_deg(site, target) -> Optional[float]:
+    """Rule (iv)'s turn: the signed angle (deg, counter-clockwise about the
+    platform origin) from ``site``'s xy to ``target``'s xy, when both lie on
+    one circle about the origin (radii equal within
+    :data:`STANDIN_SYMMETRY_TOL_MM`, neither at it) and
+    ``0 < |angle| <= STANDIN_ROTATE_MAX_DEG``; else ``None``. Pure."""
+    a = np.asarray(site.cup_mm, dtype=float)[:2]
+    b = np.asarray(target.cup_mm, dtype=float)[:2]
+    ra, rb = float(np.hypot(a[0], a[1])), float(np.hypot(b[0], b[1]))
+    if not (math.isfinite(ra) and math.isfinite(rb)) \
+            or min(ra, rb) <= STANDIN_SYMMETRY_TOL_MM \
+            or abs(ra - rb) > STANDIN_SYMMETRY_TOL_MM:
+        return None
+    deg = math.degrees(math.atan2(float(a[0] * b[1] - a[1] * b[0]),
+                                  float(np.dot(a, b))))
+    if deg == 0.0 or abs(deg) > STANDIN_ROTATE_MAX_DEG + 1e-9:
+        return None
+    return deg
+
+
+def _rot2(deg: float) -> np.ndarray:
+    """The 2x2 counter-clockwise rotation by ``deg``. Pure."""
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    return np.array([[c, -s], [s, c]])
 
 #: The wire-read budget — :data:`LEAD_KNOTS`, :data:`LEAD_S`,
 #: :data:`WIRE_READ_KNOTS` (= :data:`WIRE_READ_BASE_KNOTS` +
@@ -3602,6 +3640,7 @@ class SkillExecutor:
           carried Throw aimed by ``u`` (a same-site fold releases from the
           stand-in landing xy, a carried fold from the release site) -- rule
           (i) of :meth:`_catch_standin`; the hop REFLECTS this Segment (ii),
+          a rotating Columns Throw ROTATES the next Catch back onto it (iv),
           and a cross-site Throw with no faithful stand-in is admitted on the
           envelope alone, with no checker call (iii, :meth:`_standin_rule`); (3)
           ``self.checker(CATCH, standin, t_abs_s, ball_id=...)``. A checker
@@ -3657,13 +3696,21 @@ class SkillExecutor:
             res = self._catch_resolution(idx, skill, landing, t_abs_s,
                                          release_mm, x, u_cand,
                                          u_model=u_model, ctx=ctx)
-        if self._standin_rule(skill) == _STANDIN_NONE:
+        rule = self._standin_rule(skill)
+        if rule == _STANDIN_NONE:
             line = ('ADMISSIBILITY skill %d: no stand-in for a cross-site '
                     'Throw (%s -> %s): envelope only'
                     % (idx, skill.site.name, tt.target.name))
             if res.how != 'candidate':
                 line += ' -- ' + self._admissibility_line(
                     idx, u_cand, res).split(': ', 1)[1]
+        elif rule == _STANDIN_ROTATE:
+            line = ('ADMISSIBILITY skill %d: rotating stand-in (%s -> %s, '
+                    'next Catch turned back %.1f deg): %s'
+                    % (idx, skill.site.name, tt.target.name,
+                       _standin_rotation_deg(skill.site, tt.target),
+                       self._admissibility_line(idx, u_cand, res)
+                       .split(': ', 1)[1]))
         else:
             line = self._admissibility_line(idx, u_cand, res)
         self._note_once(idx, 'ADMISSIBILITY', line)
@@ -3802,9 +3849,16 @@ class SkillExecutor:
         (ii) :data:`_STANDIN_REFLECT` -- a same-site fold whose Throw goes to
             the OTHER Site of a point-symmetric pair (the hop: release Site
             xy == -target Site xy within :data:`STANDIN_SYMMETRY_TOL_MM`).
+        (iv) :data:`_STANDIN_ROTATE` -- a ``columns_rotating`` Schedule's
+            same-site fold whose Throw goes to a Site on the same circle
+            about the platform origin, turned at most
+            :data:`STANDIN_ROTATE_MAX_DEG` (S(k) -> S(k+2),
+            :func:`_standin_rotation_deg`). Every other Pattern never reaches
+            this test.
         (iii) :data:`_STANDIN_NONE` -- anything else (asymmetric Sites, a
-            carried fold aimed off its catch Site): no faithful stand-in
-            exists from the streaming seed, so the envelope alone admits it.
+            carried fold aimed off its catch Site, a rotating Attempt's
+            Stop): no faithful stand-in exists from the streaming seed, so
+            the envelope alone admits it.
         """
         tt = skill.then_throw
         if tt.target.name == skill.site.name:
@@ -3815,6 +3869,10 @@ class SkillExecutor:
                     + np.asarray(tt.target.cup_mm, dtype=float)[:2])
             if float(np.max(np.abs(asym))) <= STANDIN_SYMMETRY_TOL_MM:
                 return _STANDIN_REFLECT
+            if (self.schedule.pattern == sch.COLUMNS_ROTATING
+                    and _standin_rotation_deg(rel_site, tt.target)
+                    is not None):
+                return _STANDIN_ROTATE
         return _STANDIN_NONE
 
     def _catch_standin(self, skill: Skill, landing: Landing, u,
@@ -3856,6 +3914,22 @@ class SkillExecutor:
             that flies keeps its 100 % install-time gate. It is the seeding
             convention the offline sweep and the probe already use for
             Columns (the partner's release at the mirrored Site).
+        (iv) rotating Columns (S(k) -> S(k+2), turned ``theta`` = 2 x the
+            step about the platform origin): the ball's next Catch is rule
+            (i) at the TARGET -- landing = target + ``y_hat_xy(u)``, clamped
+            about target + ``y_d`` along the TARGET's outward unit, its
+            Throw aimed by ``u`` (at S(k+4)) -- and that whole Segment turned
+            back by ``theta`` is THIS Segment's shape: its seed Site S(k+1)
+            maps to S(k-1), the one this Segment's seed really leaves, the
+            arrival chord S(k) -> S(k+2) to S(k-2) -> S(k), this Catch's own.
+            So ``landing_mm`` = this Site + R(-theta)(clamped landing -
+            target), the release riding it, the Throw aimed at the commanded
+            target with ``R(-theta) u_dy`` (same apex). Clamping before the
+            turn keeps the next Catch's own clamp exact (the across-axis clip
+            is a per-axis box, so it does not commute with a turn). Exact in
+            the platform frame; the leg layout is evaluated ``theta`` early
+            (<= :data:`STANDIN_ROTATE_MAX_DEG`), the inexactness (ii) accepts
+            at 180 deg.
         """
         tt = skill.then_throw
         rule = self._standin_rule(skill)
@@ -3885,6 +3959,16 @@ class SkillExecutor:
             clipped, _a, _o, _i = self._lateral_clip_mm(pos[:2] - centre_xy,
                                                         out_u)
             pos[:2] = centre_xy + clipped
+        if rule == _STANDIN_ROTATE:
+            # (iv): everything above is rule (i) at the TARGET Site in the
+            # Robot frame (the next Catch's own clamp, about its own outward
+            # unit); map it onto THIS Catch rigidly, turning offsets back by
+            # the Site-to-target angle (S(k+2) -> S(k), S(k+4) -> S(k+2)).
+            rot = _rot2(-_standin_rotation_deg(skill.site, tt.target))
+            site_pt = np.asarray(skill.site.catch_site_mm(), dtype=float)
+            d = pos - target_pt
+            pos = site_pt + np.array([*(rot @ d[:2]), d[2]])
+            aim_u = (rot @ u_xy, float(u[1]))
         if carried:
             s_release = np.asarray(rel_site.throw_site_mm(), dtype=float)
         else:
@@ -4211,6 +4295,54 @@ class SkillExecutor:
             clipped = (min(max(along, -in_mm), out_mm) * out_u
                        + np.clip(across, -a_mm, a_mm))
         return clipped, a_mm, out_mm, in_mm
+
+    def _reaim_moved_enough(self, idx: int, skill: Skill, landing: Landing,
+                            clamped: Landing, committed_mm) -> bool:
+        """The position half of the WITHIN-TOLERANCE fence of BOTH re-aim
+        paths (:meth:`_resend_live_catch` over xyz, :meth:`_catch_bump_decide`
+        over xy, by the length of ``committed_mm``): True when the re-aim is
+        worth a solve.
+
+        An axis counts when its CLAMPED move (``clamped`` minus the committed
+        aim) exceeds :attr:`resend_pos_tol_mm` -- the rule since 2026-09-18,
+        which keeps a Fit that only asks for a lateral move the Catch may not
+        take from spending a solve.  It ALSO counts when the lateral clamp
+        bit that axis AND the Fit's unclamped demand there exceeds the
+        tolerance (so it is not Fit noise) AND the clamped move is more than
+        ``min(tolerance, half the authority on that side)``.  Without that
+        second arm an authority at or below the tolerance could never be
+        used by a re-aim from a Catch committed at its Site: a 16-36 mm
+        outward demand clamped to exactly the 10 mm outward authority was
+        judged 10.0 <= 10.0 and discarded, on the re-send and the bump
+        alike, and the Cup never moved (Sittings 2026-11-27 and 2026-11-28,
+        six lost Feeds).  The half-authority floor keeps a Catch already at
+        (or within half the authority of) the edge from being re-solved for
+        the sliver the clamp leaves, so the arm adds at most the one solve
+        an authority above the tolerance already paid."""
+        tol = self.resend_pos_tol_mm
+        n = len(committed_mm)
+        committed = np.asarray(committed_mm, dtype=float)[:n]
+        applied = np.asarray(clamped.pos_mm, dtype=float)[:n] - committed
+        if float(np.max(np.abs(applied))) > tol:
+            return True
+        predicted = self._predicted_landing(idx, skill)
+        if predicted is None:
+            return False      # nothing to clamp toward: the clamp never bit
+        demand = np.asarray(landing.pos_mm, dtype=float)[:2] - committed[:2]
+        # The applied offset from the Site, per axis: on a bitten axis this
+        # is the authority on that side (the clamp put the aim on the edge).
+        edge = (np.asarray(clamped.pos_mm, dtype=float)[:2]
+                - np.asarray(predicted.pos_mm, dtype=float)[:2])
+        for i in range(2):
+            if abs(float(demand[i] - applied[i])) <= 1e-9:
+                continue      # the clamp did not bite this axis
+            # 1e-6 mm: a zero authority (fully pinned) never re-aims on
+            # float residue between two clamps onto the same Site.
+            floor = max(min(tol, abs(float(edge[i])) / 2.0), 1e-6)
+            if (abs(float(demand[i])) > tol
+                    and abs(float(applied[i])) > floor):
+                return True
+        return False
 
     def _catch_terminal(self, idx: int, skill: Skill,
                         landing: Landing,
@@ -7637,7 +7769,10 @@ class SkillExecutor:
         # raw one: a fit that only asks for a lateral move the catch may not
         # take (:meth:`_clamp_lateral_to_schedule`) has not moved the catch
         # at all, and must not spend a re-send fence-checking a move that
-        # never reaches the platform (2026-09-18).
+        # never reaches the platform (2026-09-18).  Where the clamp BIT, the
+        # Fit's unclamped demand decides noise vs real instead, so a clamp
+        # that shrinks a real move to within the tolerance does not discard
+        # it (:meth:`_reaim_moved_enough`, 2026-11-28).
         clamped = self._clamp_lateral_to_schedule(idx, skill, landing)
         clamp_lines = self._pending_notes
         self._pending_notes = []
@@ -7650,7 +7785,10 @@ class SkillExecutor:
         if not landing.from_fit:
             return clamp_lines + self._resend_declined(
                 t_abs_s, idx, 'NO-CONVERGED-FIT', moved_mm, moved_s, dir_xy)
-        if (moved_mm <= self.resend_pos_tol_mm
+        # Judged on the clamped move AND, where the clamp bit, on the Fit's
+        # unclamped demand (:meth:`_reaim_moved_enough`, 2026-11-28).
+        if (not self._reaim_moved_enough(idx, skill, landing, clamped,
+                                         terminal.landing_mm)
                 and abs(moved_s) <= self.resend_t_tol_s):
             return clamp_lines + self._resend_declined(
                 t_abs_s, idx, 'WITHIN-TOLERANCE', moved_mm, moved_s, dir_xy)
@@ -7758,7 +7896,9 @@ class SkillExecutor:
         Fences (plan § 2): the per-pattern switch (:attr:`catch_bump_enabled`),
         NO-CONVERGED-FIT, the lateral clamp (Δ is the CLAMPED landing's xy
         minus the committed one), WITHIN-TOLERANCE on |Δ| (xy only: a timing
-        move is absorbed by the 0.050 s pre-hold), CAP-SPENT (accepted re-aims
+        move is absorbed by the 0.050 s pre-hold; a clamp-bitten axis is
+        judged on the unclamped demand, :meth:`_reaim_moved_enough`),
+        CAP-SPENT (accepted re-aims
         only), BUMP-FREEZE (terminal, past ``t_c - BUMP_FREEZE_LEAD_S`` =
         0.225 s at emit lead 0; it replaces CONTACT-WINDOW, MIN_WINDOW and
         :attr:`catch_freeze_s` on this path), and the BUMP-WINDOW retry rule (a
@@ -7822,7 +7962,9 @@ class SkillExecutor:
         moved_mm = float(np.max(np.abs(delta)))
         moved_s = float(clamped.t_land_abs_s) - float(terminal.t_land_s)
         kw = dict(delta=delta, moved_mm=moved_mm, moved_s=moved_s)
-        if moved_mm <= self.resend_pos_tol_mm:
+        if not self._reaim_moved_enough(
+                idx, skill, landing, clamped,
+                np.asarray(terminal.landing_mm, dtype=float)[:2]):
             return out('WITHIN-TOLERANCE', **kw)
         if self._resend_counts.get(idx, 0) >= self.resend_max_per_catch:
             return out('CAP-SPENT', **kw)

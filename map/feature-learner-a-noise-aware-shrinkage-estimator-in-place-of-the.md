@@ -16,6 +16,9 @@ blocked_by: []
 links: []
 parent: learner-generalisation
 filed_by: claude
+night_skip: out-of-reach
+night_skip_on: '2026-11-28'
+night_skip_note: Dropped by your TKT-100 answer (option 3); night-shift/2026-11-26-FEAT-65 is left for you to delete.
 ---
 
 Replace the Learner's mean of the 16 most recent support rows with a noise-aware shrinkage estimator over all in-kernel rows. The goal is a quieter command at equal landing error, not smaller scatter: the predictability ceiling is 2 to 4 % of rms on x. Plan step E2(a) in `learner-efficacy.md`; evidence in `logbook/2026-11-24-learner-efficacy-review-and-scatter-decomposition.md`.

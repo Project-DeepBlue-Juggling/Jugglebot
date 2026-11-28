@@ -4,7 +4,7 @@ kind: bug
 title: Fresh REST rebases outside the band are uncapped (up to 1.0 s logged) and land off the knot grid
 status: in_progress
 created: '2026-11-25'
-updated: '2026-11-26T17:23:22Z'
+updated: '2026-11-27T17:24:29Z'
 owners:
 - night-shift
 priority: medium
@@ -57,3 +57,4 @@ Recommendation: 2 now, since it removes the off-grid sampling and refuses nothin
 ## Progress
 
 - 2026-11-27: Night Shift 2026-11-27: held on night-shift/2026-11-27-BUG-140: snap to the Knot grid, no cap (TKT-96 option 2); 2 audit findings open; unblocked by TKT answer, then a Sitting
+- 2026-11-28: Night Shift 2026-11-28: TKT-99 fixes applied on night-shift/2026-11-27-BUG-140, re-audit 0 findings open; unblocked by a Sitting

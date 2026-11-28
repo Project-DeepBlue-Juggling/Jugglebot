@@ -2,9 +2,9 @@
 id: TKT-103
 kind: ticket
 title: 'BUG-75: with the re-aim directions logged, BUMP second re-aims, send none, raise the launch bound, or gate them by size?'
-status: open
+status: complete
 created: '2026-11-28'
-updated: '2026-11-27T15:52:26Z'
+updated: '2026-11-28T00:35:38Z'
 owners: []
 priority: medium
 effort: xs
@@ -34,3 +34,7 @@ Earlier: 57 of 72 turned-pair refusals were second re-aims, 0.1 to 0.3 s after a
 Any of 1 to 4: the next night builds it on a branch with its replay numbers and a Sitting section, and holds it for a Sitting (it changes flown re-aims). 3 also touches a safety bound, so it is held for your Session rather than a Sitting alone.
 
 Recommendation: 2, because the logged directions show second re-aims mostly take back noise, and dropping them removes most refusals without loosening any bound.
+
+## Answer
+
+If the second re-aim is mostly undoing noise, that still seems like a re-aim worth doing, no? I'm hesitant to remove the second re-aim entirely unless we can filter out that noise from the first re-aim before issuing it. Is there actually a tangible downside to the second re-aims being refused? If not, I don't see a consequence to keeping the system how it is

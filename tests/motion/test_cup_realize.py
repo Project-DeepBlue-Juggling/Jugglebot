@@ -564,18 +564,22 @@ def test_the_widen_loop_saturates_at_the_cap_instead_of_jumping_branches():
     plan = _make_cup_plan(n_knots=n, dt=dt, catch_k=12, accel_scale=0.0)
     cfg = dataclasses.replace(cr.RealizeConfig(), tilt_accel_limit_rad_s2=40.0,
                               tilt_jerk_limit_rad_s3=60.0)
-    # The quantity the loop bounds is the tilt channel's own contribution to LEG
-    # jerk, and the budget is the rad/s³ cap through the static lever.
+    # The quantity the loop bounds is the tilt's own LEG jerk read on the
+    # realised curve (BUG-159), and the budget is the rad/s³ cap through the
+    # static lever.
     budget = cfg.tilt_jerk_limit_rad_s3 * cr.TILT_ACCEL_LEVER_MM
-    terms = cr._tilt_jerk_terms(plan, dt, n)
+    terms = cr._tilt_realised_terms(plan, n, cfg)
     achieved = []
-    for deg in (0.0, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0):
+    # Since BUG-159 the budget is spent against the realised read, 3-5x the
+    # third difference, so the schedule saturates at a smaller aim: the grid
+    # starts finer so the rising half is still sampled.
+    for deg in (0.0, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0):
         throw = np.array([0.0, np.radians(deg)])
         out = cr.tilt_schedule(plan, np.zeros(2), throw, cfg)
         np.testing.assert_allclose(out[-1], throw, atol=0, rtol=0)
         np.testing.assert_allclose(out[plan.catch_k], np.zeros(2), atol=0, rtol=0)
         assert np.degrees(np.linalg.norm(out, axis=1)).max() <= tg.MAX_TILT_DEG + 1e-12
-        got = cr._tilt_leg_jerk_mmps3(out, dt, terms)
+        got = cr._tilt_realised_leg_jerk_mmps3(out, dt, terms)
         assert got <= budget * (1.0 + 1e-9)
         achieved.append(got)
     # Below the band the schedule is floor-limited and the achieved contribution

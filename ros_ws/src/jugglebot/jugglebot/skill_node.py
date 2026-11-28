@@ -119,7 +119,8 @@ from jugglebot.motion.skills.segments import CATCH, REST, THROW
 from jugglebot.motion.skills import segments as sk_seg
 from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
                                            RELEASE_CUP_Z_MM,
-                                           REST_HAND_REV, Site, columns_sites)
+                                           REST_HAND_REV, Site, centre_orbit_sites,
+                                           check_rotating_step, columns_sites)
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.robot_frame import RobotFrame, rotation_angle_deg
 from jugglebot.motion.trajectory import ballistics_bc
@@ -618,6 +619,12 @@ _CUP_RULE = {
     'columns_turned': {_E: RELOAD_FIRST, _S: THROW_FIRST},
     # High-low Columns (JP-9): Columns' own entry, both cup states.
     'columns_highlow': {_E: RELOAD_FIRST, _S: THROW_FIRST},
+    # JP-14 Centre and orbit: Columns' own entry (Ball 1 held or reloaded at
+    # the Feed Site O1, hopped to the centre; Ball 2 fed at O1).
+    'centre_orbit': {_E: RELOAD_FIRST, _S: THROW_FIRST},
+    # JP-11 rotating Columns: Columns' own fed entry (hop entry at P1, Ball 2
+    # fed at P1), both cup states.
+    'columns_rotating': {_E: RELOAD_FIRST, _S: THROW_FIRST},
     # A is phantom, B is BB-fed: needs an EMPTY cup.
     'columns_1ball_fed': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
     # The one-ball oval (plan two-ball-oval § 2.8): the entry is the ordinary
@@ -1315,6 +1322,9 @@ class SkillNode(Node):
         # JP-5 (`polygon_walk`): the Site count N (>= 3; separation_mm is the
         # polygon's edge). Read at goal accept ONLY by that pattern.
         self.declare_parameter('polygon_n', 4)
+        # JP-14 (`centre_orbit`): Ball 2's Sites per lap N (separation_mm is
+        # the orbit's radius). Read at goal accept ONLY by that pattern.
+        self.declare_parameter('orbit_n', 8)
         # PWAY-11 P2 (`human_catch`): the policy's owner decisions D3-D8 and
         # the plan window, each defaulting to `HumanCatchPolicy`'s own
         # keyword default; the home Site xy as two scalars. Read at goal
@@ -1331,6 +1341,11 @@ class SkillNode(Node):
         # pattern builds the straight pair); refused live while a goal is
         # active (`_on_set_parameters`), like `planner_mode`.
         self.declare_parameter('columns_angle_deg', 0.0)
+        # JP-11 (`columns_rotating`): the Site pair's turn per Beat, degrees,
+        # in (0, 20]; 0.0 = unset, which that goal refuses by name. Read ONLY
+        # by the `columns_rotating` goal; refused live while a goal is active
+        # and out of range at once (`_on_set_parameters`).
+        self.declare_parameter('columns_step_deg', 0.0)
         # Ball 2's own Apex (m) for the `columns_highlow` goal ONLY (JP-9, map
         # IDEA-10; the Juggle goal has no second Apex field). 0.0 = unset, which
         # that goal refuses by name; every other goal ignores it. Refused while
@@ -4057,6 +4072,29 @@ class SkillNode(Node):
                     return SetParametersResult(
                         successful=False,
                         reason='columns_angle_deg must be finite')
+            if param.name == 'columns_step_deg':
+                v_ = float(param.value)
+                if v_ != 0.0:
+                    try:
+                        check_rotating_step(v_)
+                    except ValueError as exc:
+                        self.get_logger().warning(
+                            'REFUSED columns_step_deg=%r: %s (param NOT '
+                            'applied)' % (param.value, exc))
+                        return SetParametersResult(successful=False,
+                                                   reason=str(exc))
+                if (self._attempt_running()
+                        and v_ != float(
+                            self.get_parameter('columns_step_deg').value)):
+                    self.get_logger().warning(
+                        'REFUSED columns_step_deg=%r: a goal is active '
+                        '(param NOT applied) -- set it between attempts'
+                        % (param.value,))
+                    return SetParametersResult(
+                        successful=False,
+                        reason='a goal is active -- set columns_step_deg '
+                               'between attempts')
+                continue
             if param.name == 'apex_m_ball2':
                 # Between attempts only: the high-low schedule is compiled at
                 # accept, so a mid-goal change would not apply anyway -- refuse
@@ -4361,17 +4399,20 @@ class SkillNode(Node):
     #: ``columns_turned`` (JP-10): Columns on the Site pair rotated by the
     #: ``columns_angle_deg`` parameter (pose planner only; box label
     #: ``columns``, Sites named ``P1@<angle>`` / ``P2@<angle>``).
+    #: ``columns_rotating`` (JP-11, map IDEA-12): Columns whose Site pair turns
+    #: ``columns_step_deg`` per Beat (pose planner only; Sites ``R<k>@<angle>``;
+    #: Feed Site always P1; box label ``schedule.COLUMNS_ROTATING``).
     #: ``columns_highlow`` (JP-9, map IDEA-10) is two-ball Columns with Ball 2
     #: thrown to its own Apex (node parameter ``apex_m_ball2``); its schedule
     #: and box label is ``schedule.COLUMNS_HIGHLOW``.
     _PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
                 'columns_1ball_fed', 'columns_turned', 'columns_highlow',
                 'oval_1ball', 'oval_1ball_fed', 'polygon_walk', 'magazine',
-                'reload', 'human_catch')
+                'reload', 'human_catch', 'centre_orbit', 'columns_rotating')
 
     def _record_params(self, pattern, apex_m, separation_mm, dwell_s,
                        turned_angle_deg, apex_m_ball2,
-                       landing_offset_mm=(0.0, 0.0)):
+                       landing_offset_mm=(0.0, 0.0), step_deg=None):
         """The ordered ((key, value), ...) the records ledger stores for this
         goal (FEAT-29): only what shapes the run. Apex, dwell and the planner
         mode for every Pattern; the Site separation for all but the
@@ -4386,8 +4427,13 @@ class SkillNode(Node):
             if pattern == 'polygon_walk':
                 out.append(('polygon_n',
                             '%d' % int(self.get_parameter('polygon_n').value)))
+            if pattern == 'centre_orbit':
+                out.append(('orbit_n',
+                            '%d' % int(self.get_parameter('orbit_n').value)))
             if pattern == 'columns_turned':
                 out.append(('turned_angle_deg', '%g' % round(turned_angle_deg, 2)))
+            if pattern == 'columns_rotating' and step_deg is not None:
+                out.append(('step_deg', '%g' % round(step_deg, 3)))
             if pattern == 'columns_highlow' and apex_m_ball2 is not None:
                 out.append(('apex_m_ball2', '%g' % round(apex_m_ball2, 3)))
             if any(landing_offset_mm):      # BUG-80: only non-zero shapes it
@@ -4498,6 +4544,13 @@ class SkillNode(Node):
             refusal = self._turned_refusal(turned_angle_deg)
             if refusal is not None:
                 return SimpleNamespace(success=False, message=refusal)
+        step_deg = None
+        if pattern == 'columns_rotating':
+            step_deg = float(self.get_parameter('columns_step_deg').value)
+            refusal = self._rotating_refusal(
+                step_deg, apex_m, separation_mm, dwell_s)
+            if refusal is not None:
+                return SimpleNamespace(success=False, message=refusal)
         # BUG-80: re-checked here because the authority may have moved since
         # the offset was set, and only a goal knows its Pattern.
         landing_offset_mm = self._landing_offset_mm()
@@ -4584,7 +4637,8 @@ class SkillNode(Node):
         if result is None and pattern not in ('magazine', 'reload'):
             result = self._nominate_at_accept(
                 pattern, apex_m, separation_mm, dwell_s,
-                apex_m_ball2=apex_m_ball2, angle_deg=turned_angle_deg)
+                apex_m_ball2=apex_m_ball2, angle_deg=turned_angle_deg,
+                step_deg=step_deg, n_throws=n_throws)
         if result is not None:
             pass   # refused (columns_highlow's own ladder or the nomination)
         elif pattern == 'columns':
@@ -4598,6 +4652,14 @@ class SkillNode(Node):
             result = self._run_columns(apex_m, separation_mm, dwell_s,
                                        n_throws, reload_a=reload,
                                        apex_m_ball2=apex_m_ball2)
+        elif pattern == 'centre_orbit':
+            result = self._run_columns(
+                apex_m, separation_mm, dwell_s, n_throws, reload_a=reload,
+                orbit_n=int(self.get_parameter('orbit_n').value))
+        elif pattern == 'columns_rotating':
+            result = self._run_columns(apex_m, separation_mm, dwell_s,
+                                       n_throws, reload_a=reload,
+                                       step_deg=step_deg)
         elif pattern == 'columns_1ball_fed':
             # `reload` is True here by construction (the cup rule: EMPTY ->
             # RELOAD_FIRST, SEATED refused), so ball A is phantom and ball B
@@ -4633,10 +4695,13 @@ class SkillNode(Node):
                                          else None))
         if apex_m_ball2 is not None:
             result.attempt['apex_m_ball2'] = apex_m_ball2
+        if step_deg is not None:
+            result.attempt['step_deg'] = step_deg
         if result.success:
             self._goal_record_params = self._record_params(
                 pattern, apex_m, separation_mm, dwell_s, turned_angle_deg,
-                apex_m_ball2, landing_offset_mm=landing_offset_mm)
+                apex_m_ball2, landing_offset_mm=landing_offset_mm,
+                step_deg=step_deg)
         if result.success and pattern != 'magazine':
             # The attempt is installed now -- from here `_maybe_signal_goal_
             # done` may end the goal (see `_goal_armed`'s `__init__` comment).
@@ -4662,7 +4727,8 @@ class SkillNode(Node):
 
     def _nomination_config(self, pattern, apex_m, separation_mm, dwell_s, *,
                            apex_m_ball2=None, angle_deg=0.0, feed_site=None,
-                           polygon_n=None):
+                           polygon_n=None, orbit_n=None, step_deg=None,
+                           n_throws=None):
         """The :class:`nominate.NominationConfig` for one goal: the goal /
         resolved fields plus the node parameters that shape the plan
         (``planner_mode``, ``carry_zvd``, ``columns_feed_site``,
@@ -4675,8 +4741,13 @@ class SkillNode(Node):
             apex_m_ball2=(None if apex_m_ball2 is None
                           else float(apex_m_ball2)),
             angle_deg=float(angle_deg),
+            step_deg=(0.0 if step_deg is None else float(step_deg)),
+            n_throws=(int(n_throws) if n_throws and pattern
+                      == 'columns_rotating' else None),
             polygon_n=(int(polygon_n) if polygon_n is not None
                        else int(self.get_parameter('polygon_n').value)),
+            orbit_n=(int(orbit_n) if orbit_n is not None
+                     else int(self.get_parameter('orbit_n').value)),
             planner_mode=self._planner_mode(), carry_zvd=self._carry_zvd(),
             entry=('hop' if _FED_COLUMNS_HOP_ENTRY
                    and pattern in nom.COLUMNS_FED else 't0'),
@@ -4727,6 +4798,32 @@ class SkillNode(Node):
                     "Columns, use the 'columns' goal" % (angle_deg,))
         return None
 
+    def _rotating_refusal(self, step_deg, apex_m, separation_mm, dwell_s
+                          ) -> Optional[str]:
+        """The ``columns_rotating`` goal's own no-motion refusals by name
+        (JP-11; pose planner only; a step in ``(0, 20]``; no turned pair; one
+        Apex), or ``None``.  The step and Apex checks are the Pattern's own
+        (``ROTATING_*`` codes), so this builds it: what refuses here is what
+        the nomination would refuse, and its code reaches the operator."""
+        if self._planner_mode() != 'pose':
+            return ('refused: columns_rotating is pose-planner only '
+                    "(planner_mode=%r) -- set planner_mode to "
+                    "'pose' between attempts" % (self._planner_mode(),))
+        angle = float(self.get_parameter('columns_angle_deg').value)
+        if angle != 0.0:
+            return ('refused: ROTATING_WITH_ANGLE: columns_rotating turns the '
+                    'pair itself; columns_angle_deg is %g (set it to 0.0 '
+                    'between attempts)' % (angle,))
+        apex2 = float(self.get_parameter('apex_m_ball2').value)
+        try:
+            nom.build_pattern(self._nomination_config(
+                'columns_rotating', apex_m, separation_mm, dwell_s,
+                step_deg=step_deg,
+                apex_m_ball2=(apex2 if apex2 > 0.0 else None)))
+        except ValueError as exc:
+            return 'refused: columns_rotating: %s' % (exc,)
+        return None
+
     def _workspace_refusal(self, config) -> Optional[str]:
         """``REJECTED_SITE_OUTSIDE_WORKSPACE`` when any Site of ``config``
         lies outside ``CupCycleConfig().workspace_xy_m`` with half-extent ZERO
@@ -4739,9 +4836,17 @@ class SkillNode(Node):
         if nom.workspace_ok(config):
             return None
         try:
-            sites = columns_sites(
-                config.separation_mm,
-                config.angle_deg if config.pattern == 'columns_turned' else 0.0)
+            if config.pattern == 'centre_orbit':
+                # JP-14: a radius / orbit_n outside the compiled range is the
+                # nomination's COMPILE refusal (ORBIT_*_OUT_OF_RANGE), named
+                # there, not a workspace question.
+                sites = centre_orbit_sites(config.separation_mm,
+                                           config.orbit_n)
+            else:
+                sites = columns_sites(
+                    config.separation_mm,
+                    config.angle_deg if config.pattern == 'columns_turned'
+                    else 0.0)
         except ValueError:
             return None
         lim_mm = float(cup_cycle.CupCycleConfig().workspace_xy_m) * 1000.0
@@ -4811,8 +4916,8 @@ class SkillNode(Node):
                                seconds=time.perf_counter() - t0)
 
     def _nominate_at_accept(self, pattern, apex_m, separation_mm, dwell_s, *,
-                            apex_m_ball2=None, angle_deg=0.0
-                            ) -> Optional[SimpleNamespace]:
+                            apex_m_ball2=None, angle_deg=0.0, step_deg=None,
+                            n_throws=None) -> Optional[SimpleNamespace]:
         """THE goal-acceptance decision (P3b, owner D8): nominate the
         resolved configuration (the Pattern's nominal Segments planned and
         gated for real at the LIVE Sitting limits) before anything moves.
@@ -4829,10 +4934,19 @@ class SkillNode(Node):
             if err:
                 self.get_logger().debug(err)
                 return SimpleNamespace(success=False, message=err)
+        if pattern == 'centre_orbit':
+            # the run path (`_run_columns`) feeds Ball 2 at O1, the orbit's
+            # first Site: nominate the config it builds, feed Site and all
+            try:
+                feed_site = centre_orbit_sites(
+                    float(separation_mm),
+                    int(self.get_parameter('orbit_n').value))[1].name
+            except ValueError:
+                pass   # out of range: the nomination refuses it BY NAME
         config = self._nomination_config(
             pattern, apex_m, separation_mm, dwell_s,
             apex_m_ball2=apex_m_ball2, angle_deg=angle_deg,
-            feed_site=feed_site)
+            feed_site=feed_site, step_deg=step_deg, n_throws=n_throws)
         res = self._nominate(config)
         self._last_nomination_lines = list(res.lines)
         if res.ok:
@@ -4872,7 +4986,9 @@ class SkillNode(Node):
                      reload_a: bool = False,
                      phantom_a: bool = False,
                      angle_deg: float = 0.0,
-                     apex_m_ball2: Optional[float] = None) -> SimpleNamespace:
+                     apex_m_ball2: Optional[float] = None,
+                     orbit_n: Optional[int] = None,
+                     step_deg: Optional[float] = None) -> SimpleNamespace:
         """The ``columns`` branch of :meth:`_start_pattern` — R5's
         feed-triggered two-phase start (owner decision D1, 2026-09-30),
         replacing the R2-R4 body that refused outright (`_hand_home_error`,
@@ -4969,13 +5085,32 @@ class SkillNode(Node):
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
         plant_id = str(self.get_parameter('plant_id').value)
-        sites = columns_sites(separation_mm, angle_deg)
+        if orbit_n is not None:
+            # JP-14 Centre and orbit: Ball 2 is fed at O1 (the Site nearest
+            # Ball Butler, where columns' P1 is) and Ball 1 keeps the centre
+            # C; `columns_feed_site` is not read.
+            try:
+                orbit_all = centre_orbit_sites(separation_mm, orbit_n)
+            except ValueError as exc:
+                msg = 'centre_orbit refused: %s' % (exc,)
+                self.get_logger().debug(msg)
+                return SimpleNamespace(success=False, message=msg)
+            sites = (orbit_all[1], orbit_all[0])
+        else:
+            sites = columns_sites(separation_mm, angle_deg)
         # R5 sitting 2 (2026-10-02): `columns_feed_site` picks which of the
         # two named sites ball B is fed at; the other holds ball A (see the
         # docstring above). `columns_sites` always returns `(P1, P2)` (a
         # turned pair: `P1@<angle>`, `P2@<angle>`), so this is a plain pick
         # by index, never a guess from xy.
-        if angle_deg != 0.0:
+        if orbit_n is not None:
+            feed_site, a_site = sites[0], sites[1]
+        elif step_deg is not None:
+            # JP-11: the Feed Site is ALWAYS P1 (S(1) = P1: Ball Butler's
+            # lane and the hop entry are Columns' own); `columns_feed_site`
+            # is not read.
+            feed_site, a_site = sites[0], sites[1]
+        elif angle_deg != 0.0:
             # JP-10: the fed Site is GEOMETRIC for a turned pair -- the one
             # nearest Ball Butler (tie -> P1), so the incoming ball's descent
             # never crosses the held ball's column. `columns_feed_site`
@@ -5012,6 +5147,8 @@ class SkillNode(Node):
         # box no longer gates a goal); the executor's own online check
         # (`_checker`) covers every command, so no box rides on it.
         columns_name = ('columns_1ball_fed' if phantom_a
+                        else 'centre_orbit' if orbit_n is not None
+                        else 'columns_rotating' if step_deg is not None
                         else 'columns_highlow' if apex_m_ball2 is not None
                         else 'columns_turned' if angle_deg != 0.0
                         else 'columns')
@@ -5020,7 +5157,11 @@ class SkillNode(Node):
                 self._nomination_config(
                     columns_name, apex_m, separation_mm, dwell_s,
                     apex_m_ball2=apex_m_ball2, angle_deg=angle_deg,
-                    feed_site=feed_site.name), n_throws)
+                    feed_site=feed_site.name, orbit_n=orbit_n,
+                    step_deg=step_deg,
+                    # the nomination's config carries the count too (capped
+                    # there at one full turn), so the two configs are equal
+                    n_throws=n_throws), n_throws)
         except ValueError as exc:
             msg = 'columns pattern refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -7651,6 +7792,8 @@ class SkillNode(Node):
         # only; every other goal's event is unchanged.
         extra = ({'apex_m_ball2': '%.3f' % attempt['apex_m_ball2']}
                  if 'apex_m_ball2' in attempt else {})
+        if attempt.get('step_deg') is not None:
+            extra['step_deg'] = '%g' % attempt['step_deg']
         self._publish_attempt_event(
             ATTEMPT_START, 'accepted', DiagnosticStatus.OK,
             pattern=attempt['pattern'],
@@ -7686,6 +7829,8 @@ class SkillNode(Node):
                    if attempt.get('angle_deg') is not None else '')
                    + (' · apex2 %.2f m' % attempt['apex_m_ball2']
                       if 'apex_m_ball2' in attempt else '')
+                   + (' · step %g deg' % attempt['step_deg']
+                      if attempt.get('step_deg') is not None else '')
                    + site)
         else:
             self.get_logger().info('jugglebot/juggle ACCEPTED: %s'
@@ -7961,7 +8106,8 @@ class SkillNode(Node):
     def _svc_nominate(self, request, response):
         """``skills/nominate`` (P3b): a dry-run nomination of a Juggle
         request, in the ``jugglebot/juggle_request`` grammar plus the two
-        optional keys ``apex_m_ball2=`` and ``columns_angle_deg=`` (each
+        optional keys ``apex_m_ball2=``, ``columns_angle_deg=`` and (JP-11
+        ``columns_rotating``) ``step_deg=`` (each
         overrides the node parameter of the same name for THIS nomination
         only; nothing is written). Blank / 0 fields fall back to the node
         parameters (a zero ``dwell_s`` the Pattern's default dwell) exactly as a
@@ -8009,9 +8155,19 @@ class SkillNode(Node):
         apex_m_ball2 = None
         angle_deg = 0.0
         polygon_n = None
+        orbit_n = None
+        step_deg = None
+        n_nom = None
         feed_site = None
         refusal = None
-        if pattern == 'columns_highlow':
+        if pattern == 'columns_rotating':
+            step_deg = (vals.get('step_deg', 0.0)
+                        or float(self.get_parameter('columns_step_deg').value))
+            refusal = self._rotating_refusal(
+                step_deg, apex_m, separation_mm, dwell_s)
+            n_nom = int(vals.get('num_cycles', 0)
+                        or self.get_parameter('n_throws').value)
+        elif pattern == 'columns_highlow':
             apex_m_ball2 = (vals.get('apex_m_ball2', 0.0)
                             or float(self.get_parameter('apex_m_ball2').value))
             res_ = self._highlow_refusal(apex_m, apex_m_ball2)
@@ -8019,6 +8175,9 @@ class SkillNode(Node):
         elif pattern == 'polygon_walk':
             polygon_n = int(vals.get('polygon_n', 0)
                             or self.get_parameter('polygon_n').value)
+        elif pattern == 'centre_orbit':
+            orbit_n = int(vals.get('orbit_n', 0)
+                          or self.get_parameter('orbit_n').value)
         elif pattern == 'columns_turned':
             angle_deg = (vals.get('columns_angle_deg', 0.0)
                          or float(self.get_parameter('columns_angle_deg').value))
@@ -8042,7 +8201,9 @@ class SkillNode(Node):
         res = self._nominate(self._nomination_config(
             pattern, apex_m, separation_mm, dwell_s,
             apex_m_ball2=apex_m_ball2, angle_deg=angle_deg,
-            feed_site=feed_site, polygon_n=polygon_n), with_aim=True)
+            feed_site=feed_site, polygon_n=polygon_n, orbit_n=orbit_n,
+            step_deg=step_deg, n_throws=n_nom),
+            with_aim=True)
         response.success = res.ok
         response.message = '\n'.join([res.summary] + (
             [] if res.ok else list(res.lines)))

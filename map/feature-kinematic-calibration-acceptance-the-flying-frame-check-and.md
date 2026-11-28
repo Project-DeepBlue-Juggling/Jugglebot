@@ -18,8 +18,8 @@ links:
 parent: learner-generalisation
 filed_by: claude
 night_skip: sitting
-night_skip_on: '2026-11-27'
-night_skip_note: The gravity vector is on main (default off); its Sitting section checks the plumb lines and A/Bs the vector on Throws.
+night_skip_on: '2026-11-28'
+night_skip_note: Gravity vector default on since 2026-11-27; its Sitting section checks the plumb lines and flies equal on and off arms.
 ---
 
 Kinematic-calibration acceptance was never finished.
