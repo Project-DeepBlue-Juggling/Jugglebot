@@ -117,8 +117,8 @@ def test_every_mark_twin_equals_the_full_remeasure_on_the_joined_plan(chain):
 
 def test_the_streamed_head_is_bit_identical_below_the_seam(chain):
     """(a) The emitted Knots are untouched: below the SPLICE knot every per-knot
-    array the twins (and the wire) read equals the old record's, bit for bit,
-    and the joined plan keeps a non-zero record origin.  At the splice knot itself the position is
+    array the twins (and the wire) read equals the old record's, bit for
+    bit, and the joined plan has a non-zero record origin (``new.t0_s``).  At the splice knot itself the position is
     pinned and only the velocity is re-derived."""
     n_truncated = 0
     for old, new, _s, _a, k_s in chain:
