@@ -11,6 +11,7 @@ files_changed:
   - tests/ros/test_stream_tuning.py
   - logbook/2026-11-29-solver-rt-priority-launch-argument.md
   - logbook/INDEX.md
+  - map/feature-solver-worker-on-sched-fifo-take-the-catch-solve-out-of-the.md
 subsystem: [skills, launch]
 tags: [solver-worker, sched-fifo, cpu-partition, launch]
 ---
@@ -21,7 +22,7 @@ Default-off plumbing for a Sitting A/B. `trajectory_node` already had a `solver_
 
 ## Finding: can the FIFO worker share a cpu with the stream processes?
 
-Not with `cpu_partition:=true` and the pin applied. `trajectory_node` pins itself to `stream_cpus` (0-3, `stream_tuning.py` `DEFAULT_STREAM_CPUS`) and passes `solver_cpus` (4-5) to the worker together with `rt_priority` (`trajectory_node.py` 584-600, 1284-1291). In the worker `_main` (`solver_worker.py` 816) `apply_rt_policy(args.rt_prio, cpus or WORKER_RT_CPUS)` takes the partition cpus over `WORKER_RT_CPUS` (1-5, line 89), so the FIFO pin is 4-5 and the worker's affinity is set again to 4-5 (lines 817-822). The sets 0-3 and 4-5 are disjoint. Two caveats. Without `cpu_partition` the FIFO worker uses 1-5 and overlaps the unpinned stream processes, which is the 2026-10-28 configuration. With `cpu_partition:=true` but a failed pin (`trajectory_node.py` 599-600) `_solver_cpus` is reset to None and the worker again gets 1-5. The partition is fail-open, so the log line "cpu_partition ON" must be checked in the Sitting. Logic not changed.
+Not with `cpu_partition:=true` and the pin applied. `trajectory_node` pins itself to `stream_cpus` (0-3, `stream_tuning.py` `DEFAULT_STREAM_CPUS`) and passes `solver_cpus` (4-5) to the worker together with `rt_priority` (`trajectory_node.py` 584-600, 1284-1291). In the worker `_main` (`solver_worker.py` 815-817) `apply_rt_policy(args.rt_prio, cpus or WORKER_RT_CPUS)` takes the partition cpus over `WORKER_RT_CPUS` (1-5, line 89), so the FIFO pin is 4-5 and the worker's affinity is set again to 4-5 (lines 817-822). The sets 0-3 and 4-5 are disjoint. Two caveats. Without `cpu_partition` the FIFO worker uses 1-5 and overlaps the unpinned stream processes, which is the 2026-10-28 configuration. With `cpu_partition:=true` but a failed pin (`trajectory_node.py` 599-600) `_solver_cpus` is reset to None and the worker again gets 1-5. The partition is fail-open, so the log line "cpu_partition ON" must be checked in the Sitting. Logic not changed.
 
 ## Verification
 

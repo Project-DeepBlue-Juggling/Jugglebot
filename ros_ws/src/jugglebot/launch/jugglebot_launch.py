@@ -513,7 +513,8 @@ def generate_launch_description():
     # `solver_rt_priority`; FEAT-31), pinned to CPUs 1-5 and fail-open to CFS,
     # but it is OFF (0) by default since 2026-10-28: it stalled the setpoint
     # stream >70 ms and tripped the firmware STOP. Re-enable only with a CPU
-    # partition (see logbook/2026-10-28-jb95-solver-worker-sched-fifo.md).
+    # partition (see logbook/2026-10-28-jb95-solver-worker-sched-fifo.md); the
+    # launch argument `solver_rt_priority` (default 0) sets it for a Sitting A/B.
     _low_priority = 'nice -n 10'
 
     spacemouse_handler = Node(

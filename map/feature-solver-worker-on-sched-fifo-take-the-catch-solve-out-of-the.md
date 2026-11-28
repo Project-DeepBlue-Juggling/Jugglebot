@@ -55,7 +55,7 @@ Bounded: a solve is <= ~100 ms CPU, so a runaway RT lock-up is not a realistic r
 
 ## Options (2026-11-28)
 
-The trigger fired at the 2026-11-27 Sitting: the wall tail still bites and is preemption. TKT-104 asks which way.
+The trigger fired at the 2026-11-27 Sitting: the wall tail still bites and is preemption. Answered in TKT-104 (2026-11-28): option 1. The worker already existed, so the night of 2026-11-29 added the launch argument and the Sitting A/B below.
 
 1. Build the SCHED_FIFO worker now, held for a Sitting A/B (recommended).
 2. Wait for BUG-149's install fix and re-measure first.
