@@ -118,7 +118,7 @@ def test_every_mark_twin_equals_the_full_remeasure_on_the_joined_plan(chain):
 def test_the_streamed_head_is_bit_identical_below_the_seam(chain):
     """(a) The emitted Knots are untouched: below the SPLICE knot every per-knot
     array the twins (and the wire) read equals the old record's, bit for bit,
-    and the origin did not move.  At the splice knot itself the position is
+    and the joined plan keeps a non-zero record origin.  At the splice knot itself the position is
     pinned and only the velocity is re-derived."""
     n_truncated = 0
     for old, new, _s, _a, k_s in chain:
@@ -164,7 +164,7 @@ def test_release_predicate_none_is_always_remeasured():
 
 
 def test_release_predicate_boundary_at_n_a_minus_3():
-    """``old - margin <= (n_a - 3) dt`` is the skip side; one ULP-ish above flips."""
+    """``old - margin <= (n_a - 3) dt`` is the skip side; 1 microsecond above flips."""
     n_a = N_A
     assert not uc._release_twin_needs_remeasure(_clear_at(n_a - 3), n_a, DT)
     assert uc._release_twin_needs_remeasure(_clear_at(n_a - 3) + 1e-6, n_a, DT)
@@ -207,6 +207,7 @@ def test_predicates_skip_only_when_a_full_remeasure_is_bit_equal(chain):
     n_skips = 0
     for _ in range(50):
         old, new, _s, _a, k_s = chain[int(rng.randint(len(chain)))]
+        assert old.plan.dt == DT and new.plan.dt == DT   # the helpers' clock is the plan's
         n_a = k_s + 1
         if rng.randint(2) == 0:
             marks = list(old.meta.releases)
@@ -235,8 +236,8 @@ def test_predicates_skip_only_when_a_full_remeasure_is_bit_equal(chain):
 def test_twin_measurements_per_splice_do_not_grow_with_record_length(chain):
     """(b) Scaling: counted calls of ``plan_stroke_clear_s`` + ``plan_arm_lead_s``
     during one install.  Before the fix this was one per mark of the whole
-    record (~2 per install of depth; the logbook's fail-before run measured
-    9, 11, 13, 15, 17, 19, ... with a max of 35); now it is the new
+    record, so growing by about 2 per install (the logbook's fail-before run
+    measured 9, 11, 13, 15, 17, 19, ... with a max of 35); now it is the new
     segment's own marks plus the few head marks near the seam."""
     totals = [s + a for _o, _n, s, a, _k in chain]
     deep = chain[-1][1].plan.n_knots

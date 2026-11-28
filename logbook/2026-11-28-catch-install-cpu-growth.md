@@ -41,10 +41,10 @@ Control implications: none on the emitter path. Plans, splice point, seam veloci
 
 ## Verification (2026-11-28)
 
-- `OMP_NUM_THREADS=1 python -m pytest tests/motion/test_splice_twin_remeasure.py -q`: 3 passed in 7.17 s. The determinism tests recompute the old path (full re-measure on the joined plan) as the reference after each of 14 installs (over 100 marks) and compare exactly; the scaling test counts twin measurements per install.
+- `OMP_NUM_THREADS=1 python -m pytest tests/motion/test_splice_twin_remeasure.py -q`: 3 passed in 7.17 s (before the 2026-11-29 additions; the file now has 8 tests). The determinism tests recompute the old path (full re-measure on the joined plan) as the reference after each of 14 installs (over 100 marks) and compare exactly; the scaling test counts twin measurements per install.
 - Fail-before (source change stashed, same command): scaling test fails, `[9, 11, 13, 15, 17, 19, ...]` measurements per install, max 35 > 8; determinism tests pass on both (they pin that no value changed).
 - Scoped regression, `OMP_NUM_THREADS=1 python -m pytest tests/motion/test_unified_cycle.py tests/motion/test_unified_cycle_splice.py tests/motion/test_splice_twin_remeasure.py tests/motion/test_skills_bump.py tests/ros/test_install_segment.py tests/motion/test_skills_rebase_continuity.py tests/motion/test_splice_tilt_rate_seam.py -q -m "not nightly and not serial"`: 261 passed in 122.18 s.
-- Open audit findings (two test-strength items, branch held): the seam assertion in `test_the_streamed_head_is_bit_identical_below_the_seam` is vacuous and compares only pose and hand_rev, and the two helpers have no direct boundary tests.
+- Audit findings of 2026-11-28 (two test-strength items, closed 2026-11-29, see below): the seam assertion in `test_the_streamed_head_is_bit_identical_below_the_seam` is vacuous and compares only pose and hand_rev, and the two helpers have no direct boundary tests.
 - `./run_tests.sh` was NOT run (Night Shift unit rule); the gate decides the merge.
 
 ## Night Shift 2026-11-29: test strength
